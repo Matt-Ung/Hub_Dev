@@ -289,6 +289,31 @@ def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list
 
 @mcp.tool()
 def get_program_info() -> list:
+    """
+    Retrieve basic metadata about the currently loaded program.
+
+    Args: None
+
+    Returns:
+        A list containing a single human-readable multi-line string. The string is
+        exactly the Java `getProgramInfo()` output and includes these lines in order:
+
+        - "No program loaded\\n"                                  (if no program)
+
+        Otherwise:
+
+        - "Program Information:\\n"
+        - "---------------------\\n"
+        - "Name: <program name>\\n"
+        - "Ghidra Project Path: <domain file pathname or ''>\\n"
+        - "Executable Path: <program.getExecutablePath() or ''>\\n"
+        - "Executable MD5: <program.getExecutableMD5() or ''>\\n"
+        - "Executable SHA256: <program.getExecutableSHA256() or ''>\\n"
+        - "Language: <program.getLanguageID().getIdAsString() or ''>\\n"
+        - "Compiler: <program.getCompilerSpec().getCompilerSpecID().getIdAsString() or ''>\\n"
+        - "Endianness: big|little\\n"
+        - "Image Base: <program.getImageBase().toString() or ''>\\n"
+    """
     return safe_get("program_info")
 
 def main():
