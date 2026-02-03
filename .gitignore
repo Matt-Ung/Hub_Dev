@@ -1,0 +1,97 @@
+# =========================
+# Build outputs
+# =========================
+
+# Maven build output (any module)
+**/target/
+
+# Compiled class files
+*.class
+
+# Logs
+*.log
+
+# Java crash logs (if any)
+hs_err_pid*
+replay_pid*
+
+# =========================
+# Python artifacts
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Test / typecheck / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# =========================
+# IDE / editor files
+# =========================
+
+# IntelliJ
+.idea/
+*.iml
+*.iws
+out/
+
+# Eclipse
+.project
+.classpath
+.settings/
+bin/
+
+# VS Code
+.vscode/
+
+# Vim / swap / backup files
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# =========================
+# OS junk
+# =========================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails / metadata
+._*
+.Spotlight-V100
+.Trashes
+
+# =========================
+# Tooling / env
+# =========================
+
+# Maven Wrapper
+.mvn/
+!/.mvn/wrapper/maven-wrapper.jar
+mvnw
+mvnw.cmd
+
+# Environment files
+.env
+.env.*
+
+# =========================
+# Third-party binaries
+# =========================
+
+# Third party JAR files from Ghidra (any module)
+**/lib/*.jar
