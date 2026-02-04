@@ -314,6 +314,7 @@ def get_program_info() -> list:
         - "Endianness: big|little\\n"
         - "Image Base: <program.getImageBase().toString() or ''>\\n"
     """
+    print("Fetching program info from Ghidra server...")
     return safe_get("program_info")
 
 def main():

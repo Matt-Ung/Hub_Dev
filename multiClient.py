@@ -31,20 +31,26 @@ AI: 2
 # HUNT_URL = f"{BASE_URL}/hunt"
 # HASH_URL = f"{BASE_URL}/hash"
 
+MCP_SERVERS = {
+    "ghidramcp": {
+        "transport": "sse",
+        "url": "http://127.0.0.1:8081/sse",
+    },
+    "stringmcp": {
+        "transport": "sse",
+        "url": "http://127.0.0.1:8082/sse",
+    },
+    "flareflossmcp": {
+        "transport": "sse",
+        "url": "http://127.0.0.1:8083/sse",
+    },
+}
+
 
 async def main():
     client = MultiServerMCPClient(
-        {
-            "ghidramcp": {
-                "transport": "sse",
-                "url": "http://127.0.0.1:8081/sse",
-            },
-
-            # Optional: add more MCP servers here
-            # LangChain docs show HTTP/streamable-http as transport "http" with a /mcp URL. :contentReference[oaicite:3]{index=3}
-            # "weather": {"transport": "http", "url": "http://localhost:8000/mcp"},
-        },
-        tool_name_prefix=True,  # avoids tool-name collisions across servers
+        connections=MCP_SERVERS,
+        # tool_name_prefix=True,
     )
 
     tools = await client.get_tools()
@@ -63,7 +69,7 @@ async def main():
 
     resp = await agent_openAI.ainvoke({
         "messages": [
-            {"role": "user", "content": "Use ghidramcp tools to complete 3 tasks: 1) get file hashes (md5 and sha256) 2) get executable path, and 3) get the current function and decompile it, then summarize it."}
+            {"role": "user", "content": "Use MCP tools to complete 3 tasks: 1) get file hashes (md5 and sha256) 2) get executable path 3) Use the executable path and run flarefloss for strings on it & if it fails, default to strings utility: return strings gathered if any."}
         ]
     })
     # print(resp)

@@ -522,50 +522,37 @@ public class GhidraMCPPlugin extends Plugin {
         info.append("Executable MD5: ").append(safe(program.getExecutableMD5())).append("\n");
         info.append("Executable SHA256: ").append(safe(program.getExecutableSHA256())).append("\n");
 
-        // // Architecture / decompilation context
-        // String languageId = "";
-        // try {
-        //     if (program.getLanguageID() != null) {
-        //         // Prefer the stable ID string
-        //         languageId = program.getLanguageID().getIdAsString();
-        //     }
-        // } catch (Exception ignored) {}
-        // info.append("Language: ").append(safe(languageId)).append("\n");
+        // Architecture / decompilation context
+        String languageId = "";
+        try {
+            if (program.getLanguageID() != null) {
+                // Prefer the stable ID string
+                languageId = program.getLanguageID().getIdAsString();
+            }
+        } catch (Exception ignored) {}
+        info.append("Language: ").append(safe(languageId)).append("\n");
 
-        // String compilerId = "";
-        // try {
-        //     if (program.getCompilerSpec() != null && program.getCompilerSpec().getCompilerSpecID() != null) {
-        //         compilerId = program.getCompilerSpec().getCompilerSpecID().getIdAsString();
-        //     }
-        // } catch (Exception ignored) {}
-        // info.append("Compiler: ").append(safe(compilerId)).append("\n");
+        String compilerId = "";
+        try {
+            if (program.getCompilerSpec() != null && program.getCompilerSpec().getCompilerSpecID() != null) {
+                compilerId = program.getCompilerSpec().getCompilerSpecID().getIdAsString();
+            }
+        } catch (Exception ignored) {}
+        info.append("Compiler: ").append(safe(compilerId)).append("\n");
 
-        // boolean bigEndian = false;
-        // try {
-        //     bigEndian = program.getLanguage().isBigEndian();
-        // } catch (Exception ignored) {}
-        // info.append("Endianness: ").append(bigEndian ? "big" : "little").append("\n");
+        boolean bigEndian = false;
+        try {
+            bigEndian = program.getLanguage().isBigEndian();
+        } catch (Exception ignored) {}
+        info.append("Endianness: ").append(bigEndian ? "big" : "little").append("\n");
 
-        // String imageBase = "";
-        // try {
-        //     if (program.getImageBase() != null) {
-        //         imageBase = program.getImageBase().toString();
-        //     }
-        // } catch (Exception ignored) {}
-        // info.append("Image Base: ").append(safe(imageBase)).append("\n");
-
-        // Quick stats
-        // long funcCount = -1;
-        // try {
-        //     funcCount = program.getFunctionManager().getFunctionCount();
-        // } catch (Exception ignored) {}
-        // info.append("Number of Functions: ").append(funcCount >= 0 ? String.valueOf(funcCount) : "").append("\n");
-
-        // long symCount = -1;
-        // try {
-        //     symCount = program.getSymbolTable().getSymbolCount(true);
-        // } catch (Exception ignored) {}
-        // info.append("Number of Symbols: ").append(symCount >= 0 ? String.valueOf(symCount) : "").append("\n");
+        String imageBase = "";
+        try {
+            if (program.getImageBase() != null) {
+                imageBase = program.getImageBase().toString();
+            }
+        } catch (Exception ignored) {}
+        info.append("Image Base: ").append(safe(imageBase)).append("\n");
 
         return info.toString();
     }
