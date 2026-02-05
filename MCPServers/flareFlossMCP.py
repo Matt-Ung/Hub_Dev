@@ -253,7 +253,7 @@ def callFloss(
 
         if output.lower() == "summary":
             try:
-                return summarize_floss_json(out)
+                return summarize_floss_json(out, max_strings=max_strings)
             except Exception as e:
                 return f"Error: FLOSS JSON parse failed: {e}\nRaw JSON tail:\n{out[-2000:]}"
         else:
