@@ -21,6 +21,9 @@
 - Build debugger/anti-analysis parser (timing checks, `IsDebuggerPresent`, `INT 3`, PEB `BeingDebugged`)
 - Set up multi-agent structure + improve prompting
 
+## Goals for Mar 4, 11, 18
+- TBD
+
 ## By Mar 20
 - Close out tool development
 - Begin testing on tool effectiveness
