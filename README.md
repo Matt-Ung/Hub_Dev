@@ -14,6 +14,8 @@
 - Resolve permissions model for VM instances + ISO image handling; define ISO workflow (source/storage/automation)
 - Copy Procmon + Wireshark into VM; set required permissions/config
 - Build a pyghidra-based tool to interact with a Ghidra program (“Script Execution”)
+- Automate the spawning of the servers?
+  - Maybe a txt json file of the available MCP servers and a flag in running client to run them on start if enabled
 
 ## Goals for Feb 25
 - Schedule defense
