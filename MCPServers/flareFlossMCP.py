@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 mcp = FastMCP("flare_floss_mcp", instructions="MCP server that provides FLOSS (flare-floss) string extraction.")

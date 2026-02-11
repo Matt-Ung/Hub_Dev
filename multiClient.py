@@ -13,7 +13,7 @@ import getpass
 if ("OPENAI_API_KEY" not in os.environ) or (not os.environ["OPENAI_API_KEY"]):
     os.environ["OPENAI_API_KEY"] = getpass.getpass("Enter your OpenAI API Key: ")
 
-openai_model_id = "gpt-4o-mini-2024-07-18"
+openai_model_id = "gpt-4o-mini"
 imp_model_id = "gpt-5-mini"
 openai_embmodel_id = "azure/text-embedding-3-small"
 API_URL = "https://ai-gateway.andrew.cmu.edu/"
@@ -43,6 +43,14 @@ MCP_SERVERS = {
     "flareflossmcp": {
         "transport": "sse",
         "url": "http://127.0.0.1:8083/sse",
+    },
+    "hashdbmcp": {
+        "transport": "sse",
+        "url": "http://127.0.0.1:8084/sse",
+    },
+    "virtualboxmcp": {
+        "transport": "sse",
+        "url": "http://127.0.0.1:8090/sse"
     },
 }
 

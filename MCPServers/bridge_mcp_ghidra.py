@@ -12,7 +12,7 @@ import argparse
 import logging
 from urllib.parse import urljoin
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 DEFAULT_GHIDRA_SERVER = "http://127.0.0.1:8080/"
 
@@ -290,7 +290,7 @@ def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list
 @mcp.tool()
 def get_program_info() -> list:
     """
-    Retrieve basic metadata about the currently loaded program.
+    Retrieve basic metadata about the currently loaded program including file hashes.
 
     Args: None
 

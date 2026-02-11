@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
