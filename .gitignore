@@ -2,6 +2,7 @@
 # Build outputs
 # =========================
 
+README.md
 # Maven build output (any module)
 **/target/
 
