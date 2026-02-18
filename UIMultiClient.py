@@ -22,13 +22,37 @@ if not os.environ.get("OPENAI_API_KEY"):
 openai_model_id = "gpt-4o-mini"
 
 system_prompt = """You are a malware reverse engineer.
-Use your tools to answer questions. If you do not have a tool to
+Use your MCP tools to answer questions. If you do not have a tool to
 answer the question, say so.
 
 Return only the answer. For example:
 Human: What is 1 + 1?
 AI: 2
 """
+
+# MCP_SERVERS = {
+#   "ghidramcp": {
+#     "transport": "sse",
+#     "url": "http://127.0.0.1:8081/sse"
+#   },
+#   "stringmcp": {
+#     "transport": "sse",
+#     "url": "http://127.0.0.1:8082/sse"
+#   },
+#   "flareflossmcp": {
+#     "transport": "sse",
+#     "url": "http://127.0.0.1:8083/sse"
+#   },
+#   "hashdbmcp": {
+#     "transport": "sse",
+#     "url": "http://127.0.0.1:8084/sse"
+#   },
+#   "virtualboxmcp": {
+#     "transport": "sse",
+#     "url": "http://127.0.0.1:8085/sse"
+#   }
+# }
+
 
 def load_mcp_servers(path: str) -> Dict[str, Dict[str, Any]]:
     p = Path(path).expanduser().resolve()
@@ -55,12 +79,9 @@ def load_mcp_servers(path: str) -> Dict[str, Dict[str, Any]]:
         if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
             raise ValueError(f"{name}: stdio requires 'args' (list[str])")
 
-        # Use the exact python interpreter running your hub
         if command.lower() in {"python", "python3"}:
             command = sys.executable
 
-        # If args[0] is a python script, resolve it relative to servers.json location
-        # so running from different cwd still works.
         if args and args[0].endswith(".py"):
             script = (p.parent / args[0]).expanduser().resolve()
             args = [str(script), *args[1:]]
@@ -81,6 +102,7 @@ async def get_agent():
         if _AGENT is not None:
             return _AGENT
         MCP_SERVERS = load_mcp_servers("./MCPServers/servers.json")
+        print("Loaded MCP servers:", list(MCP_SERVERS.keys()))
 
         client = MultiServerMCPClient(connections=MCP_SERVERS)
         tools = await client.get_tools()

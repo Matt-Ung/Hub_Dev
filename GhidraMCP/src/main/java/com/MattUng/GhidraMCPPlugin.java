@@ -346,6 +346,20 @@ public class GhidraMCPPlugin extends Plugin {
         server.createContext("/program_info", exchange -> {
             sendResponse(exchange, getProgramInfo());
         });
+        
+        server.createContext("/callgraph_json", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            int maxDepth = parseIntOrDefault(qparams.get("maxDepth"), 4);
+            int maxNodes = parseIntOrDefault(qparams.get("maxNodes"), 2000);
+
+            Program program = getCurrentProgram();
+            String json = CallGraphBuilder.build(program, maxDepth, maxNodes);
+
+            // sendResponse currently works fine even if Content-Type is text/plain;
+            // your client can still JSON-parse it.
+            sendResponse(exchange, json);
+        });
+
 
         server.setExecutor(null);
         new Thread(() -> {
@@ -1700,14 +1714,30 @@ public class GhidraMCPPlugin extends Plugin {
         return pm != null ? pm.getCurrentProgram() : null;
     }
 
-    private void sendResponse(HttpExchange exchange, String response) throws IOException {
-        byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
-        exchange.sendResponseHeaders(200, bytes.length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(bytes);
-        }
+private void sendResponse(HttpExchange exchange, String response) throws IOException {
+    byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+    exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+    exchange.sendResponseHeaders(200, bytes.length);
+    OutputStream os = exchange.getResponseBody();
+    try {
+        os.write(bytes);
+    } finally {
+        os.close();
     }
+}
+
+private void sendJsonResponse(HttpExchange exchange, String json) throws IOException {
+    byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+    exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+    exchange.sendResponseHeaders(200, bytes.length);
+    OutputStream os = exchange.getResponseBody();
+    try {
+        os.write(bytes);
+    } finally {
+        os.close();
+    }
+}
+
 
     @Override
     public void dispose() {

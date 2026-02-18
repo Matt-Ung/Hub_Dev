@@ -317,6 +317,21 @@ def get_program_info() -> list:
     print("Fetching program info from Ghidra server...")
     return safe_get("program_info")
 
+@mcp.tool()
+def get_call_graph(maxDepth: int, maxNodes: int = 3) -> list:
+    """
+    Get the call graph for a given function up to a specified depth.
+
+    Args:
+        maxDepth: The maximum depth of the call graph (default: 3).
+        maxNodes: The maximum number of nodes to include in the call graph (default: 3).
+
+    Returns:
+        A list of strings representing the call graph, where each string is formatted as:
+        "caller_function -> callee_function"
+    """
+    return safe_get("callgraph_json", {"maxDepth": maxDepth, "maxNodes": maxNodes})
+
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
     parser.add_argument("--ghidra-server", type=str, default=DEFAULT_GHIDRA_SERVER,
