@@ -8,6 +8,11 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 
+import json
+import sys
+from pathlib import Path
+from typing import Any, Dict
+
 # ----------------------------
 # Config
 # ----------------------------
@@ -15,7 +20,6 @@ if not os.environ.get("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = getpass.getpass("Enter your OpenAI API Key: ")
 
 openai_model_id = "gpt-4o-mini"
-# API_URL = None
 
 system_prompt = """You are a malware reverse engineer.
 Use your tools to answer questions. If you do not have a tool to
@@ -26,13 +30,44 @@ Human: What is 1 + 1?
 AI: 2
 """
 
-MCP_SERVERS = {
-    "ghidramcp": {"transport": "sse", "url": "http://127.0.0.1:8081/sse"},
-    "stringmcp": {"transport": "sse", "url": "http://127.0.0.1:8082/sse"},
-    "flareflossmcp": {"transport": "sse", "url": "http://127.0.0.1:8083/sse"},
-    "hashdbmcp": {"transport": "sse", "url": "http://127.0.0.1:8084/sse",},
-    "virtualboxmcp": {"transport": "sse","url": "http://127.0.0.1:8090/sse"},
-}
+def load_mcp_servers(path: str) -> Dict[str, Dict[str, Any]]:
+    p = Path(path).expanduser().resolve()
+    raw = json.loads(p.read_text(encoding="utf-8"))
+
+    if not isinstance(raw, dict):
+        raise ValueError("servers.json must be an object: {name: {transport, command, args, ...}, ...}")
+
+    out: Dict[str, Dict[str, Any]] = {}
+
+    for name, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            raise ValueError(f"{name}: config must be an object")
+
+        transport = cfg.get("transport")
+        if transport != "stdio":
+            raise ValueError(f"{name}: for a single-user hub, set transport='stdio'")
+
+        command = cfg.get("command")
+        args = cfg.get("args")
+
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError(f"{name}: stdio requires 'command' (string)")
+        if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
+            raise ValueError(f"{name}: stdio requires 'args' (list[str])")
+
+        # Use the exact python interpreter running your hub
+        if command.lower() in {"python", "python3"}:
+            command = sys.executable
+
+        # If args[0] is a python script, resolve it relative to servers.json location
+        # so running from different cwd still works.
+        if args and args[0].endswith(".py"):
+            script = (p.parent / args[0]).expanduser().resolve()
+            args = [str(script), *args[1:]]
+
+        out[name] = {**cfg, "command": command, "args": args}
+
+    return out
 
 # ----------------------------
 # Lazy init (cached agent)
@@ -45,6 +80,7 @@ async def get_agent():
     async with _INIT_LOCK:
         if _AGENT is not None:
             return _AGENT
+        MCP_SERVERS = load_mcp_servers("./MCPServers/servers.json")
 
         client = MultiServerMCPClient(connections=MCP_SERVERS)
         tools = await client.get_tools()
