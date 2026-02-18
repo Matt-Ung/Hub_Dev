@@ -12,10 +12,15 @@
 
 ## Goals for Feb 18
 - Resolve permissions model for VM instances + ISO image handling; define ISO workflow (source/storage/automation)
-- Copy Procmon + Wireshark into VM; set required permissions/config
+- Copy Procmon + Wireshark into VM; set required permissions/config (Vagrant)
 - Build a pyghidra-based tool to interact with a Ghidra program (“Script Execution”)
 - Automate the spawning of the servers?
   - Maybe a txt json file of the available MCP servers and a flag in running client to run them on start if enabled
+ 
+Todo:
+Vagrant,
+Fine grained or run cmds and figure out flags
+
 
 ## Goals for Feb 25
 - Schedule defense
