@@ -1,0 +1,20 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "{box}"
+
+  config.winrm.username = "{winrm_user}"
+  config.winrm.password = "{winrm_pass}"
+
+  config.vm.boot_timeout = {boot_timeout}
+
+  config.vm.synced_folder "./samples", "C:/samples", create: true
+
+  config.vm.provision "shell",
+    path: "provision.ps1",
+    privileged: true,
+    powershell_args: "-ExecutionPolicy Bypass -NoProfile"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = {memory_mb}
+    vb.cpus = {cpus}
+  end
+end
