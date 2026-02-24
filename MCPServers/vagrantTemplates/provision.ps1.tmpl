@@ -1,0 +1,24 @@
+$ErrorActionPreference = "Stop"
+
+Write-Host "[*] Provisioning started..."
+
+Write-Host "[*] Ensuring Chocolatey is installed..."
+if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+  Set-ExecutionPolicy Bypass -Scope Process -Force
+  [System.Net.ServicePointManager]::SecurityProtocol = `
+    [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+  Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+}
+
+Write-Host "[*] Installing Procmon..."
+choco install -y procmon
+
+Write-Host "[*] Installing Wireshark..."
+choco install -y wireshark
+
+Write-Host "[*] Creating convenience folders..."
+New-Item -ItemType Directory -Force -Path "C:\tools" | Out-Null
+New-Item -ItemType Directory -Force -Path "C:\captures" | Out-Null
+
+Write-Host "[*] Provisioning complete."
+Write-Host "[!] Note: Packet capture usually requires Npcap. Wireshark may install without it."

@@ -1,0 +1,22 @@
+{
+  "ghidramcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["bridge_mcp_ghidra.py", "--transport", "stdio"]
+  },
+  "stringmcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["stringMCP.py", "--transport", "stdio"]
+  },
+  "flareflossmcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["flareFlossMCP.py", "--transport", "stdio"]
+  },
+  "hashdbmcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["hashDBMCP.py", "--transport", "stdio"]
+  }
+}
