@@ -18,7 +18,7 @@
   - Maybe a txt json file of the available MCP servers and a flag in running client to run them on start if enabled
  
 Todo:
-Vagrant,
+Vagrant, (https://portal.cloud.hashicorp.com/vagrant/discover?query=windows-11)
 Fine grained or run cmds and figure out flags
 
 
