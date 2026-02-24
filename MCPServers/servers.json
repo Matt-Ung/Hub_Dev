@@ -18,5 +18,10 @@
     "transport": "stdio",
     "command": "python",
     "args": ["hashDBMCP.py", "--transport", "stdio"]
+  },
+  "VagrantMCP": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["vagrantSetUpMCP.py", "--transport", "stdio"]
   }
 }
