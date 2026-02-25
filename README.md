@@ -28,6 +28,21 @@ Fine grained or run cmds and figure out flags
 - Build debugger/anti-analysis parser (timing checks, `IsDebuggerPresent`, `INT 3`, PEB `BeingDebugged`)
 - Set up multi-agent structure + improve prompting
 
+Test binaries: RE Challenges, packing, golang, string takss
+
+Start making different agents 
+Program do, make yara signature unique,
+
+Pydantic agent- deep
+
+Subagent from text, How it creates sub agents, 
+- Skills, tool
+- context windows Quadratic
+
+Test Performance 
+
+UPX, string obfuscation
+
 ## Goals for Mar 4, 11, 18
 - TBD
 
