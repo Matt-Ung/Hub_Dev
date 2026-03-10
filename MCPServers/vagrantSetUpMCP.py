@@ -1,215 +1,377 @@
-#!/usr/bin/env python3
 """
-vagrant_setup_mcp.py
+vagrant_mcp_templates.py
 
-FastMCP server that scaffolds (and optionally runs) a Vagrant-based Windows analysis VM.
+FastMCP server that uses user-provided template files:
+- Vagrantfile.tmpl
+- provision.ps1.tmpl
 
-Templates are stored externally in ./templates/ (relative to this script):
-- templates/Vagrantfile.tmpl
-- templates/provision.ps1.tmpl
+Behavior:
+- Renders Vagrantfile from template placeholders
+- Copies provision.ps1 from template
+- Copies a payload file into ./samples so Vagrant synced_folder moves it into the guest
+- Runs `vagrant up --provider=virtualbox`
+- Supports later uploads via `vagrant upload`
 
-Tools:
-- setupVagrantVM(...): writes vm_dir/Vagrantfile, vm_dir/provision.ps1, vm_dir/samples/
-  and optionally runs `vagrant up` / `vagrant provision`.
-
-Server CLI:
-  --transport {stdio,sse}
-  --mcp-host
-  --mcp-port
-  --log-level
+Designed around a Windows guest template (WinRM + PowerShell provisioning).
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Dict, Optional
+import hashlib
 
 from fastmcp import FastMCP
 
-logger = logging.getLogger(__name__)
-mcp = FastMCP("vagrant_setup_mcp", instructions="MCP server that scaffolds and optionally runs Vagrant VMs.")
+mcp = FastMCP("VagrantMCP")
 
-# BASE_DIR = Path(__file__).resolve().parent
-TEMPLATES_DIR = Path("MCPServers/vagrantTemplates").resolve()
+MAX_CAPTURE = 12000
+# vagrantfile_template = "vagrantTemplates/Vagrantfile.tmpl",
+# provision_template = "vagrantTemplates/provision.ps1.tmpl",
+box_default = "stromweld/windows-11"
 
-VAGRANTFILE_TMPL_NAME = "Vagrantfile.tmpl"
-PROVISION_TMPL_NAME = "provision.ps1.tmpl"
+# ----------------------------
+# Helpers
+# ----------------------------
 
-def write_text(path: Path, content: str, overwrite: bool) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and not overwrite:
-        raise FileExistsError(f"{path} already exists (set overwrite_outputs=True to replace).")
-    path.write_text(content, encoding="utf-8")
-
-
-def run_cmd(cmd: list[str], cwd: Path, timeout_sec: int) -> subprocess.CompletedProcess:
-    logger.info("Running: (cd %s) %s", cwd, " ".join(cmd))
-    return subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=max(1, int(timeout_sec)),
-    )
+def _trim(s: str, n: int = MAX_CAPTURE) -> str:
+    if not s:
+        return ""
+    return s if len(s) <= n else s[:n] + f"\n...[truncated {len(s)-n} chars]..."
 
 
-def format_proc_result(title: str, r: subprocess.CompletedProcess) -> str:
-    return "\n".join(
-        [
-            title,
-            f"rc={r.returncode}",
-            "stdout:",
-            (r.stdout or "").strip(),
-            "stderr:",
-            (r.stderr or "").strip(),
-        ]
-    )
+def _run(cmd: list[str], cwd: Optional[Path] = None, timeout: int = 1800) -> Dict[str, Any]:
+    try:
+        p = subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return {
+            "ok": p.returncode == 0,
+            "returncode": p.returncode,
+            "cmd": cmd,
+            "cwd": str(cwd) if cwd else None,
+            "stdout": _trim(p.stdout),
+            "stderr": _trim(p.stderr),
+        }
+    except FileNotFoundError:
+        return {
+            "ok": False,
+            "returncode": None,
+            "cmd": cmd,
+            "cwd": str(cwd) if cwd else None,
+            "stdout": "",
+            "stderr": "",
+            "error": f"Executable not found: {cmd[0]}",
+        }
+    except subprocess.TimeoutExpired as e:
+        return {
+            "ok": False,
+            "returncode": None,
+            "cmd": cmd,
+            "cwd": str(cwd) if cwd else None,
+            "stdout": _trim(e.stdout or ""),
+            "stderr": _trim(e.stderr or ""),
+            "error": f"Timed out after {timeout}s",
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "returncode": None,
+            "cmd": cmd,
+            "cwd": str(cwd) if cwd else None,
+            "stdout": "",
+            "stderr": "",
+            "error": str(e),
+        }
 
 
-@mcp.tool(
-    description=(
-        "Scaffold a Vagrant Windows VM directory using templates from ./templates, "
-        "write Vagrantfile + provision.ps1 + samples/, and optionally run vagrant up/provision."
-    )
-)
-def setupVagrantVM(
-    vm_dir: str,
-    box: str,
+def _check_prereqs() -> Dict[str, Any]:
+    vagrant = _run(["vagrant", "--version"], timeout=20)
+    if not vagrant.get("ok"):
+        return {"ok": False, "error": "Vagrant not found on PATH", "details": vagrant}
+    vbox = _run(["VBoxManage", "--version"], timeout=20)
+    return {
+        "ok": True,
+        "vagrant_version": vagrant.get("stdout", "").strip(),
+        "virtualbox_detected": bool(vbox.get("ok")),
+        "virtualbox_check": vbox,
+    }
+
+
+def _safe_replace_tokens(template_text: str, values: Dict[str, Any]) -> str:
+    """
+    Replace only explicit {token} placeholders from a whitelist.
+    This avoids breaking other braces in template content.
+    """
+    out = template_text
+    for k, v in values.items():
+        out = out.replace("{" + k + "}", str(v))
+    return out
+
+
+def _project_info(project_dir: Path) -> Dict[str, Any]:
+    return {
+        "project_dir": str(project_dir),
+        "vagrantfile": str(project_dir / "Vagrantfile"),
+        "provision_script": str(project_dir / "provision.ps1"),
+        "samples_dir": str(project_dir / "samples"),
+    }
+
+
+def _copy_payload_into_samples(project_dir: Path, payload_path: Path) -> Dict[str, Any]:
+    samples = project_dir / "samples"
+    samples.mkdir(parents=True, exist_ok=True)
+
+    unique_name = f"{uuid.uuid4().hex[:8]}_{payload_path.name}"
+    dest = samples / unique_name
+
+    if payload_path.is_file():
+        shutil.copy2(payload_path, dest)
+    elif payload_path.is_dir():
+        shutil.copytree(payload_path, dest)
+    else:
+        return {"ok": False, "error": f"Payload path is neither file nor directory: {payload_path}"}
+
+    return {
+        "ok": True,
+        "host_payload": str(payload_path),
+        "staged_payload": str(dest),
+        # Your template syncs ./samples -> C:/samples
+        "guest_path_via_synced_folder": f"C:/samples/{dest.name}",
+    }
+
+
+# ----------------------------
+# MCP Tools
+# ----------------------------
+@mcp.tool
+def create_vagrant_project_from_templates(
+    executable_path: str,
     winrm_user: str = "vagrant",
     winrm_pass: str = "vagrant",
-    memory_mb: int = 8192,
-    cpus: int = 4,
     boot_timeout: int = 1200,
-    overwrite_outputs: bool = False,
-    run_up: bool = False,
-    run_provision: bool = False,
-    vagrant_timeout_sec: int = 3600,
-) -> str:
+    memory_mb: int = 4096,
+    cpus: int = 2,
+    overwrite: bool = True,
+    run_up: bool = True,
+) -> Dict[str, Any]:
     """
-    Args:
-      vm_dir: Directory to create (e.g., "./analysis-vm").
-      box: Vagrant box name (Windows box with WinRM enabled).
-      winrm_user/winrm_pass: WinRM credentials expected by the box.
-      memory_mb/cpus/boot_timeout: VM settings written into the Vagrantfile template.
-      overwrite_outputs: Overwrite vm_dir/Vagrantfile and vm_dir/provision.ps1 if they exist.
-      run_up: Run `vagrant up` after writing outputs.
-      run_provision: Run `vagrant provision` after `vagrant up`.
-      vagrant_timeout_sec: Timeout for each vagrant command.
+    Create a Vagrant project using local sibling templates and optionally run `vagrant up`.
 
-    Returns:
-      Status string + (optional) vagrant command output.
+    Expected folder layout (example):
+      <repo_root>/
+        MCPServers/
+          vagrantSetUpMCP.py   (this script)
+        vagrantTemplates/
+          Vagrantfile.tmpl
+          provision.ps1.tmpl
+        vagrantProjects/             (auto-created)
+
+    Tool input:
+    - executable_path: path from Ghidra (host path to the executable)
+
+    Behavior:
+    - Derives a stable project_dir automatically from the executable path
+    - Renders Vagrantfile from vagrantTemplates/Vagrantfile.tmpl
+    - Copies provision.ps1.tmpl as-is to provision.ps1
+    - Copies executable into ./samples (synced to C:/samples in guest)
     """
+    prereq = _check_prereqs()
+    if not prereq.get("ok"):
+        return prereq
+
+    # Resolve payload from Ghidra path
+    payload = Path(executable_path).expanduser().resolve()
+    if not payload.exists():
+        return {"ok": False, "error": f"executable_path not found: {payload}"}
+
+    # Resolve template + project roots relative to this script
+    # Assumes: MCPServers and vagrantTemplates are sibling folders
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent
+    # templates_dir = repo_root / "vagrantTemplates"
+    projects_root = repo_root / "vagrantProjects"
+
+    vagrant_tpl =  Path("./MCPServers/vagrantTemplates/Vagrantfile.tmpl").resolve()
+    prov_tpl = Path("./MCPServers/vagrantTemplates/provision.ps1.tmpl").resolve()
+
+    if not vagrant_tpl.exists():
+        return {"ok": False, "error": f"Vagrantfile template not found: {vagrant_tpl}"}
+    if not prov_tpl.exists():
+        return {"ok": False, "error": f"Provision template not found: {prov_tpl}"}
+
+    # Build deterministic project directory from executable path
+    # (stable name so repeated runs for same binary reuse the same workspace)
+    exe_stem = payload.stem or "payload"
+    safe_stem = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in exe_stem).strip("_")
+    if not safe_stem:
+        safe_stem = "payload"
+
+    path_hash = hashlib.sha256(str(payload).encode("utf-8")).hexdigest()[:10]
+    project = (projects_root / f"{safe_stem}-{path_hash}").resolve()
+    project.mkdir(parents=True, exist_ok=True)
+
+    vf_out = project / "Vagrantfile"
+    ps_out = project / "provision.ps1"
+
+    if not overwrite and (vf_out.exists() or ps_out.exists()):
+        return {
+            "ok": False,
+            "error": "Project files already exist and overwrite=False",
+            **_project_info(project),
+            "derived_from_executable": str(payload),
+        }
+
+    # Render Vagrantfile template
     try:
-        vm_dir = (vm_dir or "").strip()
-        box = (box or "").strip()
-
-        if not vm_dir:
-            return "Error: vm_dir must be a non-empty string."
-        if not box:
-            return "Error: box must be a non-empty string."
-        if not shutil.which("vagrant"):
-            return "Error: `vagrant` not found on PATH. Install Vagrant first."
-
-        # Ensure templates exist (hard requirement)
-        v_tmpl_path, p_tmpl_path = TEMPLATES_DIR / VAGRANTFILE_TMPL_NAME, TEMPLATES_DIR / PROVISION_TMPL_NAME
-
-        vf_tmpl = v_tmpl_path.read_text(encoding="utf-8")
-        ps1_tmpl = p_tmpl_path.read_text(encoding="utf-8")
-
-        # Render templates using .format()
-        # If your templates include literal braces, escape as {{ and }}.
-        try:
-            vagrantfile_text = vf_tmpl.format(
-                box=box,
-                winrm_user=winrm_user,
-                winrm_pass=winrm_pass,
-                boot_timeout=int(boot_timeout),
-                memory_mb=int(memory_mb),
-                cpus=int(cpus),
-            )
-        except KeyError as e:
-            return f"Error: Vagrantfile template missing placeholder: {e}"
-
-        try:
-            provision_text = ps1_tmpl.format()
-        except KeyError as e:
-            return f"Error: provision template missing placeholder: {e}"
-
-        base = Path(vm_dir).expanduser().resolve()
-        samples = base / "samples"
-        vagrantfile_out = base / "Vagrantfile"
-        provision_out = base / "provision.ps1"
-
-        samples.mkdir(parents=True, exist_ok=True)
-
-        write_text(vagrantfile_out, vagrantfile_text, overwrite=overwrite_outputs)
-        write_text(provision_out, provision_text, overwrite=overwrite_outputs)
-
-        result_parts = [
-            "Created Vagrant VM scaffold:",
-            f"- vm_dir: {base}",
-            f"- samples: {samples} (guest sees C:\\samples)",
-            f"- Vagrantfile: {vagrantfile_out}",
-            f"- provision.ps1: {provision_out}",
-            "",
-            "Templates used:",
-            f"- {v_tmpl_path}",
-            f"- {p_tmpl_path}",
-        ]
-
-        if run_up:
-            r_up = run_cmd(["vagrant", "up"], cwd=base, timeout_sec=vagrant_timeout_sec)
-            result_parts += ["", format_proc_result("vagrant up:", r_up)]
-            if r_up.returncode != 0:
-                return "\n".join(result_parts)
-
-            if run_provision:
-                r_prov = run_cmd(["vagrant", "provision"], cwd=base, timeout_sec=vagrant_timeout_sec)
-                result_parts += ["", format_proc_result("vagrant provision:", r_prov)]
-
-        return "\n".join(result_parts)
-
-    except subprocess.TimeoutExpired:
-        return f"Error: vagrant command timed out after {vagrant_timeout_sec} seconds."
-    except FileExistsError as e:
-        return f"Error: {e}"
-    except FileNotFoundError as e:
-        return f"Error: {e}"
+        vf_template_text = vagrant_tpl.read_text(encoding="utf-8")
+        rendered_vf = _safe_replace_tokens(
+            vf_template_text,
+            {
+                "box": box_default,
+                "winrm_user": winrm_user,
+                "winrm_pass": winrm_pass,
+                "boot_timeout": int(boot_timeout),
+                "memory_mb": int(memory_mb),
+                "cpus": int(cpus),
+            },
+        )
+        vf_out.write_text(rendered_vf, encoding="utf-8")
     except Exception as e:
-        logger.exception("setupVagrantVM failed")
-        return f"Error: {e}"
+        return {"ok": False, "error": f"Failed to render/write Vagrantfile: {e}"}
+
+    # Copy provision script template AS-IS (important: PowerShell braces)
+    try:
+        shutil.copy2(prov_tpl, ps_out)
+    except Exception as e:
+        return {"ok": False, "error": f"Failed to copy provision template: {e}"}
+
+    # Stage payload into ./samples (synced into guest by your Vagrantfile)
+    try:
+        staged = _copy_payload_into_samples(project, payload)
+        if not staged.get("ok"):
+            return staged
+    except Exception as e:
+        return {"ok": False, "error": f"Failed to stage payload: {e}"}
+
+    result: Dict[str, Any] = {
+        "ok": True,
+        "message": "Vagrant project created from templates.",
+        **_project_info(project),
+        "derived_from_executable": str(payload),
+        "templates": {
+            # "templates_dir": str(templates_dir),
+            "vagrantfile_template": str(vagrant_tpl),
+            "provision_template": str(prov_tpl),
+        },
+        "rendered_values": {
+            "box": box_default,
+            "winrm_user": winrm_user,
+            "boot_timeout": boot_timeout,
+            "memory_mb": memory_mb,
+            "cpus": cpus,
+        },
+        "payload": staged,
+        "vagrantfile_preview": _trim(rendered_vf, 4000),
+        "prereq": {
+            "vagrant_version": prereq.get("vagrant_version"),
+            "virtualbox_detected": prereq.get("virtualbox_detected"),
+        },
+    }
+
+    if run_up:
+        up = _run(["vagrant", "up", "--provider=virtualbox"], cwd=project, timeout=7200)
+        result["vagrant_up"] = up
+        result["ok"] = bool(up.get("ok"))
+
+    return result
+
+@mcp.tool
+def vagrant_upload_file(
+    project_dir: str,
+    host_path: str,
+    guest_destination: str,
+    compress: bool = False,
+) -> Dict[str, Any]:
+    """
+    Upload a file after the VM is already running using `vagrant upload`.
+    Useful for iterative testing without reprovisioning.
+    """
+    project = Path(project_dir).expanduser().resolve()
+    host = Path(host_path).expanduser().resolve()
+
+    if not (project / "Vagrantfile").exists():
+        return {"ok": False, "error": f"No Vagrantfile in {project}"}
+    if not host.exists():
+        return {"ok": False, "error": f"host_path not found: {host}"}
+
+    cmd = ["vagrant", "upload", str(host), guest_destination]
+    if compress:
+        cmd.append("--compress")
+
+    res = _run(cmd, cwd=project, timeout=1800)
+    return {
+        "ok": res.get("ok", False),
+        "project_dir": str(project),
+        "host_path": str(host),
+        "guest_destination": guest_destination,
+        "upload": res,
+    }
+
+
+@mcp.tool
+def vagrant_status(project_dir: str) -> Dict[str, Any]:
+    project = Path(project_dir).expanduser().resolve()
+    if not (project / "Vagrantfile").exists():
+        return {"ok": False, "error": f"No Vagrantfile in {project}"}
+    res = _run(["vagrant", "status"], cwd=project, timeout=60)
+    return {"ok": res.get("ok", False), "project_dir": str(project), "status": res}
+
+
+@mcp.tool
+def vagrant_halt(project_dir: str, force: bool = False) -> Dict[str, Any]:
+    project = Path(project_dir).expanduser().resolve()
+    if not (project / "Vagrantfile").exists():
+        return {"ok": False, "error": f"No Vagrantfile in {project}"}
+    cmd = ["vagrant", "halt"]
+    if force:
+        cmd.append("--force")
+    res = _run(cmd, cwd=project, timeout=1200)
+    return {"ok": res.get("ok", False), "project_dir": str(project), "halt": res}
+
+
+@mcp.tool
+def vagrant_destroy(project_dir: str, force: bool = True) -> Dict[str, Any]:
+    project = Path(project_dir).expanduser().resolve()
+    if not (project / "Vagrantfile").exists():
+        return {"ok": False, "error": f"No Vagrantfile in {project}"}
+    cmd = ["vagrant", "destroy"]
+    if force:
+        cmd.append("-f")
+    res = _run(cmd, cwd=project, timeout=2400)
+    return {"ok": res.get("ok", False), "project_dir": str(project), "destroy": res}
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MCP server: Vagrant VM scaffolder")
-    parser.add_argument("--mcp-host", type=str, default="127.0.0.1")
-    parser.add_argument("--mcp-port", type=int, default=8091)
-    parser.add_argument("--transport", type=str, default="stdio", choices=["stdio", "sse"])
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-    )
+    parser = argparse.ArgumentParser(description="FastMCP Vagrant template server")
+    parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
+    parser.add_argument("--mcp-host", default="127.0.0.1")
+    parser.add_argument("--mcp-port", type=int, default=8099)
     args = parser.parse_args()
 
-    log_level = getattr(logging, args.log_level, logging.INFO)
-    logging.basicConfig(level=log_level)
-    logging.getLogger().setLevel(log_level)
-
-    if args.transport == "sse":
-        mcp.settings.log_level = args.log_level
-        mcp.settings.host = args.mcp_host
-        mcp.settings.port = args.mcp_port
-        logger.info("Starting SSE MCP server on http://%s:%s/sse", mcp.settings.host, mcp.settings.port)
-        mcp.run(transport="sse")
-    else:
+    if args.transport == "stdio":
         mcp.run()
+    else:
+        mcp.run(transport="http", host=args.mcp_host, port=args.mcp_port)
 
 
 if __name__ == "__main__":

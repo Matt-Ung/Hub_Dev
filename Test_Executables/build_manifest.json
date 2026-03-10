@@ -1,0 +1,106 @@
+{
+  "compiler": [
+    "x86_64-w64-mingw32-gcc"
+  ],
+  "root": "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables",
+  "results": [
+    {
+      "source": "test.c",
+      "output": "test.exe",
+      "ok": true,
+      "size_bytes": 136211,
+      "sha256": "1c9ccb2681019f816c765780a89d16a91e6224ea7e26c57944cf73e8ea649d92",
+      "command": [
+        "x86_64-w64-mingw32-gcc",
+        "-Wall",
+        "-Wextra",
+        "-O2",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\test.c",
+        "-o",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\test.exe"
+      ]
+    },
+    {
+      "source": "floss_test.c",
+      "output": "floss_test.exe",
+      "ok": true,
+      "size_bytes": 132610,
+      "sha256": "fdfecd17b75704ff0ad9984869a858e3e4411fff36db72f9efb522321588a59e",
+      "command": [
+        "x86_64-w64-mingw32-gcc",
+        "-Wall",
+        "-Wextra",
+        "-O0",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\floss_test.c",
+        "-o",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\floss_test.exe"
+      ]
+    },
+    {
+      "source": "floss_test.c",
+      "output": "floss_test_02.exe",
+      "ok": true,
+      "size_bytes": 132718,
+      "sha256": "fa9934fefd6ec930bd2d699dc88062cfe332fd8495d65d2353120b6b436accbd",
+      "command": [
+        "x86_64-w64-mingw32-gcc",
+        "-Wall",
+        "-Wextra",
+        "-O2",
+        "-fno-inline",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\floss_test.c",
+        "-o",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\floss_test_02.exe"
+      ]
+    },
+    {
+      "source": "floss_test.c",
+      "output": "floss_test_stripped.exe",
+      "ok": true,
+      "size_bytes": 17920,
+      "sha256": "4083d997feac3b0859f81f4412f08b67216abdad21f2fc6e1b0e6e0c6d37a01c",
+      "command": [
+        "x86_64-w64-mingw32-gcc",
+        "-Wall",
+        "-Wextra",
+        "-O2",
+        "-s",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\floss_test.c",
+        "-o",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\floss_test_stripped.exe"
+      ]
+    },
+    {
+      "source": "anti_debug_test.c",
+      "output": "anti_debug_test.exe",
+      "ok": true,
+      "size_bytes": 137789,
+      "sha256": "35ad698ab6fff3312e5cdab6c1e8f68c2c0d40ba4da9df12729cb0f28f9e3249",
+      "command": [
+        "x86_64-w64-mingw32-gcc",
+        "-Wall",
+        "-Wextra",
+        "-O2",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\anti_debug_test.c",
+        "-o",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\anti_debug_test.exe"
+      ]
+    },
+    {
+      "source": "winapi_behavior_test.c",
+      "output": "winapi_behavior_test.exe",
+      "ok": true,
+      "size_bytes": 134096,
+      "sha256": "42b96f63d3da26023fa807965ed975f8cc2e9c7494e25445db3815fd9fbdc9cd",
+      "command": [
+        "x86_64-w64-mingw32-gcc",
+        "-Wall",
+        "-Wextra",
+        "-O2",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\winapi_behavior_test.c",
+        "-o",
+        "\\\\Mac\\Home\\Desktop\\Thesis Tools\\Hub_Dev\\Test_Executables\\winapi_behavior_test.exe"
+      ]
+    }
+  ]
+}

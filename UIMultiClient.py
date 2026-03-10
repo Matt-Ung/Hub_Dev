@@ -21,7 +21,7 @@ if not os.environ.get("OPENAI_API_KEY"):
 
 openai_model_id = "gpt-4o-mini"
 
-system_prompt = """You are a malware reverse engineer.
+system_prompt = """You are an expert malware reverse engineer.
 Use your MCP tools to answer questions. If you do not have a tool to
 answer the question, say so.
 

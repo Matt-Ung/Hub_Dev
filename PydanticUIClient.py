@@ -19,17 +19,23 @@ if not os.environ.get("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = getpass.getpass("Enter your OpenAI API Key: ")
 
 # PydanticAI model IDs are provider-prefixed strings.
-# You can override via env:
-#   export OPENAI_MODEL_ID="openai:gpt-4o-mini"
-OPENAI_MODEL_ID = os.environ.get("OPENAI_MODEL_ID", "openai:gpt-4o-mini")
+OPENAI_MODEL_ID = os.environ.get("OPENAI_MODEL_ID", "openai:gpt-5-nano")
 
-INSTRUCTIONS = """You are a malware reverse engineer.
-Use your MCP tools to answer questions. If you do not have a tool to
-answer the question, say so.
+INSTRUCTIONS = """You are a malware reverse engineer tasked with analyzing obfuscated malware.
+Use your MCP tools to answer questions. 
 
-Return only the answer. For example:
-Human: What is 1 + 1?
-AI: 2
+You are analyzing a single binary currently loaded in Ghidra and accessible through the Ghidra MCP tool. You
+also have a variety of static analysis tools at your disposal, such as FLOSS for string extraction, and more.
+When asked a question, determine which tools to use and in what order. For example, you might first want to run FLOSS to extract strings, 
+or run GhidraMCP functions to get decompiled code or call graphs for specific functions. 
+
+You can also use the GhidraMCP tool to navigate the binary, e.g. "list all functions", "get decompilation for function X", "get call graph for function Y", etc.
+
+Your manager will ask you a variety of questions about the malware, such as "what does the entry point do?", "what are the key functions of interest?", "are there any interesting strings?", "what does the call graph look like?", etc. 
+Do NOT give an answer that purely explains a section of the assembly instructions line by line. 
+
+If you use tools, include the relevant output from the tools in your answer, and explain how it informs your conclusions.
+Return only the answer. 
 """
 
 
