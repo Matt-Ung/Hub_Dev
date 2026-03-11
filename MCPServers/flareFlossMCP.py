@@ -42,6 +42,26 @@ def _is_floss_argv0(argv0: str) -> bool:
     return base in ("floss", "floss.exe")
 
 
+def _looks_like_unquoted_spaced_target(argv: List[str]) -> bool:
+    # Common case: command uses `--` and the target path with spaces gets split into multiple tokens.
+    if "--" in argv:
+        idx = argv.index("--")
+        trailing = [a for a in argv[idx + 1 :] if a.strip()]
+        if len(trailing) > 1:
+            return True
+
+    # Heuristic: adjacent non-flag tokens that resemble a split file path.
+    suspicious_exts = (".exe", ".dll", ".sys", ".bin", ".dat", ".json", ".txt", ".zip", ".7z", ".msi")
+    for i in range(1, len(argv) - 1):
+        left, right = argv[i], argv[i + 1]
+        if left.startswith("-") or right.startswith("-"):
+            continue
+        combined = f"{left} {right}".lower()
+        if (":" in left or "\\" in left or "/" in left) and any(ext in combined for ext in suspicious_exts):
+            return True
+    return False
+
+
 def _try_get_floss_help(timeout_sec: int = 3, max_chars: int = 1800) -> Optional[str]:
     """
     Best-effort: capture a *short* snippet of `floss --help` to embed into tool descriptions.
@@ -73,6 +93,9 @@ RUN_FLOSS_DESCRIPTION = (
     "Usage:\n"
     "  - Provide the FULL command as one string (e.g., `floss -j -n 6 -- sample.exe`).\n"
     "  - This server does not parse/validate flags beyond checking argv[0] is `floss`.\n"
+    "  - If a file path contains spaces, wrap it in double quotes.\n"
+    "    Example: `floss -j -- \"C:\\Users\\Alice\\Desktop\\sample with spaces.exe\"`.\n"
+    "  - Prefer using `--` before the target path.\n"
     "  - For the full flag list, call the `flossHelp` tool (runs `floss --help`).\n\n"
     "Notes:\n"
     "  - Execution uses subprocess with shell=False (argv is parsed via shlex).\n"
@@ -98,6 +121,12 @@ def runFloss(command: str, timeout_sec: int = 300) -> str:
 
         if not _is_floss_argv0(argv[0]):
             return f"Error: first argument must be 'floss' (or 'floss.exe'). Got: {argv[0]!r}"
+        if _looks_like_unquoted_spaced_target(argv):
+            return (
+                "Error: command likely contains an unquoted path with spaces.\n"
+                "Wrap the target path in double quotes.\n"
+                "Example: floss -j -- \"C:\\Users\\Alice\\Desktop\\sample with spaces.exe\""
+            )
 
         r = subprocess.run(
             argv,

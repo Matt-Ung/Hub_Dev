@@ -167,6 +167,26 @@ def _remove_json_flags(argv: List[str]) -> List[str]:
     return out
 
 
+def _looks_like_unquoted_spaced_target(argv: List[str]) -> bool:
+    # Common case: command uses `--` and the target path with spaces gets split into multiple tokens.
+    if "--" in argv:
+        idx = argv.index("--")
+        trailing = [a for a in argv[idx + 1 :] if a.strip()]
+        if len(trailing) > 1:
+            return True
+
+    # Heuristic: adjacent non-flag tokens that resemble a split file path.
+    suspicious_exts = (".exe", ".dll", ".sys", ".bin", ".dat", ".json", ".txt", ".zip", ".7z", ".msi")
+    for i in range(1, len(argv) - 1):
+        left, right = argv[i], argv[i + 1]
+        if left.startswith("-") or right.startswith("-"):
+            continue
+        combined = f"{left} {right}".lower()
+        if (":" in left or "\\" in left or "/" in left) and any(ext in combined for ext in suspicious_exts):
+            return True
+    return False
+
+
 def _truncate_text(text: str, max_chars: int = CAPA_STREAM_MAX_CHARS) -> str:
     value = text or ""
     if len(value) <= max_chars:
@@ -320,6 +340,9 @@ RUN_CAPA_DESCRIPTION = (
     "Usage:\n"
     "  - Provide the FULL command as one string (e.g., `capa -- sample.exe`).\n"
     "  - argv[0] must be `capa` (or `capa.exe`).\n"
+    "  - If a file path contains spaces, wrap it in double quotes.\n"
+    "    Example: `capa -- \"C:\\Users\\Alice\\Desktop\\sample with spaces.exe\"`.\n"
+    "  - Prefer using `--` before the target path.\n"
     "  - If you pass rules_dir (or the server finds ./MCPServers/capa-rules), and your command does not include -r/--rules,\n"
     "    the server will inject `-r <rules_dir>` automatically.\n"
     "  - `output_mode='json_compact'` (default) forces JSON output and returns a reduced capability summary.\n"
@@ -354,6 +377,12 @@ def runCapa(
 
         if not _is_capa_argv0(argv[0]):
             return f"Error: first argument must be 'capa' (or 'capa.exe'). Got: {argv[0]!r}"
+        if _looks_like_unquoted_spaced_target(argv):
+            return (
+                "Error: command likely contains an unquoted path with spaces.\n"
+                "Wrap the target path in double quotes.\n"
+                "Example: capa -- \"C:\\Users\\Alice\\Desktop\\sample with spaces.exe\""
+            )
 
         resolved_rules = _find_rules_dir(rules_dir)
         argv = _inject_rules(argv, resolved_rules)

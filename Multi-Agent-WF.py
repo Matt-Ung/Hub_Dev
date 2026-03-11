@@ -140,6 +140,8 @@ MAX_STATUS_LOG_LINES = int(os.environ.get("MAX_STATUS_LOG_LINES", "400"))
 STATUS_LOG_STDOUT = _env_flag("STATUS_LOG_STDOUT", True)
 PLANNER_AGENT_RETRIES = int(os.environ.get("PLANNER_AGENT_RETRIES", "2"))
 PLANNER_OUTPUT_RETRIES = int(os.environ.get("PLANNER_OUTPUT_RETRIES", "2"))
+PLANNER_RUN_ATTEMPTS = max(1, int(os.environ.get("PLANNER_RUN_ATTEMPTS", "2")))
+PLANNER_FALLBACK_ON_ERROR = _env_flag("PLANNER_FALLBACK_ON_ERROR", True)
 WORKER_AGENT_RETRIES = int(os.environ.get("WORKER_AGENT_RETRIES", "4"))
 VERIFIER_AGENT_RETRIES = int(os.environ.get("VERIFIER_AGENT_RETRIES", "2"))
 VERIFIER_OUTPUT_RETRIES = int(os.environ.get("VERIFIER_OUTPUT_RETRIES", "2"))
@@ -185,6 +187,8 @@ Rules:
   Weak claim example to avoid: "uses shared libraries."
   Strong claim pattern: "Technique -> evidence -> analyst interpretation."
 - For each finding, include evidence pointers (tool name + function name/address/string/rule identifier).
+- When crafting command-string tool calls (for example runCapa/runFloss), always quote file paths that contain spaces.
+  Prefer syntax like: `... -- "C:\\path with spaces\\sample.exe"`.
 - Return concise technical findings suitable for a verifier to review.
 """
 
@@ -258,6 +262,7 @@ Rules:
 - Never invent tool output.
 - Avoid generic executable primers unless explicitly requested.
 - For obfuscation claims, require concrete indicators from subagent/tool evidence.
+- Ensure subagents quote any file path containing spaces when issuing command-string tool calls.
 """
 
 
@@ -663,6 +668,13 @@ def _shorten(text: str, max_chars: int = 120) -> str:
     return t[: max_chars - 3] + "..."
 
 
+def _exc_brief(err: Exception, max_chars: int = 240) -> str:
+    msg = _shorten(str(err), max_chars=max_chars)
+    if not msg:
+        return type(err).__name__
+    return f"{type(err).__name__}: {msg}"
+
+
 def append_status(state: Dict[str, Any], message: str, state_lock: Optional[Lock] = None) -> None:
     line = f"[{_status_ts()}] {message}"
 
@@ -806,14 +818,29 @@ def run_planner(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any
         },
     }
 
-    try:
-        result = runtime.planner.run_sync(
-            json.dumps(planner_input, indent=2),
-            message_history=old_history if old_history else None,
-        )
-    except Exception as e:
-        append_status(state, f"Planner failed after {time.perf_counter() - t0:.1f}s: {type(e).__name__}")
-        raise
+    result = None
+    history_for_attempt = old_history
+    for attempt in range(1, PLANNER_RUN_ATTEMPTS + 1):
+        try:
+            result = runtime.planner.run_sync(
+                json.dumps(planner_input, indent=2),
+                message_history=history_for_attempt if history_for_attempt else None,
+            )
+            break
+        except Exception as e:
+            append_status(
+                state,
+                f"Planner attempt {attempt}/{PLANNER_RUN_ATTEMPTS} failed after {time.perf_counter() - t0:.1f}s: {_exc_brief(e)}",
+            )
+            if attempt >= PLANNER_RUN_ATTEMPTS:
+                raise
+            append_status(state, "Planner retrying with cleared planner history")
+            set_role_history(state, role_key, [])
+            history_for_attempt = []
+            time.sleep(min(1.5 * attempt, 3.0))
+
+    if result is None:
+        raise RuntimeError("Planner produced no result")
     new_history = result.all_messages()
     set_role_history(state, role_key, new_history)
     append_tool_log_delta(state, role_key, old_history, new_history)  # planner has no tools but harmless
@@ -882,6 +909,7 @@ def run_worker_task(
             "no_generic_memory_structure_section": True,
             "obfuscation_claims_must_include_specific_indicators": True,
             "cite_artifacts_for_each_claim": True,
+            "quote_paths_with_spaces_for_command_string_tools": True,
         },
     }
 
@@ -1115,7 +1143,31 @@ def run_multiagent_orchestration(user_text: str, state: Dict[str, Any]) -> str:
 
     # 1) Planner
     append_status(state, "Transition: init -> planner")
-    plan = run_planner(runtime, user_text, state)
+    try:
+        plan = run_planner(runtime, user_text, state)
+    except Exception as e:
+        if not PLANNER_FALLBACK_ON_ERROR:
+            raise
+        fallback_worker = "static"
+        if runtime.dynamic_toolsets and any(k in user_text.lower() for k in ["dynamic", "runtime", "sandbox", "network", "process"]):
+            fallback_worker = "dynamic"
+        append_status(
+            state,
+            f"Planner unavailable; using fallback single-task plan ({fallback_worker}) due to: {_exc_brief(e)}",
+        )
+        plan = ExecutionPlan(
+            tasks=[
+                PlanTask(
+                    id="fallback_task_1",
+                    worker=fallback_worker,
+                    objective=user_text,
+                    depends_on=[],
+                    can_run_parallel=False,
+                    success_criteria=["Provide evidence-based findings tied directly to the request."],
+                )
+            ],
+            final_output_style="technical_markdown",
+        )
     append_status(state, f"Transition: planner -> workers ({len(plan.tasks)} planned task(s))")
 
     # 2) Execute plan (batch by dependencies)
