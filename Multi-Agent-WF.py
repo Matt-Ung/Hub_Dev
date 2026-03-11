@@ -2,11 +2,13 @@ import os
 import sys
 import json
 import copy
+import time
 import getpass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional, Literal
 from dataclasses import dataclass
-from threading import Lock
+from threading import Event, Lock, Thread
 from concurrent.futures import ThreadPoolExecutor, Future
 
 import gradio as gr
@@ -14,7 +16,13 @@ from pydantic import BaseModel, Field
 
 from pydantic_ai import Agent, ModelMessage
 from pydantic_ai.mcp import MCPServerStdio
-from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 try:
     import pydantic_deep as pydantic_deep_pkg
@@ -34,6 +42,69 @@ except Exception:
 # ----------------------------
 # Config
 # ----------------------------
+def _load_dotenv_if_present() -> None:
+    raw_path = (os.environ.get("DOTENV_PATH") or "").strip()
+    candidates: List[Path] = []
+    if raw_path:
+        candidates.append(Path(raw_path).expanduser())
+    candidates.append(Path.cwd() / ".env")
+    candidates.append(Path(__file__).resolve().parent / ".env")
+
+    dotenv_path: Optional[Path] = None
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if resolved.exists() and resolved.is_file():
+            dotenv_path = resolved
+            break
+
+    if dotenv_path is None:
+        return
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(dotenv_path=dotenv_path, override=False)
+        print(f"[env] loaded {dotenv_path}")
+        return
+    except Exception:
+        pass
+
+    # Fallback parser if python-dotenv is unavailable.
+    try:
+        for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            if "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key or key in os.environ:
+                continue
+
+            if len(value) >= 2 and ((value[0] == value[-1] == "'") or (value[0] == value[-1] == '"')):
+                value = value[1:-1]
+            os.environ[key] = value
+
+        print(f"[env] loaded {dotenv_path} (fallback parser)")
+    except Exception as e:
+        print(f"[env] warning: failed to parse {dotenv_path}: {e}")
+
+
+_load_dotenv_if_present()
+
 if not os.environ.get("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = getpass.getpass("Enter your OpenAI API Key: ")
 
@@ -65,6 +136,15 @@ DEEP_BACKEND_ROOT = os.environ.get("DEEP_BACKEND_ROOT", "./.deep_backend")
 DEEP_ENABLE_SKILLS = _env_flag("DEEP_ENABLE_SKILLS", True)
 DEEP_INCLUDE_BUNDLED_SKILLS = _env_flag("DEEP_INCLUDE_BUNDLED_SKILLS", True)
 DEEP_SKILL_DIRS = _parse_path_list(os.environ.get("DEEP_SKILL_DIRS", ""))
+MAX_STATUS_LOG_LINES = int(os.environ.get("MAX_STATUS_LOG_LINES", "400"))
+STATUS_LOG_STDOUT = _env_flag("STATUS_LOG_STDOUT", True)
+PLANNER_AGENT_RETRIES = int(os.environ.get("PLANNER_AGENT_RETRIES", "2"))
+PLANNER_OUTPUT_RETRIES = int(os.environ.get("PLANNER_OUTPUT_RETRIES", "2"))
+WORKER_AGENT_RETRIES = int(os.environ.get("WORKER_AGENT_RETRIES", "4"))
+VERIFIER_AGENT_RETRIES = int(os.environ.get("VERIFIER_AGENT_RETRIES", "2"))
+VERIFIER_OUTPUT_RETRIES = int(os.environ.get("VERIFIER_OUTPUT_RETRIES", "2"))
+REPORTER_AGENT_RETRIES = int(os.environ.get("REPORTER_AGENT_RETRIES", "2"))
+DEEP_AGENT_RETRIES = int(os.environ.get("DEEP_AGENT_RETRIES", str(WORKER_AGENT_RETRIES)))
 
 
 # ----------------------------
@@ -72,7 +152,7 @@ DEEP_SKILL_DIRS = _parse_path_list(os.environ.get("DEEP_SKILL_DIRS", ""))
 # ----------------------------
 PLANNER_INSTRUCTIONS = """You are PlannerAgent for a malware analysis workflow.
 
-Your job is to decompose the user's request into a minimal set of worker tasks.
+Your job is to decompose the user's request into a minimal set of high-value worker tasks.
 
 Rules:
 - Do NOT perform the analysis yourself.
@@ -80,6 +160,14 @@ Rules:
 - Assign each task to one worker role from the provided list.
 - Prefer parallelizable tasks only when independent.
 - Keep the plan compact and high value.
+- Do NOT create tasks for generic PE primers (section lists, memory structure basics, standard compiler metadata)
+  unless the user explicitly asked for them or they are directly relevant to a finding.
+- If the user asks for control-flow understanding, include a task that reconstructs the primary execution path
+  (entry to key branches/dispatchers/handlers) with concrete code artifacts.
+- If the user asks for obfuscation, include tasks that demand concrete indicators from tools (FLOSS/capa/Ghidra),
+  such as decoded strings, suspicious string construction routines, dynamic import resolution, indirect calls,
+  dispatcher/flattening patterns, API hashing, or packer/decompression stubs.
+- Task objectives should require specific evidence outputs (function names/addresses, API names, strings, capa rule names).
 - Return only structured data matching the schema.
 """
 
@@ -90,6 +178,13 @@ You may use ONLY static-analysis tools available through MCP (e.g., Ghidra, stri
 Rules:
 - Produce evidence-grounded results only.
 - Do not speculate beyond available evidence.
+- Focus on analysis value, not textbook executable structure.
+- Do NOT include generic memory/section breakdowns unless directly relevant to a finding or explicitly requested.
+- For control flow, map the main path and key decision points (dispatcher, branch pivots, handlers) with concrete artifacts.
+- For obfuscation, name the exact mechanism and provide concrete indicators from tool output.
+  Weak claim example to avoid: "uses shared libraries."
+  Strong claim pattern: "Technique -> evidence -> analyst interpretation."
+- For each finding, include evidence pointers (tool name + function name/address/string/rule identifier).
 - Return concise technical findings suitable for a verifier to review.
 """
 
@@ -100,6 +195,8 @@ You may use ONLY dynamic-analysis tools available through MCP (e.g., VM tools, P
 Rules:
 - Produce evidence-grounded runtime findings only.
 - If a requested action cannot be completed, explain precisely what failed.
+- Avoid generic malware boilerplate and focus on behavior actually observed.
+- For each finding, cite concrete artifacts (process/API/network/file/registry evidence).
 - Return concise technical findings suitable for a verifier to review.
 """
 
@@ -110,11 +207,18 @@ You review worker outputs for:
 - missing evidence
 - contradictions
 - obvious gaps relative to the user request
+- low-value boilerplate (especially generic PE memory/section explanations)
+- high-level obfuscation claims without concrete indicators
 
 Return a structured verdict:
 - approved (bool)
 - issues (list)
 - retry_tasks (precise rework tasks only if needed)
+
+Quality bar:
+- Reject outputs that present generic executable structure as findings when not explicitly requested.
+- Reject obfuscation claims unless each claimed technique has concrete evidence (e.g., function/address/API/string/capa rule).
+- Prefer retry tasks that request exact missing evidence, not broad rewrites.
 
 Do not write the final user-facing answer.
 """
@@ -127,6 +231,16 @@ Style:
 - technical, clear, concise
 - separate confirmed findings vs unknowns when relevant
 - do not invent tool results
+- prioritize concrete evidence over generic malware language
+
+Required report behavior:
+- Do NOT include generic memory/section primers unless explicitly requested or directly relevant.
+- Focus on:
+  1) Program purpose hypothesis (evidence-based),
+  2) Control-flow narrative (key path and decision points),
+  3) Obfuscation techniques with specific indicators and why they matter.
+- For obfuscation, each technique should include: exact mechanism, supporting evidence, and confidence.
+- If evidence is insufficient, say so explicitly instead of filling with generic caveats.
 """
 
 DEEP_ORCHESTRATOR_INSTRUCTIONS = """You are a malware-analysis orchestrator.
@@ -142,6 +256,8 @@ Rules:
 - Synthesize subagent outputs into one concise technical answer.
 - Separate confirmed findings from unknowns.
 - Never invent tool output.
+- Avoid generic executable primers unless explicitly requested.
+- For obfuscation claims, require concrete indicators from subagent/tool evidence.
 """
 
 
@@ -366,7 +482,7 @@ def build_deep_runtime_components(
             context_manager=True,
             context_manager_max_tokens=int(os.environ.get("DEEP_CONTEXT_MAX_TOKENS", "18000")),
             history_processors=history_processors,
-            retries=2,
+            retries=DEEP_AGENT_RETRIES,
             cost_tracking=False,
         )
         deep_deps = create_default_deps(backend=deep_backend) if deep_backend is not None else create_default_deps()
@@ -392,30 +508,37 @@ def get_runtime_sync() -> MultiAgentRuntime:
     planner = Agent(
         OPENAI_MODEL_ID,
         instructions=PLANNER_INSTRUCTIONS,
-        result_type=ExecutionPlan,
+        output_type=ExecutionPlan,
+        retries=PLANNER_AGENT_RETRIES,
+        output_retries=PLANNER_OUTPUT_RETRIES,
     )
 
     static_worker = Agent(
         OPENAI_MODEL_ID,
         instructions=STATIC_AGENT_INSTRUCTIONS,
         toolsets=static_tools,
+        retries=WORKER_AGENT_RETRIES,
     )
 
     dynamic_worker = Agent(
         OPENAI_MODEL_ID,
         instructions=DYNAMIC_AGENT_INSTRUCTIONS,
         toolsets=dynamic_tools,
+        retries=WORKER_AGENT_RETRIES,
     )
 
     verifier = Agent(
         OPENAI_MODEL_ID,
         instructions=VERIFIER_INSTRUCTIONS,
-        result_type=VerificationVerdict,
+        output_type=VerificationVerdict,
+        retries=VERIFIER_AGENT_RETRIES,
+        output_retries=VERIFIER_OUTPUT_RETRIES,
     )
 
     reporter = Agent(
         OPENAI_MODEL_ID,
         instructions=REPORTER_INSTRUCTIONS,
+        retries=REPORTER_AGENT_RETRIES,
     )
 
     deep_orchestrator: Optional[Agent] = None
@@ -434,6 +557,8 @@ def get_runtime_sync() -> MultiAgentRuntime:
                     "skills": DEEP_ENABLE_SKILLS,
                     "skill_dirs": DEEP_SKILL_DIRS,
                     "include_bundled_skills": DEEP_INCLUDE_BUNDLED_SKILLS,
+                    "worker_agent_retries": WORKER_AGENT_RETRIES,
+                    "deep_agent_retries": DEEP_AGENT_RETRIES,
                 },
             )
         else:
@@ -527,13 +652,69 @@ def append_tool_log_delta(
 # ----------------------------
 # Multi-agent shared state helpers
 # ----------------------------
+def _status_ts() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def _shorten(text: str, max_chars: int = 120) -> str:
+    t = " ".join((text or "").strip().split())
+    if len(t) <= max_chars:
+        return t
+    return t[: max_chars - 3] + "..."
+
+
+def append_status(state: Dict[str, Any], message: str, state_lock: Optional[Lock] = None) -> None:
+    line = f"[{_status_ts()}] {message}"
+
+    def _commit() -> None:
+        lines = (state.get("status_log") or "").splitlines()
+        lines.append(line)
+        if len(lines) > MAX_STATUS_LOG_LINES:
+            lines = lines[-MAX_STATUS_LOG_LINES:]
+        state["status_log"] = "\n".join(lines)
+        if STATUS_LOG_STDOUT:
+            print(line, flush=True)
+
+    if state_lock:
+        with state_lock:
+            _commit()
+    else:
+        _commit()
+
+
 def get_role_history(state: Dict[str, Any], role_key: str) -> List[ModelMessage]:
     return (state.get("role_histories") or {}).get(role_key, []) or []
 
 
+def _message_has_part(msg: ModelMessage, part_type: type) -> bool:
+    return any(isinstance(p, part_type) for p in (getattr(msg, "parts", []) or []))
+
+
+def _is_user_request_message(msg: ModelMessage) -> bool:
+    return isinstance(msg, ModelRequest) and _message_has_part(msg, UserPromptPart)
+
+
+def _trim_role_history_safely(history: List[ModelMessage]) -> List[ModelMessage]:
+    if len(history) <= MAX_ROLE_HISTORY_MESSAGES:
+        return history
+
+    window = history[-MAX_ROLE_HISTORY_MESSAGES:]
+    for i, msg in enumerate(window):
+        if _is_user_request_message(msg):
+            return window[i:]
+
+    # If no user boundary exists in the capped window, keep the full last turn.
+    # This avoids invalid orphan tool messages caused by truncating mid tool-call chain.
+    for i in range(len(history) - 1, -1, -1):
+        if _is_user_request_message(history[i]):
+            return history[i:]
+
+    return history
+
+
 def set_role_history(state: Dict[str, Any], role_key: str, history: List[ModelMessage]) -> None:
-    if history and len(history) > MAX_ROLE_HISTORY_MESSAGES:
-        history = history[-MAX_ROLE_HISTORY_MESSAGES:]
+    if history:
+        history = _trim_role_history_safely(history)
     if "role_histories" not in state:
         state["role_histories"] = {}
     state["role_histories"][role_key] = history
@@ -600,6 +781,8 @@ def topological_batches(tasks: List[PlanTask]) -> List[List[PlanTask]]:
 def run_planner(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> ExecutionPlan:
     role_key = "planner"
     old_history = get_role_history(state, role_key)
+    append_status(state, "Planner started")
+    t0 = time.perf_counter()
 
     shared = state.get("shared_state") or {}
     available_workers = ["static"] + (["dynamic"] if runtime.dynamic_toolsets else [])
@@ -611,6 +794,11 @@ def run_planner(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any
             "static": [s.id for s in runtime.static_toolsets],
             "dynamic": [s.id for s in runtime.dynamic_toolsets],
         },
+        "analysis_expectations": {
+            "avoid_generic_pe_or_memory_primers": True,
+            "require_specific_control_flow_artifacts": True,
+            "require_specific_obfuscation_indicators": True,
+        },
         "shared_state_summary": {
             "artifacts": shared.get("artifacts", []),
             "findings_count": len(shared.get("findings", [])),
@@ -618,16 +806,21 @@ def run_planner(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any
         },
     }
 
-    result = runtime.planner.run_sync(
-        json.dumps(planner_input, indent=2),
-        message_history=old_history if old_history else None,
-    )
+    try:
+        result = runtime.planner.run_sync(
+            json.dumps(planner_input, indent=2),
+            message_history=old_history if old_history else None,
+        )
+    except Exception as e:
+        append_status(state, f"Planner failed after {time.perf_counter() - t0:.1f}s: {type(e).__name__}")
+        raise
     new_history = result.all_messages()
     set_role_history(state, role_key, new_history)
     append_tool_log_delta(state, role_key, old_history, new_history)  # planner has no tools but harmless
 
     plan: ExecutionPlan = result.output
     validate_plan(plan, has_dynamic_tools=bool(runtime.dynamic_toolsets))
+    append_status(state, f"Planner finished in {time.perf_counter() - t0:.1f}s with {len(plan.tasks)} task(s)")
     return plan
 
 
@@ -648,6 +841,7 @@ def run_worker_task(
                 OPENAI_MODEL_ID,
                 instructions=STATIC_AGENT_INSTRUCTIONS,
                 toolsets=runtime.static_toolsets,
+                retries=WORKER_AGENT_RETRIES,
             )
     elif task.worker == "dynamic":
         role_key_base = "dynamic_worker"
@@ -657,11 +851,18 @@ def run_worker_task(
                 OPENAI_MODEL_ID,
                 instructions=DYNAMIC_AGENT_INSTRUCTIONS,
                 toolsets=runtime.dynamic_toolsets,
+                retries=WORKER_AGENT_RETRIES,
             )
     else:
         raise ValueError(f"Unknown worker type: {task.worker}")
 
     role_key = f"{role_key_base}:{role_key_suffix}" if role_key_suffix else role_key_base
+    append_status(
+        state,
+        f"Worker {task.worker} started [{task.id}] - {_shorten(task.objective)}",
+        state_lock=state_lock,
+    )
+    t0 = time.perf_counter()
 
     def _read_state() -> Tuple[List[ModelMessage], Dict[str, Any]]:
         old = get_role_history(state, role_key)
@@ -677,12 +878,25 @@ def run_worker_task(
     worker_input = {
         "task": task.model_dump(),
         "shared_state": shared,
+        "quality_requirements": {
+            "no_generic_memory_structure_section": True,
+            "obfuscation_claims_must_include_specific_indicators": True,
+            "cite_artifacts_for_each_claim": True,
+        },
     }
 
-    result = agent.run_sync(
-        json.dumps(worker_input, indent=2),
-        message_history=old_history if old_history else None,
-    )
+    try:
+        result = agent.run_sync(
+            json.dumps(worker_input, indent=2),
+            message_history=old_history if old_history else None,
+        )
+    except Exception as e:
+        append_status(
+            state,
+            f"Worker {task.worker} failed [{task.id}] after {time.perf_counter() - t0:.1f}s: {type(e).__name__}",
+            state_lock=state_lock,
+        )
+        raise
     new_history = result.all_messages()
 
     worker_output_text = str(result.output)
@@ -723,6 +937,11 @@ def run_worker_task(
     else:
         _commit_state()
 
+    append_status(
+        state,
+        f"Worker {task.worker} finished [{task.id}] in {time.perf_counter() - t0:.1f}s",
+        state_lock=state_lock,
+    )
     return task_packet
 
 
@@ -735,6 +954,9 @@ def run_verifier(
 ) -> VerificationVerdict:
     role_key = "verifier"
     old_history = get_role_history(state, role_key)
+    ids = ", ".join(just_ran_task_ids) if just_ran_task_ids else "<none>"
+    append_status(state, f"Verifier started for task(s): {ids}")
+    t0 = time.perf_counter()
 
     shared = state.get("shared_state") or {}
     verifier_input = {
@@ -747,38 +969,62 @@ def run_verifier(
         ],
     }
 
-    result = runtime.verifier.run_sync(
-        json.dumps(verifier_input, indent=2),
-        message_history=old_history if old_history else None,
-    )
+    try:
+        result = runtime.verifier.run_sync(
+            json.dumps(verifier_input, indent=2),
+            message_history=old_history if old_history else None,
+        )
+    except Exception as e:
+        append_status(state, f"Verifier failed after {time.perf_counter() - t0:.1f}s: {type(e).__name__}")
+        raise
     new_history = result.all_messages()
     set_role_history(state, role_key, new_history)
     append_tool_log_delta(state, role_key, old_history, new_history)
 
     verdict: VerificationVerdict = result.output
+    append_status(
+        state,
+        (
+            f"Verifier finished in {time.perf_counter() - t0:.1f}s "
+            f"(approved={verdict.approved}, issues={len(verdict.issues)}, retries={len(verdict.retry_tasks)})"
+        ),
+    )
     return verdict
 
 
 def run_reporter(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> str:
     role_key = "reporter"
     old_history = get_role_history(state, role_key)
+    append_status(state, "Reporter started")
+    t0 = time.perf_counter()
 
     shared = state.get("shared_state") or {}
     reporter_input = {
         "user_request": user_text,
         "task_outputs": shared.get("task_outputs", []),
-        "notes": "Write the final response for the user. Use only supported information from task outputs.",
+        "notes": (
+            "Write the final response for the user using only supported information from task outputs. "
+            "Avoid generic PE/memory-structure primers unless explicitly requested or directly relevant. "
+            "Prioritize specifics: control-flow path, key decision logic, and concrete obfuscation indicators "
+            "(functions/APIs/decoded strings/capa rule names) with concise evidence-based interpretation."
+        ),
     }
 
-    result = runtime.reporter.run_sync(
-        json.dumps(reporter_input, indent=2),
-        message_history=old_history if old_history else None,
-    )
+    try:
+        result = runtime.reporter.run_sync(
+            json.dumps(reporter_input, indent=2),
+            message_history=old_history if old_history else None,
+        )
+    except Exception as e:
+        append_status(state, f"Reporter failed after {time.perf_counter() - t0:.1f}s: {type(e).__name__}")
+        raise
     new_history = result.all_messages()
     set_role_history(state, role_key, new_history)
     append_tool_log_delta(state, role_key, old_history, new_history)
 
-    return str(result.output)
+    assistant_text = str(result.output)
+    append_status(state, f"Reporter finished in {time.perf_counter() - t0:.1f}s")
+    return assistant_text
 
 
 def run_deepagent_orchestration(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> str:
@@ -787,6 +1033,8 @@ def run_deepagent_orchestration(runtime: MultiAgentRuntime, user_text: str, stat
 
     role_key = "deep_orchestrator"
     old_history = get_role_history(state, role_key)
+    append_status(state, "Deep orchestration started")
+    t0 = time.perf_counter()
 
     if "shared_state" not in state:
         state["shared_state"] = {
@@ -803,11 +1051,15 @@ def run_deepagent_orchestration(runtime: MultiAgentRuntime, user_text: str, stat
     state["shared_state"]["last_user_request"] = user_text
     state["shared_state"]["orchestration_mode"] = "deep"
 
-    result = runtime.deep_orchestrator.run_sync(
-        user_text,
-        message_history=old_history if old_history else None,
-        deps=runtime.deep_deps,
-    )
+    try:
+        result = runtime.deep_orchestrator.run_sync(
+            user_text,
+            message_history=old_history if old_history else None,
+            deps=runtime.deep_deps,
+        )
+    except Exception as e:
+        append_status(state, f"Deep orchestration failed after {time.perf_counter() - t0:.1f}s: {type(e).__name__}")
+        raise
     new_history = result.all_messages()
     set_role_history(state, role_key, new_history)
     append_tool_log_delta(state, role_key, old_history, new_history)
@@ -827,17 +1079,24 @@ def run_deepagent_orchestration(runtime: MultiAgentRuntime, user_text: str, stat
     state["shared_state"]["total_task_runs"] = int(state["shared_state"].get("total_task_runs", 0)) + 1
     compact_shared_state(state)
 
+    append_status(state, f"Deep orchestration finished in {time.perf_counter() - t0:.1f}s")
     return assistant_text
 
 
 def run_multiagent_orchestration(user_text: str, state: Dict[str, Any]) -> str:
     runtime = get_runtime_sync()
     state_lock = Lock()
+    t0 = time.perf_counter()
+    append_status(state, "Classic orchestration started")
 
+    cleared_histories = 0
     if "role_histories" in state:
         for key in list((state.get("role_histories") or {}).keys()):
             if key.startswith("static_worker:") or key.startswith("dynamic_worker:"):
                 del state["role_histories"][key]
+                cleared_histories += 1
+    if cleared_histories:
+        append_status(state, f"Cleared {cleared_histories} worker branch history entrie(s)")
 
     # Ensure shared state scaffold exists
     if "shared_state" not in state:
@@ -855,12 +1114,18 @@ def run_multiagent_orchestration(user_text: str, state: Dict[str, Any]) -> str:
     state["shared_state"]["orchestration_mode"] = "classic"
 
     # 1) Planner
+    append_status(state, "Transition: init -> planner")
     plan = run_planner(runtime, user_text, state)
+    append_status(state, f"Transition: planner -> workers ({len(plan.tasks)} planned task(s))")
 
     # 2) Execute plan (batch by dependencies)
     batches = topological_batches(plan.tasks)
+    if not batches:
+        append_status(state, "No worker tasks scheduled; moving directly to reporter")
 
-    for batch in batches:
+    for idx, batch in enumerate(batches, start=1):
+        batch_desc = ", ".join(f"{t.id}:{t.worker}" for t in batch)
+        append_status(state, f"Batch {idx}/{len(batches)} started with {len(batch)} task(s): {batch_desc}")
         just_ran_ids: List[str] = []
 
         if len(batch) > 1:
@@ -887,10 +1152,12 @@ def run_multiagent_orchestration(user_text: str, state: Dict[str, Any]) -> str:
             just_ran_ids.append(packet["task_id"])
 
         # 3) Verifier after each batch
+        append_status(state, f"Transition: workers -> verifier for batch {idx}/{len(batches)}")
         verdict = run_verifier(runtime, user_text, plan, state, just_ran_ids)
 
         # Optional one-pass retry execution
         if verdict.retry_tasks:
+            append_status(state, f"Verifier requested {len(verdict.retry_tasks)} retry task(s)")
             for r in verdict.retry_tasks:
                 retry_task = PlanTask(
                     id=r.task_id,
@@ -900,10 +1167,19 @@ def run_multiagent_orchestration(user_text: str, state: Dict[str, Any]) -> str:
                     can_run_parallel=False,
                     success_criteria=[],
                 )
+                append_status(
+                    state,
+                    f"Retrying task [{retry_task.id}] ({retry_task.worker}) - {_shorten(retry_task.objective)}",
+                )
                 run_worker_task(runtime, retry_task, state, state_lock=state_lock)
+            append_status(state, f"Retry phase finished for batch {idx}/{len(batches)}")
+        else:
+            append_status(state, f"No retries requested for batch {idx}/{len(batches)}")
 
     # 4) Reporter
+    append_status(state, "Transition: verifier -> reporter")
     final_answer = run_reporter(runtime, user_text, state)
+    append_status(state, f"Classic orchestration finished in {time.perf_counter() - t0:.1f}s")
     return final_answer
 
 
@@ -913,14 +1189,18 @@ def run_multiagent_orchestration(user_text: str, state: Dict[str, Any]) -> str:
 def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[str, Any]):
     user_text = (user_text or "").strip()
     if not user_text:
-        return "", chat_history, state, state.get("tool_log", "")
+        state = state or {}
+        yield "", chat_history, state, state.get("tool_log", ""), state.get("status_log", "")
+        return
 
     chat_history = chat_history or []
     state = state or {}
+    turn_t0 = time.perf_counter()
 
     # Make sure state keys exist
     state.setdefault("role_histories", {})
     state.setdefault("tool_log", "")
+    state.setdefault("status_log", "")
     state.setdefault("shared_state", {
         "artifacts": [],
         "findings": [],
@@ -930,28 +1210,82 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
         "total_task_runs": 0,
     })
 
-    try:
-        runtime = get_runtime_sync()
-        if USE_DEEP_AGENT and runtime.deep_orchestrator is not None:
-            assistant_text = run_deepagent_orchestration(runtime, user_text, state)
-        else:
-            assistant_text = run_multiagent_orchestration(user_text, state)
-    except Exception as e:
-        assistant_text = f"[multi-agent orchestration error] {type(e).__name__}: {e}"
+    append_status(state, f"New query: {_shorten(user_text, max_chars=220)}")
+    running_note = "[orchestration running... status timeline is live]"
 
-    # Update UI chat
+    # Show user input immediately and begin streaming status/tool log updates.
     chat_history = chat_history + [
         {"role": "user", "content": user_text},
-        {"role": "assistant", "content": assistant_text},
+        {"role": "assistant", "content": running_note},
     ]
+    yield "", chat_history, state, state.get("tool_log", ""), state.get("status_log", "")
 
-    return "", chat_history, state, state.get("tool_log", "")
+    def _run_selected_orchestrator() -> Tuple[str, str]:
+        runtime = get_runtime_sync()
+        if USE_DEEP_AGENT and runtime.deep_orchestrator is not None:
+            return run_deepagent_orchestration(runtime, user_text, state), "deep"
+        return run_multiagent_orchestration(user_text, state), "classic"
+
+    result_box: Dict[str, str] = {"assistant_text": running_note}
+    done = Event()
+
+    def _runner() -> None:
+        try:
+            assistant_text, mode = _run_selected_orchestrator()
+            append_status(state, f"Chat turn finished in {time.perf_counter() - turn_t0:.1f}s (mode={mode})")
+            result_box["assistant_text"] = assistant_text
+            return
+        except Exception as e:
+            err = str(e)
+            if "messages with role 'tool' must be a response to a preceeding message with 'tool_calls'" in err:
+                append_status(state, "Detected invalid tool history; clearing role histories and retrying once")
+                state["role_histories"] = {}
+                try:
+                    assistant_text, mode = _run_selected_orchestrator()
+                    append_status(
+                        state,
+                        f"Chat turn recovered after history reset in {time.perf_counter() - turn_t0:.1f}s (mode={mode})",
+                    )
+                    result_box["assistant_text"] = assistant_text
+                    return
+                except Exception as e2:
+                    append_status(
+                        state,
+                        f"Chat turn failed after history-reset retry ({type(e2).__name__}) in {time.perf_counter() - turn_t0:.1f}s",
+                    )
+                    result_box["assistant_text"] = f"[multi-agent orchestration error] {type(e2).__name__}: {e2}"
+                    return
+            append_status(state, f"Chat turn failed ({type(e).__name__}) in {time.perf_counter() - turn_t0:.1f}s")
+            result_box["assistant_text"] = f"[multi-agent orchestration error] {type(e).__name__}: {e}"
+        finally:
+            done.set()
+
+    worker = Thread(target=_runner, daemon=True)
+    worker.start()
+
+    last_status = state.get("status_log", "")
+    last_tool_log = state.get("tool_log", "")
+    while not done.wait(0.35):
+        status_now = state.get("status_log", "")
+        tool_now = state.get("tool_log", "")
+        if status_now != last_status or tool_now != last_tool_log:
+            last_status = status_now
+            last_tool_log = tool_now
+            yield "", chat_history, state, tool_now, status_now
+
+    worker.join(timeout=0.1)
+
+    # Update UI chat
+    chat_history[-1] = {"role": "assistant", "content": result_box["assistant_text"]}
+
+    yield "", chat_history, state, state.get("tool_log", ""), state.get("status_log", "")
 
 
 def reset():
     return [], {
         "role_histories": {},
         "tool_log": "",
+        "status_log": "",
         "shared_state": {
             "artifacts": [],
             "findings": [],
@@ -960,7 +1294,7 @@ def reset():
             "turn_task_runs": 0,
             "total_task_runs": 0,
         },
-    }, ""
+    }, "", ""
 
 
 # ----------------------------
@@ -973,6 +1307,7 @@ with gr.Blocks(title="MCP Multi-Agent Tool Bench (PydanticAI)") as demo:
     state = gr.State({
         "role_histories": {},
         "tool_log": "",
+        "status_log": "",
         "shared_state": {
             "artifacts": [],
             "findings": [],
@@ -996,12 +1331,14 @@ with gr.Blocks(title="MCP Multi-Agent Tool Bench (PydanticAI)") as demo:
                 clear = gr.Button("Reset")
 
         with gr.Column(scale=2):
+            gr.Markdown("### Agent Status")
+            status_log = gr.Textbox(label="Timeline", lines=16, max_lines=24, interactive=False)
             gr.Markdown("### Tool / MCP Log (best-effort)")
             tool_log = gr.Code(label="Log", language="json", lines=30)
 
-    send.click(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log])
-    user.submit(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log])
-    clear.click(reset, inputs=None, outputs=[chat, state, tool_log])
+    send.click(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, status_log])
+    user.submit(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, status_log])
+    clear.click(reset, inputs=None, outputs=[chat, state, tool_log, status_log])
 
 demo.queue()
 demo.launch()
