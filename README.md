@@ -40,8 +40,27 @@ Subagent from text, How it creates sub agents,
 - context windows Quadratic
 
 Test Performance 
-
+yara rules
 UPX, string obfuscation
+
+Start testing with labs: OS Lab
+
+Figure out: 
+Change agent config, 
+config -> task:
+
+Correct functions identify
+Decompilation agent 
+Start thinking of agent configs & instructions
+Remove start-up code, decompile whole program
+
+toplogies & prompts
+What doesnj't/does work.
+
+How does it decide which tool?
+
+Screnshots logs: Experiment documetnation
+Skills? System prompting what works better, what context is necessary
 
 TESTING:
 Query: Can you perform analysis on the program in ghidra as a whole? Try to get an understanding of the control flow of the program and what it is doing and provide a brief report with analysis. Use tools capa and floss to deduce forms of obfuscation.
