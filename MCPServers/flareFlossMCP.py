@@ -62,6 +62,41 @@ def _looks_like_unquoted_spaced_target(argv: List[str]) -> bool:
     return False
 
 
+def _extract_target_path(argv: List[str]) -> Optional[str]:
+    if "--" in argv:
+        idx = argv.index("--")
+        trailing = [a for a in argv[idx + 1 :] if a.strip()]
+        if len(trailing) == 1:
+            return trailing[0]
+        return None
+
+    for token in reversed(argv[1:]):
+        if token.strip() and not token.startswith("-"):
+            return token
+    return None
+
+
+def _looks_like_placeholder_target(target: Optional[str]) -> bool:
+    if not target:
+        return False
+
+    normalized = target.strip().strip("\"'").replace("/", "\\").lower()
+    basename = normalized.rsplit("\\", 1)[-1]
+    placeholder_markers = (
+        "path\\to\\your",
+        "path with spaces",
+        "<target",
+        "<path",
+        "{target",
+        "{path",
+    )
+    if any(marker in normalized for marker in placeholder_markers):
+        return True
+    if basename in {"your_program.exe", "yourprogram.exe", "program.exe"}:
+        return True
+    return False
+
+
 def _try_get_floss_help(timeout_sec: int = 3, max_chars: int = 1800) -> Optional[str]:
     """
     Best-effort: capture a *short* snippet of `floss --help` to embed into tool descriptions.
@@ -91,10 +126,11 @@ _HELP_SNIPPET = _try_get_floss_help()
 RUN_FLOSS_DESCRIPTION = (
     "Execute FLOSS using a caller-supplied command string.\n\n"
     "Usage:\n"
-    "  - Provide the FULL command as one string (e.g., `floss -j -n 6 -- sample.exe`).\n"
+    "  - Provide the FULL command as one string.\n"
     "  - This server does not parse/validate flags beyond checking argv[0] is `floss`.\n"
     "  - If a file path contains spaces, wrap it in double quotes.\n"
-    "    Example: `floss -j -- \"C:\\Users\\Alice\\Desktop\\sample with spaces.exe\"`.\n"
+    "  - Use the exact target path from the current user request/task.\n"
+    "    Do not invent a path and do not reuse placeholder/example paths.\n"
     "  - Prefer using `--` before the target path.\n"
     "  - For the full flag list, call the `flossHelp` tool (runs `floss --help`).\n\n"
     "Notes:\n"
@@ -125,7 +161,21 @@ def runFloss(command: str, timeout_sec: int = 300) -> str:
             return (
                 "Error: command likely contains an unquoted path with spaces.\n"
                 "Wrap the target path in double quotes.\n"
-                "Example: floss -j -- \"C:\\Users\\Alice\\Desktop\\sample with spaces.exe\""
+                "Reuse the exact sample path from the current task."
+            )
+
+        target_path = _extract_target_path(argv)
+        if _looks_like_placeholder_target(target_path):
+            return (
+                "Error: target path looks like a placeholder/example, not a real sample path.\n"
+                f"target={target_path!r}\n"
+                "Use the exact path from the current user request or shared state."
+            )
+        if target_path and not os.path.exists(os.path.expanduser(target_path)):
+            return (
+                "Error: target file does not exist.\n"
+                f"target={target_path!r}\n"
+                "Use the exact sample path from the current user request or shared state."
             )
 
         r = subprocess.run(
@@ -136,9 +186,23 @@ def runFloss(command: str, timeout_sec: int = 300) -> str:
             timeout=max(1, int(timeout_sec)),
         )
 
+        cmd_str = " ".join(shlex.quote(a) for a in argv)
+
+        if r.returncode != 0:
+            return (
+                "Error: FLOSS execution failed.\n"
+                f"rc={r.returncode}\n"
+                f"command={cmd_str}\n"
+                "stdout:\n"
+                f"{r.stdout or ''}\n"
+                "stderr:\n"
+                f"{r.stderr or ''}"
+            )
+
         return (
             "FLOSS execution complete.\n"
             f"rc={r.returncode}\n"
+            f"command={cmd_str}\n"
             "stdout:\n"
             f"{r.stdout or ''}\n"
             "stderr:\n"
@@ -156,6 +220,8 @@ def runFloss(command: str, timeout_sec: int = 300) -> str:
             "stderr:\n"
             f"{err}"
         )
+    except FileNotFoundError:
+        return "Error: `floss` not found on PATH. Install with `pip install flare-floss` (Python >= 3.10)."
     except Exception as e:
         logger.exception("runFloss failed")
         return f"Error: {e}"

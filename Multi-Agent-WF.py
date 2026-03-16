@@ -187,8 +187,9 @@ Rules:
   Weak claim example to avoid: "uses shared libraries."
   Strong claim pattern: "Technique -> evidence -> analyst interpretation."
 - For each finding, include evidence pointers (tool name + function name/address/string/rule identifier).
-- When crafting command-string tool calls (for example runCapa/runFloss), always quote file paths that contain spaces.
-  Prefer syntax like: `... -- "C:\\path with spaces\\sample.exe"`.
+- When crafting command-string tool calls (for example runCapa/runFloss), reuse the exact sample path from the
+  current user request/shared state. Never invent, normalize, or substitute a placeholder/example path.
+- Always quote file paths that contain spaces.
 - Return concise technical findings suitable for a verifier to review.
 """
 
@@ -262,7 +263,7 @@ Rules:
 - Never invent tool output.
 - Avoid generic executable primers unless explicitly requested.
 - For obfuscation claims, require concrete indicators from subagent/tool evidence.
-- Ensure subagents quote any file path containing spaces when issuing command-string tool calls.
+- Ensure subagents reuse the exact sample path from the current task context and quote it when it contains spaces.
 """
 
 
@@ -910,6 +911,8 @@ def run_worker_task(
             "obfuscation_claims_must_include_specific_indicators": True,
             "cite_artifacts_for_each_claim": True,
             "quote_paths_with_spaces_for_command_string_tools": True,
+            "use_exact_sample_path_for_command_string_tools": True,
+            "never_use_placeholder_paths_for_command_string_tools": True,
         },
     }
 
