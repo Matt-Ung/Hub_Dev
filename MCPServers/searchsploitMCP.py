@@ -8,19 +8,14 @@ This version is rewritten into the lightweight FastMCP wrapper style used by
 the local MCPServers/ directory.
 """
 
+import argparse
 import json
 import logging
+import shutil
+import subprocess
 from typing import Any
 
 from fastmcp import FastMCP
-
-from _cli_mcp_common import (
-    has_command,
-    run_command,
-    run_help_command,
-    run_server,
-    truncate_text,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +23,87 @@ mcp = FastMCP(
     "searchsploit_mcp",
     instructions="MCP server that exposes structured SearchSploit lookup tools.",
 )
+
+
+def truncate_text(text: str, max_chars: int = 12000) -> str:
+    value = text or ""
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars] + "\n...[truncated]..."
+
+
+def has_command(command: str) -> bool:
+    return shutil.which(command) is not None
+
+
+def run_command(argv: list[str], timeout_sec: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=max(1, int(timeout_sec)),
+    )
+
+
+def run_help_command(binary: str, timeout_sec: int = 5) -> str:
+    if not has_command(binary):
+        return f"Error: `{binary}` not found on PATH."
+    result = run_command([binary, "--help"], timeout_sec=timeout_sec)
+    return (
+        f"{binary} --help\n"
+        f"rc={result.returncode}\n"
+        "stdout:\n"
+        f"{truncate_text(result.stdout or '', max_chars=16000)}\n"
+        "stderr:\n"
+        f"{truncate_text(result.stderr or '', max_chars=4000)}"
+    )
+
+
+def run_server(mcp: FastMCP, description: str, default_port: int) -> None:
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument(
+        "--mcp-host",
+        type=str,
+        default="127.0.0.1",
+        help="Host to run MCP server on (only used for sse), default: 127.0.0.1",
+    )
+    parser.add_argument(
+        "--mcp-port",
+        type=int,
+        default=default_port,
+        help=f"Port to run MCP server on (only used for sse), default: {default_port}",
+    )
+    parser.add_argument(
+        "--transport",
+        type=str,
+        default="stdio",
+        choices=["stdio", "sse"],
+        help="Transport protocol for MCP, default: stdio",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level, default: INFO",
+    )
+    args = parser.parse_args()
+
+    log_level = getattr(logging, args.log_level, logging.INFO)
+    logging.basicConfig(level=log_level)
+    logging.getLogger().setLevel(log_level)
+
+    if args.transport == "sse":
+        try:
+            mcp.settings.log_level = args.log_level
+            mcp.settings.host = args.mcp_host or "127.0.0.1"
+            mcp.settings.port = args.mcp_port or default_port
+            mcp.run(transport="sse")
+        except KeyboardInterrupt:
+            logger.info("Server stopped by user")
+    else:
+        mcp.run()
 
 
 def _parse_searchsploit_json(output: str) -> list[dict[str, Any]]:
