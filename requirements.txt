@@ -1,0 +1,27 @@
+# Python >= 3.10
+
+# -----------------------------
+# MCP servers (MCPServers/*.py)
+# -----------------------------
+fastmcp
+mcp>=1.5.0
+requests>=2,<3
+
+# FLOSS/capa command dependencies used by MCP tools
+flare-floss
+flare-capa
+
+# -----------------------------
+# Client (Multi-Agent-WF.py)
+# -----------------------------
+gradio
+pydantic
+pydantic-ai
+
+# Optional deep-orchestration support in Multi-Agent-WF.py
+pydantic-deep
+
+# Optional alternate client in In_Progress/multiClient.py
+langchain
+langchain-openai
+langchain-mcp-adapters
