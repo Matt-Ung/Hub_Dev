@@ -1,18 +1,15 @@
 import os
 import sys
 import json
-import copy
 import time
 import getpass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional, Literal
+from typing import Any, Dict, List, Tuple, Optional
 from dataclasses import dataclass
-from threading import Event, Lock, Thread
-from concurrent.futures import ThreadPoolExecutor, Future
+from threading import Event, Thread
 
 import gradio as gr
-from pydantic import BaseModel, Field
 
 from pydantic_ai import Agent, ModelMessage
 from pydantic_ai.mcp import MCPServerStdio
@@ -24,19 +21,18 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-try:
-    import pydantic_deep as pydantic_deep_pkg
+from multi_agent_prompts import (
+    AGENT_ARCHETYPE_PROMPTS,
+    DEEP_ORCHESTRATOR_INSTRUCTIONS,
+)
 
-    from pydantic_deep import (
-        create_deep_agent,
-        create_default_deps,
-        create_sliding_window_processor,
-    )
-except Exception:
-    pydantic_deep_pkg = None
-    create_deep_agent = None
-    create_default_deps = None
-    create_sliding_window_processor = None
+import pydantic_deep as pydantic_deep_pkg
+
+from pydantic_deep import (
+    create_deep_agent,
+    create_default_deps,
+    create_sliding_window_processor,
+)
 
 
 # ----------------------------
@@ -112,7 +108,6 @@ OPENAI_MODEL_ID = os.environ.get("OPENAI_MODEL_ID", "openai:gpt-4o-mini")
 MAX_ROLE_HISTORY_MESSAGES = int(os.environ.get("MAX_ROLE_HISTORY_MESSAGES", "16"))
 MAX_TASK_OUTPUTS = int(os.environ.get("MAX_TASK_OUTPUTS", "32"))
 MAX_TOOL_LOG_CHARS = int(os.environ.get("MAX_TOOL_LOG_CHARS", "120000"))
-USE_DEEP_AGENT = os.environ.get("USE_DEEP_AGENT", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -138,169 +133,61 @@ DEEP_INCLUDE_BUNDLED_SKILLS = _env_flag("DEEP_INCLUDE_BUNDLED_SKILLS", True)
 DEEP_SKILL_DIRS = _parse_path_list(os.environ.get("DEEP_SKILL_DIRS", ""))
 MAX_STATUS_LOG_LINES = int(os.environ.get("MAX_STATUS_LOG_LINES", "400"))
 STATUS_LOG_STDOUT = _env_flag("STATUS_LOG_STDOUT", True)
-PLANNER_AGENT_RETRIES = int(os.environ.get("PLANNER_AGENT_RETRIES", "2"))
-PLANNER_OUTPUT_RETRIES = int(os.environ.get("PLANNER_OUTPUT_RETRIES", "2"))
-PLANNER_RUN_ATTEMPTS = max(1, int(os.environ.get("PLANNER_RUN_ATTEMPTS", "2")))
-PLANNER_FALLBACK_ON_ERROR = _env_flag("PLANNER_FALLBACK_ON_ERROR", True)
-WORKER_AGENT_RETRIES = int(os.environ.get("WORKER_AGENT_RETRIES", "4"))
-VERIFIER_AGENT_RETRIES = int(os.environ.get("VERIFIER_AGENT_RETRIES", "2"))
-VERIFIER_OUTPUT_RETRIES = int(os.environ.get("VERIFIER_OUTPUT_RETRIES", "2"))
-REPORTER_AGENT_RETRIES = int(os.environ.get("REPORTER_AGENT_RETRIES", "2"))
-DEEP_AGENT_RETRIES = int(os.environ.get("DEEP_AGENT_RETRIES", str(WORKER_AGENT_RETRIES)))
+DEEP_AGENT_RETRIES = int(os.environ.get("DEEP_AGENT_RETRIES", "4"))
 
+# Streamlined deep-agent architecture configuration. Edit the tuple list directly
+# or set DEEP_AGENT_ARCHITECTURE_NAME to one of the named presets below.
+DEEP_AGENT_ARCHITECTURE_PRESETS: Dict[str, List[Tuple[str, int]]] = {
+    "minimal": [
+        ("static_generalist", 1),
+    ],
+    "balanced": [
+        ("triage_analyst", 1),
+        ("control_flow_analyst", 1),
+        ("obfuscation_analyst", 1),
+        ("string_analyst", 1),
+    ],
+    "aws_collaboration": [
+        ("triage_analyst", 1),
+        ("control_flow_analyst", 1),
+        ("string_analyst", 1),
+        ("obfuscation_analyst", 1),
+        ("capability_analyst", 1),
+    ],
+    "runtime_enriched": [
+        ("triage_analyst", 1),
+        ("control_flow_analyst", 1),
+        ("string_analyst", 1),
+        ("obfuscation_analyst", 1),
+        ("capability_analyst", 1),
+        ("runtime_behavior_analyst", 1),
+    ],
+    "static_swarm": [
+        ("triage_analyst", 1),
+        ("control_flow_analyst", 2),
+        ("obfuscation_analyst", 1),
+        ("string_analyst", 1),
+        ("capability_analyst", 1),
+    ],
+}
 
-# ----------------------------
-# Role prompts
-# ----------------------------
-PLANNER_INSTRUCTIONS = """You are PlannerAgent for a malware analysis workflow.
+DEEP_AGENT_ARCHITECTURE_NAME = (os.environ.get("DEEP_AGENT_ARCHITECTURE_NAME") or "aws_collaboration").strip()
+if DEEP_AGENT_ARCHITECTURE_NAME not in DEEP_AGENT_ARCHITECTURE_PRESETS:
+    raise RuntimeError(
+        f"Unknown DEEP_AGENT_ARCHITECTURE_NAME={DEEP_AGENT_ARCHITECTURE_NAME!r}. "
+        f"Available presets: {', '.join(sorted(DEEP_AGENT_ARCHITECTURE_PRESETS))}"
+    )
 
-Your job is to decompose the user's request into a minimal set of high-value worker tasks.
-
-Rules:
-- Do NOT perform the analysis yourself.
-- Do NOT write the final answer.
-- Assign each task to one worker role from the provided list.
-- Prefer parallelizable tasks only when independent.
-- Keep the plan compact and high value.
-- Do NOT create tasks for generic PE primers (section lists, memory structure basics, standard compiler metadata)
-  unless the user explicitly asked for them or they are directly relevant to a finding.
-- If the user asks for control-flow understanding, include a task that reconstructs the primary execution path
-  (entry to key branches/dispatchers/handlers) with concrete code artifacts.
-- If the user asks for obfuscation, include tasks that demand concrete indicators from tools (FLOSS/capa/Ghidra),
-  such as decoded strings, suspicious string construction routines, dynamic import resolution, indirect calls,
-  dispatcher/flattening patterns, API hashing, or packer/decompression stubs.
-- Task objectives should require specific evidence outputs (function names/addresses, API names, strings, capa rule names).
-- Return only structured data matching the schema.
-"""
-
-STATIC_AGENT_INSTRUCTIONS = """You are StaticAnalysisAgent (reverse engineering specialist).
-
-You may use ONLY static-analysis tools available through MCP (e.g., Ghidra, strings/FLOSS, HashDB, capa-static if present).
-
-Rules:
-- Produce evidence-grounded results only.
-- Do not speculate beyond available evidence.
-- Focus on analysis value, not textbook executable structure.
-- Do NOT include generic memory/section breakdowns unless directly relevant to a finding or explicitly requested.
-- For control flow, map the main path and key decision points (dispatcher, branch pivots, handlers) with concrete artifacts.
-- For obfuscation, name the exact mechanism and provide concrete indicators from tool output.
-  Weak claim example to avoid: "uses shared libraries."
-  Strong claim pattern: "Technique -> evidence -> analyst interpretation."
-- For each finding, include evidence pointers (tool name + function name/address/string/rule identifier).
-- When crafting command-string tool calls (for example runCapa/runFloss), reuse the exact sample path from the
-  current user request/shared state. Never invent, normalize, or substitute a placeholder/example path.
-- Always quote file paths that contain spaces.
-- Return concise technical findings suitable for a verifier to review.
-"""
-
-DYNAMIC_AGENT_INSTRUCTIONS = """You are DynamicAnalysisAgent (sandbox/runtime specialist).
-
-You may use ONLY dynamic-analysis tools available through MCP (e.g., VM tools, ProcMon, Wireshark, runtime execution tools).
-
-Rules:
-- Produce evidence-grounded runtime findings only.
-- If a requested action cannot be completed, explain precisely what failed.
-- Avoid generic malware boilerplate and focus on behavior actually observed.
-- For each finding, cite concrete artifacts (process/API/network/file/registry evidence).
-- Return concise technical findings suitable for a verifier to review.
-"""
-
-VERIFIER_INSTRUCTIONS = """You are VerifierAgent.
-
-You review worker outputs for:
-- unsupported claims
-- missing evidence
-- contradictions
-- obvious gaps relative to the user request
-- low-value boilerplate (especially generic PE memory/section explanations)
-- high-level obfuscation claims without concrete indicators
-
-Return a structured verdict:
-- approved (bool)
-- issues (list)
-- retry_tasks (precise rework tasks only if needed)
-
-Quality bar:
-- Reject outputs that present generic executable structure as findings when not explicitly requested.
-- Reject obfuscation claims unless each claimed technique has concrete evidence (e.g., function/address/API/string/capa rule).
-- Prefer retry tasks that request exact missing evidence, not broad rewrites.
-
-Do not write the final user-facing answer.
-"""
-
-REPORTER_INSTRUCTIONS = """You are ReporterAgent.
-
-Write the final answer to the user using only the verified outputs from workers.
-
-Style:
-- technical, clear, concise
-- separate confirmed findings vs unknowns when relevant
-- do not invent tool results
-- prioritize concrete evidence over generic malware language
-
-Required report behavior:
-- Do NOT include generic memory/section primers unless explicitly requested or directly relevant.
-- Focus on:
-  1) Program purpose hypothesis (evidence-based),
-  2) Control-flow narrative (key path and decision points),
-  3) Obfuscation techniques with specific indicators and why they matter.
-- For obfuscation, each technique should include: exact mechanism, supporting evidence, and confidence.
-- If evidence is insufficient, say so explicitly instead of filling with generic caveats.
-"""
-
-DEEP_ORCHESTRATOR_INSTRUCTIONS = """You are a malware-analysis orchestrator.
-
-You have access to specialized subagents via tools. Use them deliberately:
-- static_analyst: static reverse engineering and string/call-graph capability
-- dynamic_analyst: runtime/VM/sandbox capability (when available)
-
-Rules:
-- Decompose the user request into minimal high-value tasks.
-- Delegate independent tasks in parallel when possible.
-- Keep each delegated task specific and evidence-oriented.
-- Synthesize subagent outputs into one concise technical answer.
-- Separate confirmed findings from unknowns.
-- Never invent tool output.
-- Avoid generic executable primers unless explicitly requested.
-- For obfuscation claims, require concrete indicators from subagent/tool evidence.
-- Ensure subagents reuse the exact sample path from the current task context and quote it when it contains spaces.
-"""
-
-
-# ----------------------------
-# Structured schemas (planner/verifier)
-# ----------------------------
-class PlanTask(BaseModel):
-    id: str = Field(..., description="Unique task ID")
-    worker: Literal["static", "dynamic"] = Field(..., description="Which worker role to run")
-    objective: str = Field(..., description="Task objective")
-    depends_on: List[str] = Field(default_factory=list)
-    can_run_parallel: bool = False
-    success_criteria: List[str] = Field(default_factory=list)
-
-
-class ExecutionPlan(BaseModel):
-    tasks: List[PlanTask] = Field(default_factory=list)
-    final_output_style: str = "technical_markdown"
-
-
-class VerificationIssue(BaseModel):
-    task_id: str
-    severity: Literal["low", "medium", "high"]
-    problem: str
-    required_fix: str
-
-
-class RetryTask(BaseModel):
-    task_id: str
-    worker: Literal["static", "dynamic"]
-    objective: str
-
-
-class VerificationVerdict(BaseModel):
-    approved: bool
-    issues: List[VerificationIssue] = Field(default_factory=list)
-    retry_tasks: List[RetryTask] = Field(default_factory=list)
+DEEP_AGENT_ARCHITECTURE: List[Tuple[str, int]] = list(
+    DEEP_AGENT_ARCHITECTURE_PRESETS[DEEP_AGENT_ARCHITECTURE_NAME]
+)
+# Optional direct override example:
+# DEEP_AGENT_ARCHITECTURE = [
+#     ("triage_analyst", 1),
+#     ("control_flow_analyst", 2),
+#     ("obfuscation_analyst", 1),
+#     ("string_analyst", 1),
+# ]
 
 
 # ----------------------------
@@ -373,18 +260,147 @@ def partition_toolsets(toolsets: List[MCPServerStdio]) -> Tuple[List[MCPServerSt
     return static_tools, dynamic_tools
 
 
+AGENT_ARCHETYPE_SPECS: Dict[str, Dict[str, str]] = {
+    "static_generalist": {
+        "description": "General static reverse-engineering specialist.",
+        "tool_domain": "static",
+        "preferred_mode": "sync",
+        "typical_complexity": "moderate",
+    },
+    "triage_analyst": {
+        "description": "Static triage specialist that identifies the highest-value pivots for the sample.",
+        "tool_domain": "static",
+        "preferred_mode": "sync",
+        "typical_complexity": "moderate",
+    },
+    "control_flow_analyst": {
+        "description": "Static specialist focused on dispatcher logic, execution paths, and major branch pivots.",
+        "tool_domain": "static",
+        "preferred_mode": "sync",
+        "typical_complexity": "complex",
+    },
+    "string_analyst": {
+        "description": "Static specialist focused on recovered strings, stack strings, decoded values, and configuration material.",
+        "tool_domain": "static",
+        "preferred_mode": "sync",
+        "typical_complexity": "moderate",
+    },
+    "obfuscation_analyst": {
+        "description": "Static specialist focused on concrete obfuscation and anti-analysis mechanisms.",
+        "tool_domain": "static",
+        "preferred_mode": "sync",
+        "typical_complexity": "complex",
+    },
+    "capability_analyst": {
+        "description": "Static specialist focused on mapping concrete capabilities from code artifacts and capa evidence.",
+        "tool_domain": "static",
+        "preferred_mode": "sync",
+        "typical_complexity": "moderate",
+    },
+    "dynamic_generalist": {
+        "description": "General runtime behavior specialist.",
+        "tool_domain": "dynamic",
+        "preferred_mode": "auto",
+        "typical_complexity": "complex",
+    },
+    "runtime_behavior_analyst": {
+        "description": "Runtime specialist focused on behavioral correlation and execution-time artifacts.",
+        "tool_domain": "dynamic",
+        "preferred_mode": "auto",
+        "typical_complexity": "complex",
+    },
+}
+
+
+def _toolsets_for_domain(
+    tool_domain: str,
+    static_tools: List[MCPServerStdio],
+    dynamic_tools: List[MCPServerStdio],
+) -> List[MCPServerStdio]:
+    if tool_domain == "static":
+        return static_tools
+    if tool_domain == "dynamic":
+        return dynamic_tools
+    if tool_domain == "all":
+        ordered = list(static_tools) + list(dynamic_tools)
+        deduped: List[MCPServerStdio] = []
+        seen: set[str] = set()
+        for tool in ordered:
+            key = tool.id or repr(tool)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(tool)
+        return deduped
+    raise RuntimeError(f"Unknown tool_domain={tool_domain!r}")
+
+
+def build_subagent_architecture(
+    architecture: List[Tuple[str, int]],
+    static_tools: List[MCPServerStdio],
+    dynamic_tools: List[MCPServerStdio],
+) -> List[Dict[str, Any]]:
+    subagents: List[Dict[str, Any]] = []
+
+    for archetype_name, quantity in architecture:
+        if archetype_name not in AGENT_ARCHETYPE_SPECS:
+            raise RuntimeError(f"Unknown deep-agent archetype: {archetype_name!r}")
+        if archetype_name not in AGENT_ARCHETYPE_PROMPTS:
+            raise RuntimeError(f"Missing prompt definition for deep-agent archetype: {archetype_name!r}")
+        if quantity < 1:
+            raise RuntimeError(f"Deep-agent archetype quantity must be >= 1 for {archetype_name!r}")
+
+        spec = AGENT_ARCHETYPE_SPECS[archetype_name]
+        toolsets = _toolsets_for_domain(spec["tool_domain"], static_tools, dynamic_tools)
+        if not toolsets:
+            raise RuntimeError(
+                f"Deep-agent architecture requested {archetype_name!r}, but no {spec['tool_domain']} MCP toolsets are configured."
+            )
+
+        for idx in range(quantity):
+            instance_name = archetype_name if quantity == 1 else f"{archetype_name}_{idx + 1}"
+            instructions = AGENT_ARCHETYPE_PROMPTS[archetype_name]
+            if quantity > 1:
+                instructions += (
+                    "\n\nCollaboration note:\n"
+                    f"- You are instance {idx + 1} of {quantity} for the `{archetype_name}` role.\n"
+                    "- Work independently, surface disagreements when they matter, and avoid assuming sibling agents saw the same evidence.\n"
+                )
+
+            subagents.append(
+                {
+                    "name": instance_name,
+                    "description": spec["description"],
+                    "instructions": instructions,
+                    "toolsets": toolsets,
+                    "preferred_mode": spec["preferred_mode"],
+                    "typical_complexity": spec["typical_complexity"],
+                }
+            )
+
+    return subagents
+
+
+def expand_architecture_names(architecture: List[Tuple[str, int]]) -> List[str]:
+    names: List[str] = []
+    for archetype_name, quantity in architecture:
+        if quantity < 1:
+            continue
+        if quantity == 1:
+            names.append(archetype_name)
+            continue
+        for idx in range(quantity):
+            names.append(f"{archetype_name}_{idx + 1}")
+    return names
+
+
 # ----------------------------
 # Runtime container
 # ----------------------------
 @dataclass
 class MultiAgentRuntime:
-    planner: Agent
-    static_worker: Agent
-    dynamic_worker: Agent
-    verifier: Agent
-    reporter: Agent
-    deep_orchestrator: Optional[Agent]
-    deep_deps: Any | None
+    deep_orchestrator: Agent
+    deep_deps: Any
     all_toolsets: List[MCPServerStdio]
     static_toolsets: List[MCPServerStdio]
     dynamic_toolsets: List[MCPServerStdio]
@@ -396,45 +412,15 @@ _RUNTIME: Optional[MultiAgentRuntime] = None
 def build_deep_runtime_components(
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
-) -> Tuple[Optional[Agent], Any | None]:
-    if create_deep_agent is None or create_default_deps is None:
-        return None, None
+) -> Tuple[Agent, Any]:
+    subagents = build_subagent_architecture(DEEP_AGENT_ARCHITECTURE, static_tools, dynamic_tools)
 
-    subagents: List[Dict[str, Any]] = []
-    if static_tools:
-        subagents.append(
-            {
-                "name": "static_analyst",
-                "description": "Static reverse-engineering specialist for code, strings, call graphs, and capabilities.",
-                "instructions": STATIC_AGENT_INSTRUCTIONS,
-                "toolsets": static_tools,
-                "preferred_mode": "sync",
-                "typical_complexity": "moderate",
-            }
+    history_processors = [
+        create_sliding_window_processor(
+            trigger=("messages", 80),
+            keep=("messages", 40),
         )
-    if dynamic_tools:
-        subagents.append(
-            {
-                "name": "dynamic_analyst",
-                "description": "Dynamic sandbox/runtime specialist for process/network/runtime behavior.",
-                "instructions": DYNAMIC_AGENT_INSTRUCTIONS,
-                "toolsets": dynamic_tools,
-                "preferred_mode": "auto",
-                "typical_complexity": "complex",
-            }
-        )
-
-    if not subagents:
-        return None, None
-
-    history_processors = None
-    if create_sliding_window_processor is not None:
-        history_processors = [
-            create_sliding_window_processor(
-                trigger=("messages", 80),
-                keep=("messages", 40),
-            )
-        ]
+    ]
 
     skill_directories: List[str] = []
     if DEEP_ENABLE_SKILLS:
@@ -447,7 +433,7 @@ def build_deep_runtime_components(
         if local_skills.exists() and local_skills.is_dir():
             skill_directories.append(str(local_skills))
 
-        if DEEP_INCLUDE_BUNDLED_SKILLS and pydantic_deep_pkg is not None:
+        if DEEP_INCLUDE_BUNDLED_SKILLS:
             bundled = Path(pydantic_deep_pkg.__file__).resolve().parent / "bundled_skills"
             if bundled.exists() and bundled.is_dir():
                 skill_directories.append(str(bundled))
@@ -494,8 +480,7 @@ def build_deep_runtime_components(
         deep_deps = create_default_deps(backend=deep_backend) if deep_backend is not None else create_default_deps()
         return deep_agent, deep_deps
     except Exception as e:
-        print(f"[deep-agent init disabled] {type(e).__name__}: {e}")
-        return None, None
+        raise RuntimeError(f"Deep-agent initialization failed: {type(e).__name__}: {e}") from e
 
 
 def get_runtime_sync() -> MultiAgentRuntime:
@@ -510,72 +495,26 @@ def get_runtime_sync() -> MultiAgentRuntime:
     print("Static tools:", [s.id for s in static_tools])
     print("Dynamic tools:", [s.id for s in dynamic_tools])
 
-    # Planner / verifier / reporter do not need MCP toolsets
-    planner = Agent(
-        OPENAI_MODEL_ID,
-        instructions=PLANNER_INSTRUCTIONS,
-        output_type=ExecutionPlan,
-        retries=PLANNER_AGENT_RETRIES,
-        output_retries=PLANNER_OUTPUT_RETRIES,
+    deep_orchestrator, deep_deps = build_deep_runtime_components(static_tools, dynamic_tools)
+    print("Deep-agent mode: required")
+    print(
+        "Deep config:",
+        {
+            "architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,
+            "architecture": DEEP_AGENT_ARCHITECTURE,
+            "expanded_subagents": expand_architecture_names(DEEP_AGENT_ARCHITECTURE),
+            "memory": DEEP_ENABLE_MEMORY,
+            "memory_dir": DEEP_MEMORY_DIR,
+            "persist_backend": DEEP_PERSIST_BACKEND,
+            "backend_root": str(Path(DEEP_BACKEND_ROOT).expanduser().resolve()),
+            "skills": DEEP_ENABLE_SKILLS,
+            "skill_dirs": DEEP_SKILL_DIRS,
+            "include_bundled_skills": DEEP_INCLUDE_BUNDLED_SKILLS,
+            "deep_agent_retries": DEEP_AGENT_RETRIES,
+        },
     )
-
-    static_worker = Agent(
-        OPENAI_MODEL_ID,
-        instructions=STATIC_AGENT_INSTRUCTIONS,
-        toolsets=static_tools,
-        retries=WORKER_AGENT_RETRIES,
-    )
-
-    dynamic_worker = Agent(
-        OPENAI_MODEL_ID,
-        instructions=DYNAMIC_AGENT_INSTRUCTIONS,
-        toolsets=dynamic_tools,
-        retries=WORKER_AGENT_RETRIES,
-    )
-
-    verifier = Agent(
-        OPENAI_MODEL_ID,
-        instructions=VERIFIER_INSTRUCTIONS,
-        output_type=VerificationVerdict,
-        retries=VERIFIER_AGENT_RETRIES,
-        output_retries=VERIFIER_OUTPUT_RETRIES,
-    )
-
-    reporter = Agent(
-        OPENAI_MODEL_ID,
-        instructions=REPORTER_INSTRUCTIONS,
-        retries=REPORTER_AGENT_RETRIES,
-    )
-
-    deep_orchestrator: Optional[Agent] = None
-    deep_deps: Any | None = None
-    if USE_DEEP_AGENT:
-        deep_orchestrator, deep_deps = build_deep_runtime_components(static_tools, dynamic_tools)
-        if deep_orchestrator is not None:
-            print("Deep-agent mode: enabled")
-            print(
-                "Deep config:",
-                {
-                    "memory": DEEP_ENABLE_MEMORY,
-                    "memory_dir": DEEP_MEMORY_DIR,
-                    "persist_backend": DEEP_PERSIST_BACKEND,
-                    "backend_root": str(Path(DEEP_BACKEND_ROOT).expanduser().resolve()),
-                    "skills": DEEP_ENABLE_SKILLS,
-                    "skill_dirs": DEEP_SKILL_DIRS,
-                    "include_bundled_skills": DEEP_INCLUDE_BUNDLED_SKILLS,
-                    "worker_agent_retries": WORKER_AGENT_RETRIES,
-                    "deep_agent_retries": DEEP_AGENT_RETRIES,
-                },
-            )
-        else:
-            print("Deep-agent mode: unavailable, falling back to classic orchestration")
 
     _RUNTIME = MultiAgentRuntime(
-        planner=planner,
-        static_worker=static_worker,
-        dynamic_worker=dynamic_worker,
-        verifier=verifier,
-        reporter=reporter,
         deep_orchestrator=deep_orchestrator,
         deep_deps=deep_deps,
         all_toolsets=toolsets,
@@ -669,30 +608,15 @@ def _shorten(text: str, max_chars: int = 120) -> str:
     return t[: max_chars - 3] + "..."
 
 
-def _exc_brief(err: Exception, max_chars: int = 240) -> str:
-    msg = _shorten(str(err), max_chars=max_chars)
-    if not msg:
-        return type(err).__name__
-    return f"{type(err).__name__}: {msg}"
-
-
-def append_status(state: Dict[str, Any], message: str, state_lock: Optional[Lock] = None) -> None:
+def append_status(state: Dict[str, Any], message: str) -> None:
     line = f"[{_status_ts()}] {message}"
-
-    def _commit() -> None:
-        lines = (state.get("status_log") or "").splitlines()
-        lines.append(line)
-        if len(lines) > MAX_STATUS_LOG_LINES:
-            lines = lines[-MAX_STATUS_LOG_LINES:]
-        state["status_log"] = "\n".join(lines)
-        if STATUS_LOG_STDOUT:
-            print(line, flush=True)
-
-    if state_lock:
-        with state_lock:
-            _commit()
-    else:
-        _commit()
+    lines = (state.get("status_log") or "").splitlines()
+    lines.append(line)
+    if len(lines) > MAX_STATUS_LOG_LINES:
+        lines = lines[-MAX_STATUS_LOG_LINES:]
+    state["status_log"] = "\n".join(lines)
+    if STATUS_LOG_STDOUT:
+        print(line, flush=True)
 
 
 def get_role_history(state: Dict[str, Any], role_key: str) -> List[ModelMessage]:
@@ -742,329 +666,13 @@ def compact_shared_state(state: Dict[str, Any]) -> None:
         shared["task_outputs"] = outputs[-MAX_TASK_OUTPUTS:]
 
 
-def validate_plan(plan: ExecutionPlan, has_dynamic_tools: bool) -> None:
-    ids = set()
-    for t in plan.tasks:
-        if t.id in ids:
-            raise ValueError(f"Duplicate task id: {t.id}")
-        ids.add(t.id)
-
-        if t.worker == "dynamic" and not has_dynamic_tools:
-            raise ValueError("Planner requested dynamic task but no dynamic toolsets are configured.")
-
-    for t in plan.tasks:
-        for dep in t.depends_on:
-            if dep not in ids:
-                raise ValueError(f"Task {t.id} depends on unknown task {dep}")
-
-
-def topological_batches(tasks: List[PlanTask]) -> List[List[PlanTask]]:
-    """
-    Small DAG scheduler returning executable batches.
-    """
-    remaining = {t.id: t for t in tasks}
-    done = set()
-    batches: List[List[PlanTask]] = []
-
-    while remaining:
-        ready = [t for t in remaining.values() if all(dep in done for dep in t.depends_on)]
-        if not ready:
-            raise ValueError("Cycle detected in plan dependencies")
-
-        parallel = [t for t in ready if t.can_run_parallel]
-        serial = [t for t in ready if not t.can_run_parallel]
-
-        if parallel:
-            batches.append(parallel)
-            for t in parallel:
-                done.add(t.id)
-                del remaining[t.id]
-
-        for t in serial:
-            batches.append([t])
-            done.add(t.id)
-            del remaining[t.id]
-
-    return batches
-
-
-# ----------------------------
-# Agent execution
-# ----------------------------
-def run_planner(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> ExecutionPlan:
-    role_key = "planner"
-    old_history = get_role_history(state, role_key)
-    append_status(state, "Planner started")
-    t0 = time.perf_counter()
-
-    shared = state.get("shared_state") or {}
-    available_workers = ["static"] + (["dynamic"] if runtime.dynamic_toolsets else [])
-
-    planner_input = {
-        "user_request": user_text,
-        "available_workers": available_workers,
-        "tool_inventory": {
-            "static": [s.id for s in runtime.static_toolsets],
-            "dynamic": [s.id for s in runtime.dynamic_toolsets],
-        },
-        "analysis_expectations": {
-            "avoid_generic_pe_or_memory_primers": True,
-            "require_specific_control_flow_artifacts": True,
-            "require_specific_obfuscation_indicators": True,
-        },
-        "shared_state_summary": {
-            "artifacts": shared.get("artifacts", []),
-            "findings_count": len(shared.get("findings", [])),
-            "previous_runs": shared.get("total_task_runs", 0),
-        },
-    }
-
-    result = None
-    history_for_attempt = old_history
-    for attempt in range(1, PLANNER_RUN_ATTEMPTS + 1):
-        try:
-            result = runtime.planner.run_sync(
-                json.dumps(planner_input, indent=2),
-                message_history=history_for_attempt if history_for_attempt else None,
-            )
-            break
-        except Exception as e:
-            append_status(
-                state,
-                f"Planner attempt {attempt}/{PLANNER_RUN_ATTEMPTS} failed after {time.perf_counter() - t0:.1f}s: {_exc_brief(e)}",
-            )
-            if attempt >= PLANNER_RUN_ATTEMPTS:
-                raise
-            append_status(state, "Planner retrying with cleared planner history")
-            set_role_history(state, role_key, [])
-            history_for_attempt = []
-            time.sleep(min(1.5 * attempt, 3.0))
-
-    if result is None:
-        raise RuntimeError("Planner produced no result")
-    new_history = result.all_messages()
-    set_role_history(state, role_key, new_history)
-    append_tool_log_delta(state, role_key, old_history, new_history)  # planner has no tools but harmless
-
-    plan: ExecutionPlan = result.output
-    validate_plan(plan, has_dynamic_tools=bool(runtime.dynamic_toolsets))
-    append_status(state, f"Planner finished in {time.perf_counter() - t0:.1f}s with {len(plan.tasks)} task(s)")
-    return plan
-
-
-def run_worker_task(
-    runtime: MultiAgentRuntime,
-    task: PlanTask,
-    state: Dict[str, Any],
-    role_key_suffix: Optional[str] = None,
-    shared_state_snapshot: Optional[Dict[str, Any]] = None,
-    isolated_agent: bool = False,
-    state_lock: Optional[Lock] = None,
-) -> Dict[str, Any]:
-    if task.worker == "static":
-        role_key_base = "static_worker"
-        agent = runtime.static_worker
-        if isolated_agent:
-            agent = Agent(
-                OPENAI_MODEL_ID,
-                instructions=STATIC_AGENT_INSTRUCTIONS,
-                toolsets=runtime.static_toolsets,
-                retries=WORKER_AGENT_RETRIES,
-            )
-    elif task.worker == "dynamic":
-        role_key_base = "dynamic_worker"
-        agent = runtime.dynamic_worker
-        if isolated_agent:
-            agent = Agent(
-                OPENAI_MODEL_ID,
-                instructions=DYNAMIC_AGENT_INSTRUCTIONS,
-                toolsets=runtime.dynamic_toolsets,
-                retries=WORKER_AGENT_RETRIES,
-            )
-    else:
-        raise ValueError(f"Unknown worker type: {task.worker}")
-
-    role_key = f"{role_key_base}:{role_key_suffix}" if role_key_suffix else role_key_base
-    append_status(
-        state,
-        f"Worker {task.worker} started [{task.id}] - {_shorten(task.objective)}",
-        state_lock=state_lock,
-    )
-    t0 = time.perf_counter()
-
-    def _read_state() -> Tuple[List[ModelMessage], Dict[str, Any]]:
-        old = get_role_history(state, role_key)
-        shared = copy.deepcopy(shared_state_snapshot) if shared_state_snapshot is not None else copy.deepcopy(state.get("shared_state") or {})
-        return old, shared
-
-    if state_lock:
-        with state_lock:
-            old_history, shared = _read_state()
-    else:
-        old_history, shared = _read_state()
-
-    worker_input = {
-        "task": task.model_dump(),
-        "shared_state": shared,
-        "quality_requirements": {
-            "no_generic_memory_structure_section": True,
-            "obfuscation_claims_must_include_specific_indicators": True,
-            "cite_artifacts_for_each_claim": True,
-            "quote_paths_with_spaces_for_command_string_tools": True,
-            "use_exact_sample_path_for_command_string_tools": True,
-            "never_use_placeholder_paths_for_command_string_tools": True,
-        },
-    }
-
-    try:
-        result = agent.run_sync(
-            json.dumps(worker_input, indent=2),
-            message_history=old_history if old_history else None,
-        )
-    except Exception as e:
-        append_status(
-            state,
-            f"Worker {task.worker} failed [{task.id}] after {time.perf_counter() - t0:.1f}s: {type(e).__name__}",
-            state_lock=state_lock,
-        )
-        raise
-    new_history = result.all_messages()
-
-    worker_output_text = str(result.output)
-
-    task_packet = {
-        "task_id": task.id,
-        "worker": task.worker,
-        "objective": task.objective,
-        "status": "ok",
-        "output_text": worker_output_text,
-    }
-
-    def _commit_state() -> None:
-        set_role_history(state, role_key, new_history)
-        append_tool_log_delta(state, role_key, old_history, new_history)
-
-        if "shared_state" not in state:
-            state["shared_state"] = {
-                "artifacts": [],
-                "findings": [],
-                "task_outputs": [],
-                "run_count": 0,
-                "turn_task_runs": 0,
-                "total_task_runs": 0,
-            }
-        if "task_outputs" not in state["shared_state"]:
-            state["shared_state"]["task_outputs"] = []
-
-        state["shared_state"]["task_outputs"].append(task_packet)
-        state["shared_state"]["run_count"] = int(state["shared_state"].get("run_count", 0)) + 1
-        state["shared_state"]["turn_task_runs"] = int(state["shared_state"].get("turn_task_runs", 0)) + 1
-        state["shared_state"]["total_task_runs"] = int(state["shared_state"].get("total_task_runs", 0)) + 1
-        compact_shared_state(state)
-
-    if state_lock:
-        with state_lock:
-            _commit_state()
-    else:
-        _commit_state()
-
-    append_status(
-        state,
-        f"Worker {task.worker} finished [{task.id}] in {time.perf_counter() - t0:.1f}s",
-        state_lock=state_lock,
-    )
-    return task_packet
-
-
-def run_verifier(
-    runtime: MultiAgentRuntime,
-    user_text: str,
-    plan: ExecutionPlan,
-    state: Dict[str, Any],
-    just_ran_task_ids: List[str],
-) -> VerificationVerdict:
-    role_key = "verifier"
-    old_history = get_role_history(state, role_key)
-    ids = ", ".join(just_ran_task_ids) if just_ran_task_ids else "<none>"
-    append_status(state, f"Verifier started for task(s): {ids}")
-    t0 = time.perf_counter()
-
-    shared = state.get("shared_state") or {}
-    verifier_input = {
-        "user_request": user_text,
-        "plan": plan.model_dump(),
-        "just_ran_task_ids": just_ran_task_ids,
-        "task_outputs": [
-            t for t in shared.get("task_outputs", [])
-            if t.get("task_id") in just_ran_task_ids
-        ],
-    }
-
-    try:
-        result = runtime.verifier.run_sync(
-            json.dumps(verifier_input, indent=2),
-            message_history=old_history if old_history else None,
-        )
-    except Exception as e:
-        append_status(state, f"Verifier failed after {time.perf_counter() - t0:.1f}s: {type(e).__name__}")
-        raise
-    new_history = result.all_messages()
-    set_role_history(state, role_key, new_history)
-    append_tool_log_delta(state, role_key, old_history, new_history)
-
-    verdict: VerificationVerdict = result.output
-    append_status(
-        state,
-        (
-            f"Verifier finished in {time.perf_counter() - t0:.1f}s "
-            f"(approved={verdict.approved}, issues={len(verdict.issues)}, retries={len(verdict.retry_tasks)})"
-        ),
-    )
-    return verdict
-
-
-def run_reporter(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> str:
-    role_key = "reporter"
-    old_history = get_role_history(state, role_key)
-    append_status(state, "Reporter started")
-    t0 = time.perf_counter()
-
-    shared = state.get("shared_state") or {}
-    reporter_input = {
-        "user_request": user_text,
-        "task_outputs": shared.get("task_outputs", []),
-        "notes": (
-            "Write the final response for the user using only supported information from task outputs. "
-            "Avoid generic PE/memory-structure primers unless explicitly requested or directly relevant. "
-            "Prioritize specifics: control-flow path, key decision logic, and concrete obfuscation indicators "
-            "(functions/APIs/decoded strings/capa rule names) with concise evidence-based interpretation."
-        ),
-    }
-
-    try:
-        result = runtime.reporter.run_sync(
-            json.dumps(reporter_input, indent=2),
-            message_history=old_history if old_history else None,
-        )
-    except Exception as e:
-        append_status(state, f"Reporter failed after {time.perf_counter() - t0:.1f}s: {type(e).__name__}")
-        raise
-    new_history = result.all_messages()
-    set_role_history(state, role_key, new_history)
-    append_tool_log_delta(state, role_key, old_history, new_history)
-
-    assistant_text = str(result.output)
-    append_status(state, f"Reporter finished in {time.perf_counter() - t0:.1f}s")
-    return assistant_text
-
-
 def run_deepagent_orchestration(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> str:
-    if runtime.deep_orchestrator is None or runtime.deep_deps is None:
-        raise RuntimeError("Deep-agent runtime is not configured")
-
     role_key = "deep_orchestrator"
     old_history = get_role_history(state, role_key)
-    append_status(state, "Deep orchestration started")
+    append_status(
+        state,
+        f"Deep orchestration started (architecture={DEEP_AGENT_ARCHITECTURE_NAME}, subagents={', '.join(expand_architecture_names(DEEP_AGENT_ARCHITECTURE))})",
+    )
     t0 = time.perf_counter()
 
     if "shared_state" not in state:
@@ -1081,6 +689,9 @@ def run_deepagent_orchestration(runtime: MultiAgentRuntime, user_text: str, stat
     state["shared_state"]["turn_task_runs"] = 0
     state["shared_state"]["last_user_request"] = user_text
     state["shared_state"]["orchestration_mode"] = "deep"
+    state["shared_state"]["deep_architecture_name"] = DEEP_AGENT_ARCHITECTURE_NAME
+    state["shared_state"]["deep_architecture"] = list(DEEP_AGENT_ARCHITECTURE)
+    state["shared_state"]["deep_subagents"] = expand_architecture_names(DEEP_AGENT_ARCHITECTURE)
 
     try:
         result = runtime.deep_orchestrator.run_sync(
@@ -1112,130 +723,6 @@ def run_deepagent_orchestration(runtime: MultiAgentRuntime, user_text: str, stat
 
     append_status(state, f"Deep orchestration finished in {time.perf_counter() - t0:.1f}s")
     return assistant_text
-
-
-def run_multiagent_orchestration(user_text: str, state: Dict[str, Any]) -> str:
-    runtime = get_runtime_sync()
-    state_lock = Lock()
-    t0 = time.perf_counter()
-    append_status(state, "Classic orchestration started")
-
-    cleared_histories = 0
-    if "role_histories" in state:
-        for key in list((state.get("role_histories") or {}).keys()):
-            if key.startswith("static_worker:") or key.startswith("dynamic_worker:"):
-                del state["role_histories"][key]
-                cleared_histories += 1
-    if cleared_histories:
-        append_status(state, f"Cleared {cleared_histories} worker branch history entrie(s)")
-
-    # Ensure shared state scaffold exists
-    if "shared_state" not in state:
-        state["shared_state"] = {
-            "artifacts": [],
-            "findings": [],
-            "task_outputs": [],
-            "run_count": 0,
-            "turn_task_runs": 0,
-            "total_task_runs": 0,
-        }
-    state["shared_state"]["task_outputs"] = []
-    state["shared_state"]["turn_task_runs"] = 0
-    state["shared_state"]["last_user_request"] = user_text
-    state["shared_state"]["orchestration_mode"] = "classic"
-
-    # 1) Planner
-    append_status(state, "Transition: init -> planner")
-    try:
-        plan = run_planner(runtime, user_text, state)
-    except Exception as e:
-        if not PLANNER_FALLBACK_ON_ERROR:
-            raise
-        fallback_worker = "static"
-        if runtime.dynamic_toolsets and any(k in user_text.lower() for k in ["dynamic", "runtime", "sandbox", "network", "process"]):
-            fallback_worker = "dynamic"
-        append_status(
-            state,
-            f"Planner unavailable; using fallback single-task plan ({fallback_worker}) due to: {_exc_brief(e)}",
-        )
-        plan = ExecutionPlan(
-            tasks=[
-                PlanTask(
-                    id="fallback_task_1",
-                    worker=fallback_worker,
-                    objective=user_text,
-                    depends_on=[],
-                    can_run_parallel=False,
-                    success_criteria=["Provide evidence-based findings tied directly to the request."],
-                )
-            ],
-            final_output_style="technical_markdown",
-        )
-    append_status(state, f"Transition: planner -> workers ({len(plan.tasks)} planned task(s))")
-
-    # 2) Execute plan (batch by dependencies)
-    batches = topological_batches(plan.tasks)
-    if not batches:
-        append_status(state, "No worker tasks scheduled; moving directly to reporter")
-
-    for idx, batch in enumerate(batches, start=1):
-        batch_desc = ", ".join(f"{t.id}:{t.worker}" for t in batch)
-        append_status(state, f"Batch {idx}/{len(batches)} started with {len(batch)} task(s): {batch_desc}")
-        just_ran_ids: List[str] = []
-
-        if len(batch) > 1:
-            batch_shared_snapshot = copy.deepcopy(state.get("shared_state") or {})
-            futures: Dict[str, Future] = {}
-            with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-                for task in batch:
-                    futures[task.id] = pool.submit(
-                        run_worker_task,
-                        runtime,
-                        task,
-                        state,
-                        task.id,
-                        batch_shared_snapshot,
-                        True,
-                        state_lock,
-                    )
-                for task in batch:
-                    packet = futures[task.id].result()
-                    just_ran_ids.append(packet["task_id"])
-        else:
-            task = batch[0]
-            packet = run_worker_task(runtime, task, state, state_lock=state_lock)
-            just_ran_ids.append(packet["task_id"])
-
-        # 3) Verifier after each batch
-        append_status(state, f"Transition: workers -> verifier for batch {idx}/{len(batches)}")
-        verdict = run_verifier(runtime, user_text, plan, state, just_ran_ids)
-
-        # Optional one-pass retry execution
-        if verdict.retry_tasks:
-            append_status(state, f"Verifier requested {len(verdict.retry_tasks)} retry task(s)")
-            for r in verdict.retry_tasks:
-                retry_task = PlanTask(
-                    id=r.task_id,
-                    worker=r.worker,
-                    objective=r.objective,
-                    depends_on=[],
-                    can_run_parallel=False,
-                    success_criteria=[],
-                )
-                append_status(
-                    state,
-                    f"Retrying task [{retry_task.id}] ({retry_task.worker}) - {_shorten(retry_task.objective)}",
-                )
-                run_worker_task(runtime, retry_task, state, state_lock=state_lock)
-            append_status(state, f"Retry phase finished for batch {idx}/{len(batches)}")
-        else:
-            append_status(state, f"No retries requested for batch {idx}/{len(batches)}")
-
-    # 4) Reporter
-    append_status(state, "Transition: verifier -> reporter")
-    final_answer = run_reporter(runtime, user_text, state)
-    append_status(state, f"Classic orchestration finished in {time.perf_counter() - t0:.1f}s")
-    return final_answer
 
 
 # ----------------------------
@@ -1275,18 +762,16 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
     ]
     yield "", chat_history, state, state.get("tool_log", ""), state.get("status_log", "")
 
-    def _run_selected_orchestrator() -> Tuple[str, str]:
+    def _run_deep_orchestrator() -> Tuple[str, str]:
         runtime = get_runtime_sync()
-        if USE_DEEP_AGENT and runtime.deep_orchestrator is not None:
-            return run_deepagent_orchestration(runtime, user_text, state), "deep"
-        return run_multiagent_orchestration(user_text, state), "classic"
+        return run_deepagent_orchestration(runtime, user_text, state), "deep"
 
     result_box: Dict[str, str] = {"assistant_text": running_note}
     done = Event()
 
     def _runner() -> None:
         try:
-            assistant_text, mode = _run_selected_orchestrator()
+            assistant_text, mode = _run_deep_orchestrator()
             append_status(state, f"Chat turn finished in {time.perf_counter() - turn_t0:.1f}s (mode={mode})")
             result_box["assistant_text"] = assistant_text
             return
@@ -1296,7 +781,7 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
                 append_status(state, "Detected invalid tool history; clearing role histories and retrying once")
                 state["role_histories"] = {}
                 try:
-                    assistant_text, mode = _run_selected_orchestrator()
+                    assistant_text, mode = _run_deep_orchestrator()
                     append_status(
                         state,
                         f"Chat turn recovered after history reset in {time.perf_counter() - turn_t0:.1f}s (mode={mode})",
@@ -1355,9 +840,9 @@ def reset():
 # ----------------------------
 # UI
 # ----------------------------
-with gr.Blocks(title="MCP Multi-Agent Tool Bench (PydanticAI)") as demo:
-    gr.Markdown("# MCP Multi-Agent Tool Bench (PydanticAI + MCPServerStdio)")
-    gr.Markdown("Planner → Worker(s) → Verifier → Reporter")
+with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
+    gr.Markdown("# MCP Deep-Agent Tool Bench (PydanticAI + MCPServerStdio)")
+    gr.Markdown("Deep orchestrator -> delegated subagents")
 
     state = gr.State({
         "role_histories": {},
