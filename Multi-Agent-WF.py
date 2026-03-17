@@ -3,12 +3,13 @@ import sys
 import json
 import time
 import getpass
+import html
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 from dataclasses import dataclass
-from threading import Event, Thread
+from threading import Event, Thread, Lock
 
 import gradio as gr
 
@@ -152,6 +153,7 @@ SAMPLE_PATH_QUOTED_RE = re.compile(
     + "|".join(SAMPLE_PATH_SUFFIXES)
     + r"))[\"']"
 )
+GHIDRA_EXECUTABLE_PATH_RE = re.compile(r"(?im)^Executable Path:\s*(.+?)\s*$")
 
 # Worker analyst breadth configuration. Edit the tuple list directly or set
 # DEEP_AGENT_ARCHITECTURE_NAME to one of the named presets below.
@@ -522,6 +524,12 @@ def build_stage_manager_instructions(stage_name: str, stage_kind: str, architect
 
     base = PIPELINE_STAGE_MANAGER_PROMPTS[stage_kind].rstrip()
     delegated_roles = ", ".join(expand_architecture_names(architecture)) or "none"
+    path_handoff_lines = ""
+    if stage_kind != "reporter":
+        path_handoff_lines = (
+            "- If this stage discovers or confirms the real sample path, include a line exactly like:\n"
+            f"  {PATH_HANDOFF_LINE_PREFIX} <exact existing path>\n"
+        )
     return (
         f"{base}\n\n"
         "Current stage configuration:\n"
@@ -536,8 +544,9 @@ def build_stage_manager_instructions(stage_name: str, stage_kind: str, architect
         "- Numbered plan items like `1`, `2`, `3` are work-item labels, not subagent task IDs.\n"
         "- If shared context provides `validated_sample_path`, treat it as the canonical sample path and reuse it verbatim.\n"
         "- Never invent placeholder/example targets such as `/path/to/...` or `C:\\path\\to\\...`.\n"
-        "- If this stage discovers or confirms the real sample path, include a line exactly like:\n"
-        f"  {PATH_HANDOFF_LINE_PREFIX} <exact existing path>\n"
+        "- Do not surface internal workflow metadata such as `validated_sample_path` or handoff instructions in the final"
+        " user-facing report.\n"
+        f"{path_handoff_lines}"
         "- Follow the stage output contract exactly.\n"
     )
 
@@ -572,15 +581,14 @@ def build_stage_prompt(
             ]
         )
     else:
-        sections.extend(
-            [
-                "- validated_sample_path: UNKNOWN",
-                (
-                    f"- If you discover the real sample path during this stage, emit a line exactly like "
-                    f"`{PATH_HANDOFF_LINE_PREFIX} <exact existing path>` near the top of your response."
-                ),
-            ]
-        )
+        sections.append("- No validated sample path is currently available in shared context.")
+        if stage_kind != "reporter":
+            sections.append(
+                f"- If you discover the real sample path during this stage, emit a line exactly like "
+                f"`{PATH_HANDOFF_LINE_PREFIX} <exact existing path>` near the top of your response."
+            )
+        else:
+            sections.append("- Do not mention missing internal path metadata in the final user-facing report.")
 
     stage_roles = expand_architecture_names(architecture)
     if stage_roles:
@@ -833,6 +841,31 @@ def append_tool_log_delta(
     if len(merged) > MAX_TOOL_LOG_CHARS:
         merged = merged[-MAX_TOOL_LOG_CHARS:]
     state["tool_log"] = merged
+    _store_ui_snapshot(state=state)
+
+
+def _sanitize_user_facing_output(text: str) -> str:
+    cleaned: List[str] = []
+    for raw_line in (text or "").splitlines():
+        stripped = raw_line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith(PATH_HANDOFF_LINE_PREFIX.lower()):
+            continue
+        if "validated_sample_path:" in lowered:
+            continue
+        if "validated_sample_path_source:" in lowered:
+            continue
+        if "no validated sample path is currently available in shared context" in lowered:
+            continue
+        if lowered.startswith("- path rule:") or lowered.startswith("path rule:"):
+            continue
+        if lowered.startswith("- if you discover the real sample path"):
+            continue
+        cleaned.append(raw_line)
+
+    output = "\n".join(cleaned)
+    output = re.sub(r"\n{3,}", "\n\n", output).strip()
+    return output
 
 
 # ----------------------------
@@ -856,6 +889,7 @@ def append_status(state: Dict[str, Any], message: str) -> None:
     if len(lines) > MAX_STATUS_LOG_LINES:
         lines = lines[-MAX_STATUS_LOG_LINES:]
     state["status_log"] = "\n".join(lines)
+    _store_ui_snapshot(state=state)
     if STATUS_LOG_STDOUT:
         print(line, flush=True)
 
@@ -980,6 +1014,23 @@ def _extract_sample_path_candidates(text: str) -> List[str]:
     return candidates
 
 
+def _coerce_tool_return_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(item) for item in content)
+    return str(content)
+
+
+def _extract_ghidra_executable_path(text: str) -> Optional[str]:
+    match = GHIDRA_EXECUTABLE_PATH_RE.search(text or "")
+    if not match:
+        return None
+    return _validate_existing_sample_path(match.group(1))
+
+
 def update_validated_sample_path(
     state: Dict[str, Any],
     text: str,
@@ -1005,6 +1056,300 @@ def update_validated_sample_path(
     return validated
 
 
+def update_validated_sample_path_from_messages(
+    state: Dict[str, Any],
+    messages: List[ModelMessage],
+    source: str,
+) -> Optional[str]:
+    for msg in messages:
+        if not isinstance(msg, (ModelRequest, ModelResponse)):
+            continue
+        for part in getattr(msg, "parts", []) or []:
+            if not isinstance(part, ToolReturnPart):
+                continue
+            text = _coerce_tool_return_text(part.content)
+            validated = _extract_ghidra_executable_path(text)
+            if not validated:
+                continue
+            shared = state.setdefault("shared_state", _new_shared_state())
+            previous = shared.get("validated_sample_path")
+            shared["validated_sample_path"] = validated
+            shared["validated_sample_path_source"] = source
+            if previous != validated:
+                append_status(state, f"Validated sample path set from {source}: {validated}")
+            return validated
+    return state.setdefault("shared_state", _new_shared_state()).get("validated_sample_path")
+
+
+def _new_shared_state() -> Dict[str, Any]:
+    return {
+        "artifacts": [],
+        "findings": [],
+        "task_outputs": [],
+        "run_count": 0,
+        "turn_task_runs": 0,
+        "total_task_runs": 0,
+        "validated_sample_path": "",
+        "validated_sample_path_source": "",
+        "pipeline_stage_outputs": [],
+        "pipeline_stage_progress": [],
+    }
+
+
+_UI_SNAPSHOT_LOCK = Lock()
+_UI_SNAPSHOT: Dict[str, Any] = {
+    "chat_history": [],
+    "state": {
+        "role_histories": {},
+        "tool_log": "",
+        "status_log": "",
+        "shared_state": _new_shared_state(),
+    },
+    "tool_log": "",
+    "run_active": False,
+    "composer_visible": True,
+    "send_visible": True,
+    "clear_visible": True,
+    "todo_visible": False,
+    "tool_log_visible": False,
+}
+
+
+def _snapshot_state_default() -> Dict[str, Any]:
+    return {
+        "role_histories": {},
+        "tool_log": "",
+        "status_log": "",
+        "shared_state": _new_shared_state(),
+    }
+
+
+def _store_ui_snapshot(
+    *,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+    state: Optional[Dict[str, Any]] = None,
+    run_active: Optional[bool] = None,
+    composer_visible: Optional[bool] = None,
+    send_visible: Optional[bool] = None,
+    clear_visible: Optional[bool] = None,
+    todo_visible: Optional[bool] = None,
+    tool_log_visible: Optional[bool] = None,
+) -> None:
+    with _UI_SNAPSHOT_LOCK:
+        if chat_history is not None:
+            _UI_SNAPSHOT["chat_history"] = chat_history
+        if state is not None:
+            _UI_SNAPSHOT["state"] = state
+            _UI_SNAPSHOT["tool_log"] = state.get("tool_log", "")
+        if run_active is not None:
+            _UI_SNAPSHOT["run_active"] = run_active
+        if composer_visible is not None:
+            _UI_SNAPSHOT["composer_visible"] = composer_visible
+        if send_visible is not None:
+            _UI_SNAPSHOT["send_visible"] = send_visible
+        if clear_visible is not None:
+            _UI_SNAPSHOT["clear_visible"] = clear_visible
+        if todo_visible is not None:
+            _UI_SNAPSHOT["todo_visible"] = todo_visible
+        if tool_log_visible is not None:
+            _UI_SNAPSHOT["tool_log_visible"] = tool_log_visible
+
+
+def _get_ui_snapshot() -> Dict[str, Any]:
+    with _UI_SNAPSHOT_LOCK:
+        return dict(_UI_SNAPSHOT)
+
+
+def _state_has_running_stage(state: Optional[Dict[str, Any]]) -> bool:
+    shared = (state or {}).get("shared_state") or {}
+    for item in shared.get("pipeline_stage_progress") or []:
+        if str(item.get("status") or "") == "running":
+            return True
+    return False
+
+
+def _stage_progress_from_pipeline_definition() -> List[Dict[str, Any]]:
+    progress: List[Dict[str, Any]] = []
+    for raw_stage in DEEP_AGENT_PIPELINE:
+        architecture = list(raw_stage.get("architecture") or [])
+        if raw_stage.get("use_worker_architecture"):
+            architecture = list(DEEP_AGENT_ARCHITECTURE)
+        progress.append(
+            {
+                "stage_name": str(raw_stage["name"]),
+                "stage_kind": str(raw_stage["stage_kind"]),
+                "subagents": expand_architecture_names(architecture),
+                "status": "pending",
+                "started_at_epoch": None,
+                "finished_at_epoch": None,
+                "duration_sec": None,
+                "error": "",
+            }
+        )
+    return progress
+
+
+def _seed_pipeline_stage_progress(
+    state: Dict[str, Any],
+    stages: List[Tuple[str, str, List[str]]],
+) -> None:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    shared["pipeline_stage_progress"] = [
+        {
+            "stage_name": stage_name,
+            "stage_kind": stage_kind,
+            "subagents": list(subagents),
+            "status": "pending",
+            "started_at_epoch": None,
+            "finished_at_epoch": None,
+            "duration_sec": None,
+            "error": "",
+        }
+        for stage_name, stage_kind, subagents in stages
+    ]
+
+
+def _set_pipeline_stage_status(
+    state: Dict[str, Any],
+    stage_name: str,
+    *,
+    stage_kind: Optional[str] = None,
+    subagents: Optional[List[str]] = None,
+    status: str,
+    error: str = "",
+) -> None:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    progress = shared.setdefault("pipeline_stage_progress", [])
+    entry = next((item for item in progress if item.get("stage_name") == stage_name), None)
+    if entry is None:
+        entry = {
+            "stage_name": stage_name,
+            "stage_kind": stage_kind or "",
+            "subagents": list(subagents or []),
+            "status": "pending",
+            "started_at_epoch": None,
+            "finished_at_epoch": None,
+            "duration_sec": None,
+            "error": "",
+        }
+        progress.append(entry)
+
+    if stage_kind is not None:
+        entry["stage_kind"] = stage_kind
+    if subagents is not None:
+        entry["subagents"] = list(subagents)
+
+    now = time.time()
+    entry["status"] = status
+    entry["error"] = error or ""
+
+    if status == "running":
+        if entry.get("started_at_epoch") is None:
+            entry["started_at_epoch"] = now
+        entry["finished_at_epoch"] = None
+        entry["duration_sec"] = None
+        _store_ui_snapshot(state=state)
+        return
+
+    if status in {"completed", "failed"}:
+        if entry.get("started_at_epoch") is None:
+            entry["started_at_epoch"] = now
+        entry["finished_at_epoch"] = now
+        entry["duration_sec"] = max(0.0, now - float(entry["started_at_epoch"]))
+    _store_ui_snapshot(state=state)
+
+
+def _format_elapsed(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "--:--"
+    total = max(0, int(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def render_pipeline_todo_board(state: Dict[str, Any]) -> str:
+    shared = (state or {}).get("shared_state") or {}
+    progress = shared.get("pipeline_stage_progress") or []
+    if not progress:
+        return (
+            "<div style='padding: 12px; border: 1px solid #d5d8dd; border-radius: 10px;'>"
+            "<strong>Pipeline tasks</strong><div style='margin-top: 6px; color: #5f6368;'>"
+            "No active pipeline tasks.</div></div>"
+        )
+
+    now = time.time()
+    rows: List[str] = []
+    any_running = False
+    for item in progress:
+        status = str(item.get("status") or "pending")
+        started = item.get("started_at_epoch")
+        finished = item.get("finished_at_epoch")
+        duration = item.get("duration_sec")
+        if status == "running" and started is not None:
+            elapsed = now - float(started)
+            any_running = True
+        elif finished is not None and started is not None:
+            elapsed = float(duration) if duration is not None else (float(finished) - float(started))
+        else:
+            elapsed = None
+
+        if status == "completed":
+            box = "☑"
+            tone = "#1b6e3a"
+            status_label = "done"
+        elif status == "failed":
+            box = "☒"
+            tone = "#a61b29"
+            status_label = "failed"
+        elif status == "running":
+            box = "☐"
+            tone = "#0b57d0"
+            status_label = "running"
+        else:
+            box = "☐"
+            tone = "#5f6368"
+            status_label = "pending"
+
+        stage_name = html.escape(str(item.get("stage_name") or "stage"))
+        stage_kind = html.escape(str(item.get("stage_kind") or ""))
+        subagents = ", ".join(item.get("subagents") or []) or "none"
+        subagents_html = html.escape(subagents)
+        error_html = ""
+        if status == "failed" and item.get("error"):
+            error_html = (
+                f"<div style='margin-top: 4px; color: #a61b29;'>"
+                f"{html.escape(str(item.get('error')))}</div>"
+            )
+
+        rows.append(
+            "<div style='border: 1px solid #d5d8dd; border-radius: 10px; padding: 10px 12px; margin-top: 8px;'>"
+            f"<div style='display: flex; justify-content: space-between; gap: 12px; align-items: center;'>"
+            f"<div style='font-size: 15px;'><span style='font-size: 18px; margin-right: 8px;'>{box}</span>"
+            f"<strong>{stage_name}</strong> <span style='color: #5f6368;'>({stage_kind})</span></div>"
+            f"<div style='font-family: monospace; color: {tone};'>{_format_elapsed(elapsed)}</div>"
+            "</div>"
+            f"<div style='margin-top: 4px; color: {tone}; text-transform: uppercase; font-size: 12px; letter-spacing: 0.04em;'>"
+            f"{status_label}</div>"
+            f"<div style='margin-top: 4px; color: #5f6368;'>subagents: {subagents_html}</div>"
+            f"{error_html}"
+            "</div>"
+        )
+
+    header_note = "live timers update while stages are running" if any_running else "latest stage checklist"
+    return (
+        "<div style='padding: 12px; border: 1px solid #d5d8dd; border-radius: 10px; background: #fbfbfc;'>"
+        "<div style='display: flex; justify-content: space-between; gap: 12px; align-items: baseline;'>"
+        "<strong>Pipeline Tasks</strong>"
+        f"<span style='color: #5f6368; font-size: 12px;'>{header_note}</span>"
+        "</div>"
+        + "".join(rows)
+        + "</div>"
+    )
+
+
 def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> str:
     append_status(
         state,
@@ -1017,16 +1362,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     t0 = time.perf_counter()
 
     if "shared_state" not in state:
-        state["shared_state"] = {
-            "artifacts": [],
-            "findings": [],
-            "task_outputs": [],
-            "run_count": 0,
-            "turn_task_runs": 0,
-            "total_task_runs": 0,
-            "validated_sample_path": "",
-            "validated_sample_path_source": "",
-        }
+        state["shared_state"] = _new_shared_state()
 
     state["shared_state"]["task_outputs"] = []
     state["shared_state"]["pipeline_stage_outputs"] = []
@@ -1038,6 +1374,10 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     state["shared_state"]["deep_subagents"] = expand_architecture_names(DEEP_AGENT_ARCHITECTURE)
     state["shared_state"]["deep_pipeline_name"] = runtime.pipeline_name
     state["shared_state"]["deep_pipeline"] = list(DEEP_AGENT_PIPELINE)
+    _seed_pipeline_stage_progress(
+        state,
+        [(stage.name, stage.stage_kind, list(stage.subagent_names)) for stage in runtime.stages],
+    )
     update_validated_sample_path(state, user_text, "user_request", explicit_only=False)
 
     prior_stage_outputs: Dict[str, str] = {}
@@ -1062,6 +1402,13 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 f"(kind={stage.stage_kind}, subagents={', '.join(stage.subagent_names) or 'none'})"
             ),
         )
+        _set_pipeline_stage_status(
+            state,
+            stage.name,
+            stage_kind=stage.stage_kind,
+            subagents=list(stage.subagent_names),
+            status="running",
+        )
         stage_t0 = time.perf_counter()
         try:
             result = stage.agent.run_sync(
@@ -1070,6 +1417,14 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 deps=stage.deps,
             )
         except Exception as e:
+            _set_pipeline_stage_status(
+                state,
+                stage.name,
+                stage_kind=stage.stage_kind,
+                subagents=list(stage.subagent_names),
+                status="failed",
+                error=f"{type(e).__name__}: {e}",
+            )
             append_status(
                 state,
                 f"Stage failed: {stage.name} after {time.perf_counter() - stage_t0:.1f}s ({type(e).__name__})",
@@ -1079,6 +1434,11 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         new_history = result.all_messages()
         set_role_history(state, role_key, new_history)
         append_tool_log_delta(state, role_key, old_history, new_history)
+        update_validated_sample_path_from_messages(
+            state,
+            new_history[len(old_history) if old_history else 0:],
+            f"tool_return:{stage.name}",
+        )
 
         stage_output = str(result.output)
         if stage.stage_kind != "reporter":
@@ -1089,7 +1449,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 explicit_only=True,
             )
         prior_stage_outputs[stage.name] = stage_output
-        final_output = stage_output
+        final_output = _sanitize_user_facing_output(stage_output) if stage.stage_kind == "reporter" else stage_output
 
         stage_entry = {
             "task_id": f"stage:{stage.name}",
@@ -1107,9 +1467,18 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 "output_text": stage_output,
             }
         )
+        if stage.stage_kind == "reporter":
+            stage_entry["output_text"] = final_output
         state["shared_state"]["task_outputs"].append(stage_entry)
         state["shared_state"]["turn_task_runs"] = int(state["shared_state"].get("turn_task_runs", 0)) + 1
         state["shared_state"]["total_task_runs"] = int(state["shared_state"].get("total_task_runs", 0)) + 1
+        _set_pipeline_stage_status(
+            state,
+            stage.name,
+            stage_kind=stage.stage_kind,
+            subagents=list(stage.subagent_names),
+            status="completed",
+        )
         compact_shared_state(state)
         append_status(state, f"Stage finished: {stage.name} in {time.perf_counter() - stage_t0:.1f}s")
 
@@ -1122,12 +1491,59 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
 # ----------------------------
 # Gradio handlers
 # ----------------------------
-def _message_input(value: str = "", interactive: bool = True):
-    return gr.update(value=value, interactive=interactive)
+def _message_input(value: str = "", interactive: bool = True, visible: bool = True):
+    return gr.update(value=value, interactive=interactive, visible=visible)
 
 
-def _send_button(interactive: bool = True):
-    return gr.update(interactive=interactive)
+def _send_button(interactive: bool = True, visible: bool = True):
+    return gr.update(interactive=interactive, visible=visible)
+
+
+def _todo_board(state: Dict[str, Any], visible: bool):
+    return gr.update(value=render_pipeline_todo_board(state), visible=visible)
+
+def _tool_log_update(state: Dict[str, Any]):
+    return gr.update(value=(state or {}).get("tool_log", ""))
+
+
+def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
+    state = snapshot.get("state") or _snapshot_state_default()
+    chat_history = snapshot.get("chat_history") or []
+    active = bool(snapshot.get("run_active")) or _state_has_running_stage(state)
+    composer_visible = bool(snapshot.get("composer_visible", True)) and not active
+    send_visible = bool(snapshot.get("send_visible", True)) and not active
+    clear_visible = bool(snapshot.get("clear_visible", True)) and not active
+    todo_visible = bool(snapshot.get("todo_visible", False)) or active
+    return (
+        chat_history,
+        state,
+        _tool_log_update(state),
+        _message_input(
+            value="",
+            interactive=composer_visible,
+            visible=composer_visible,
+        ),
+        _send_button(
+            interactive=send_visible,
+            visible=send_visible,
+        ),
+        _send_button(
+            interactive=clear_visible,
+            visible=clear_visible,
+        ),
+        _todo_board(state, visible=todo_visible),
+    )
+
+
+def restore_last_ui():
+    return _restore_snapshot_outputs(_get_ui_snapshot())
+
+
+def poll_active_ui_snapshot():
+    snapshot = _get_ui_snapshot()
+    if not (snapshot.get("run_active") or _state_has_running_stage(snapshot.get("state"))):
+        return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+    return _restore_snapshot_outputs(snapshot)
 
 
 def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[str, Any]):
@@ -1135,49 +1551,53 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
     if not user_text:
         state = state or {}
         yield (
-            _message_input(value="", interactive=True),
+            _message_input(value="", interactive=True, visible=True),
             chat_history,
             state,
-            state.get("tool_log", ""),
-            state.get("status_log", ""),
-            _send_button(interactive=True),
+            _tool_log_update(state),
+            _send_button(interactive=True, visible=True),
+            _send_button(interactive=True, visible=True),
+            _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
         )
         return
 
     chat_history = chat_history or []
     state = state or {}
     turn_t0 = time.perf_counter()
+    chat_box: Dict[str, List[Dict[str, str]]] = {"history": chat_history}
 
     # Make sure state keys exist
     state.setdefault("role_histories", {})
     state.setdefault("tool_log", "")
     state.setdefault("status_log", "")
-    state.setdefault("shared_state", {
-        "artifacts": [],
-        "findings": [],
-        "task_outputs": [],
-        "run_count": 0,
-        "turn_task_runs": 0,
-        "total_task_runs": 0,
-        "validated_sample_path": "",
-        "validated_sample_path_source": "",
-    })
+    state.setdefault("shared_state", _new_shared_state())
+    state["shared_state"]["pipeline_stage_progress"] = _stage_progress_from_pipeline_definition()
 
     append_status(state, f"New query: {_shorten(user_text, max_chars=220)}")
-    running_note = "[deep pipeline running... status timeline is live]"
+    running_note = "[deep pipeline running... task board is live]"
 
     # Show user input immediately and begin streaming status/tool log updates.
-    chat_history = chat_history + [
+    chat_box["history"] = chat_history + [
         {"role": "user", "content": user_text},
         {"role": "assistant", "content": running_note},
     ]
+    _store_ui_snapshot(
+        chat_history=chat_box["history"],
+        state=state,
+        run_active=True,
+        composer_visible=False,
+        send_visible=False,
+        clear_visible=False,
+        todo_visible=True,
+    )
     yield (
-        _message_input(value="", interactive=False),
-        chat_history,
+        _message_input(value="", interactive=False, visible=False),
+        chat_box["history"],
         state,
-        state.get("tool_log", ""),
-        state.get("status_log", ""),
-        _send_button(interactive=False),
+        _tool_log_update(state),
+        _send_button(interactive=False, visible=False),
+        _send_button(interactive=False, visible=False),
+        _todo_board(state, visible=True),
     )
 
     def _run_deep_pipeline() -> Tuple[str, str]:
@@ -1191,7 +1611,7 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
         try:
             assistant_text, mode = _run_deep_pipeline()
             append_status(state, f"Chat turn finished in {time.perf_counter() - turn_t0:.1f}s (mode={mode})")
-            result_box["assistant_text"] = assistant_text
+            result_box["assistant_text"] = _sanitize_user_facing_output(assistant_text)
             return
         except Exception as e:
             err = str(e)
@@ -1204,7 +1624,7 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
                         state,
                         f"Chat turn recovered after history reset in {time.perf_counter() - turn_t0:.1f}s (mode={mode})",
                     )
-                    result_box["assistant_text"] = assistant_text
+                    result_box["assistant_text"] = _sanitize_user_facing_output(assistant_text)
                     return
                 except Exception as e2:
                     append_status(
@@ -1216,59 +1636,91 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
             append_status(state, f"Chat turn failed ({type(e).__name__}) in {time.perf_counter() - turn_t0:.1f}s")
             result_box["assistant_text"] = f"[multi-agent pipeline error] {type(e).__name__}: {e}"
         finally:
+            if chat_box["history"]:
+                chat_box["history"][-1] = {"role": "assistant", "content": result_box["assistant_text"]}
+            _store_ui_snapshot(
+                chat_history=chat_box["history"],
+                state=state,
+                run_active=False,
+                composer_visible=True,
+                send_visible=True,
+                clear_visible=True,
+                todo_visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress")),
+            )
             done.set()
 
     worker = Thread(target=_runner, daemon=True)
     worker.start()
 
-    last_status = state.get("status_log", "")
     last_tool_log = state.get("tool_log", "")
+    last_todo_html = render_pipeline_todo_board(state)
     while not done.wait(0.35):
-        status_now = state.get("status_log", "")
         tool_now = state.get("tool_log", "")
-        if status_now != last_status or tool_now != last_tool_log:
-            last_status = status_now
+        todo_now = render_pipeline_todo_board(state)
+        if tool_now != last_tool_log or todo_now != last_todo_html:
             last_tool_log = tool_now
+            last_todo_html = todo_now
+            _store_ui_snapshot(
+                chat_history=chat_box["history"],
+                state=state,
+                run_active=True,
+                composer_visible=False,
+                send_visible=False,
+                clear_visible=False,
+                todo_visible=True,
+            )
             yield (
-                _message_input(value="", interactive=False),
-                chat_history,
+                _message_input(value="", interactive=False, visible=False),
+                chat_box["history"],
                 state,
-                tool_now,
-                status_now,
-                _send_button(interactive=False),
+                _tool_log_update(state),
+                _send_button(interactive=False, visible=False),
+                _send_button(interactive=False, visible=False),
+                gr.update(value=todo_now, visible=True),
             )
 
     worker.join(timeout=0.1)
 
     # Update UI chat
-    chat_history[-1] = {"role": "assistant", "content": result_box["assistant_text"]}
+    chat_history = chat_box["history"]
 
     yield (
-        _message_input(value="", interactive=True),
+        _message_input(value="", interactive=True, visible=True),
         chat_history,
         state,
-        state.get("tool_log", ""),
-        state.get("status_log", ""),
-        _send_button(interactive=True),
+        _tool_log_update(state),
+        _send_button(interactive=True, visible=True),
+        _send_button(interactive=True, visible=True),
+        _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
     )
 
 
 def reset():
-    return [], {
+    fresh_shared_state = _new_shared_state()
+    fresh_state = {
         "role_histories": {},
         "tool_log": "",
         "status_log": "",
-        "shared_state": {
-            "artifacts": [],
-            "findings": [],
-            "task_outputs": [],
-            "run_count": 0,
-            "turn_task_runs": 0,
-            "total_task_runs": 0,
-            "validated_sample_path": "",
-            "validated_sample_path_source": "",
-        },
-    }, "", ""
+        "shared_state": fresh_shared_state,
+    }
+    _store_ui_snapshot(
+        chat_history=[],
+        state=fresh_state,
+        run_active=False,
+        composer_visible=True,
+        send_visible=True,
+        clear_visible=True,
+        todo_visible=False,
+    )
+    return (
+        [],
+        fresh_state,
+        _tool_log_update(fresh_state),
+        _message_input(value="", interactive=True, visible=True),
+        _send_button(interactive=True, visible=True),
+        _send_button(interactive=True, visible=True),
+        _todo_board({"shared_state": fresh_shared_state}, visible=False),
+    )
 
 
 # ----------------------------
@@ -1278,25 +1730,23 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
     gr.Markdown("# MCP Deep-Agent Tool Bench (PydanticAI + MCPServerStdio)")
     gr.Markdown("Deep pipeline -> staged delegated subagents")
 
-    state = gr.State({
-        "role_histories": {},
-        "tool_log": "",
-        "status_log": "",
-        "shared_state": {
-            "artifacts": [],
-            "findings": [],
-            "task_outputs": [],
-            "run_count": 0,
-            "turn_task_runs": 0,
-            "total_task_runs": 0,
-            "validated_sample_path": "",
-            "validated_sample_path_source": "",
-        },
-    })
+    initial_state = _snapshot_state_default()
+    _store_ui_snapshot(
+        chat_history=[],
+        state=initial_state,
+        run_active=False,
+        composer_visible=True,
+        send_visible=True,
+        clear_visible=True,
+        todo_visible=False,
+    )
+    state = gr.State(initial_state)
+    snapshot_timer = gr.Timer(0.5, active=True)
 
     with gr.Row():
         with gr.Column(scale=3):
             chat = gr.Chatbot(label="Chat", height=330)
+            todo_board = gr.HTML(visible=False)
             user = gr.Textbox(
                 label="Message",
                 lines=2,
@@ -1307,14 +1757,19 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
                 clear = gr.Button("Reset")
 
         with gr.Column(scale=2):
-            gr.Markdown("### Agent Status")
-            status_log = gr.Textbox(label="Timeline", lines=16, max_lines=24, interactive=False)
-            gr.Markdown("### Tool / MCP Log (best-effort)")
-            tool_log = gr.Code(label="Log", language="json", lines=30)
+            with gr.Accordion("Tool Log (optional)", open=False):
+                tool_log = gr.Code(label="Log", language="json", lines=30)
 
-    send.click(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, status_log, send])
-    user.submit(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, status_log, send])
-    clear.click(reset, inputs=None, outputs=[chat, state, tool_log, status_log])
+    send.click(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, send, clear, todo_board])
+    user.submit(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, send, clear, todo_board])
+    clear.click(reset, inputs=None, outputs=[chat, state, tool_log, user, send, clear, todo_board])
+    demo.load(restore_last_ui, inputs=None, outputs=[chat, state, tool_log, user, send, clear, todo_board])
+    snapshot_timer.tick(
+        poll_active_ui_snapshot,
+        inputs=None,
+        outputs=[chat, state, tool_log, user, send, clear, todo_board],
+        show_progress="hidden",
+    )
 
 demo.queue()
 demo.launch()

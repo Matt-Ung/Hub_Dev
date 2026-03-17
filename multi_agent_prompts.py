@@ -23,6 +23,7 @@ Rules:
   the command string.
 - Use the help output to choose valid flags instead of guessing from memory.
 - If the current task/shared context provides `validated_sample_path`, treat it as canonical and reuse it verbatim.
+- If no validated sample path is present but Ghidra is available, call `get_program_info` early and reuse the reported executable path.
 - When crafting command-string tool calls (for example runCapa/runFloss), reuse the exact sample path from the
   current user request/shared state. Never invent, normalize, or substitute a placeholder/example path.
 - If you discover and verify the real sample path, report it as `Validated sample path: <exact existing path>`.
@@ -54,6 +55,7 @@ Rules:
 - If planning subagents are available, use them to improve task decomposition.
 - Produce a concise execution plan for downstream worker agents.
 - Use the term `work item`, not `task_id`, for numbered plan entries.
+- If shared context does not already contain a validated sample path and Ghidra is available, prioritize a quick `get_program_info` check early in the plan.
 - Prioritize concrete evidence targets, not generic reverse-engineering steps.
 - Do not fabricate tool output or conclusions at this stage.
 - The plan should make explicit which worker roles are best suited for each work item.
@@ -68,6 +70,7 @@ Rules:
 - Keep delegated tasks role-specific and evidence-oriented.
 - Prefer normal synchronous delegation for worker subtasks.
 - Treat any shared `validated_sample_path` value as canonical for this run and pass it through unchanged to workers.
+- If `validated_sample_path` is absent and Ghidra is available, have one worker obtain it via `get_program_info` before building path-sensitive tool calls.
 - If a worker will use a raw command-string MCP wrapper, require it to call the matching help tool first and then craft
   the command string from that help output.
 - Do not use `answer_subagent` to return a worker result.
