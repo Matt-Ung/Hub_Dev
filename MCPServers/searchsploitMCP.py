@@ -60,52 +60,6 @@ def run_help_command(binary: str, timeout_sec: int = 5) -> str:
     )
 
 
-def run_server(mcp: FastMCP, description: str, default_port: int) -> None:
-    parser = argparse.ArgumentParser(description=description)
-    parser.add_argument(
-        "--mcp-host",
-        type=str,
-        default="127.0.0.1",
-        help="Host to run MCP server on (only used for sse), default: 127.0.0.1",
-    )
-    parser.add_argument(
-        "--mcp-port",
-        type=int,
-        default=default_port,
-        help=f"Port to run MCP server on (only used for sse), default: {default_port}",
-    )
-    parser.add_argument(
-        "--transport",
-        type=str,
-        default="stdio",
-        choices=["stdio", "sse"],
-        help="Transport protocol for MCP, default: stdio",
-    )
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level, default: INFO",
-    )
-    args = parser.parse_args()
-
-    log_level = getattr(logging, args.log_level, logging.INFO)
-    logging.basicConfig(level=log_level)
-    logging.getLogger().setLevel(log_level)
-
-    if args.transport == "sse":
-        try:
-            mcp.settings.log_level = args.log_level
-            mcp.settings.host = args.mcp_host or "127.0.0.1"
-            mcp.settings.port = args.mcp_port or default_port
-            mcp.run(transport="sse")
-        except KeyboardInterrupt:
-            logger.info("Server stopped by user")
-    else:
-        mcp.run()
-
-
 def _parse_searchsploit_json(output: str) -> list[dict[str, Any]]:
     try:
         payload = json.loads(output or "{}")
@@ -216,7 +170,49 @@ def searchsploitHelp(timeout_sec: int = 5) -> str:
 
 
 def main() -> None:
-    run_server(mcp, description="MCP server for SearchSploit", default_port=8094)
+    parser = argparse.ArgumentParser(description="MCP server for SearchSploit")
+    parser.add_argument(
+        "--mcp-host",
+        type=str,
+        default="127.0.0.1",
+        help="Host to run MCP server on (only used for sse), default: 127.0.0.1",
+    )
+    parser.add_argument(
+        "--mcp-port",
+        type=int,
+        default=8094,
+        help="Port to run MCP server on (only used for sse), default: 8094",
+    )
+    parser.add_argument(
+        "--transport",
+        type=str,
+        default="stdio",
+        choices=["stdio", "sse"],
+        help="Transport protocol for MCP, default: stdio",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level, default: INFO",
+    )
+    args = parser.parse_args()
+
+    log_level = getattr(logging, args.log_level, logging.INFO)
+    logging.basicConfig(level=log_level)
+    logging.getLogger().setLevel(log_level)
+
+    if args.transport == "sse":
+        try:
+            mcp.settings.log_level = args.log_level
+            mcp.settings.host = args.mcp_host or "127.0.0.1"
+            mcp.settings.port = args.mcp_port or 8094
+            mcp.run(transport="sse")
+        except KeyboardInterrupt:
+            logger.info("Server stopped by user")
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import getpass
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
@@ -23,7 +24,7 @@ from pydantic_ai.messages import (
 
 from multi_agent_prompts import (
     AGENT_ARCHETYPE_PROMPTS,
-    DEEP_ORCHESTRATOR_INSTRUCTIONS,
+    PIPELINE_STAGE_MANAGER_PROMPTS,
 )
 
 import pydantic_deep as pydantic_deep_pkg
@@ -134,9 +135,26 @@ DEEP_SKILL_DIRS = _parse_path_list(os.environ.get("DEEP_SKILL_DIRS", ""))
 MAX_STATUS_LOG_LINES = int(os.environ.get("MAX_STATUS_LOG_LINES", "400"))
 STATUS_LOG_STDOUT = _env_flag("STATUS_LOG_STDOUT", True)
 DEEP_AGENT_RETRIES = int(os.environ.get("DEEP_AGENT_RETRIES", "4"))
+PATH_HANDOFF_LINE_PREFIX = "Validated sample path:"
+SAMPLE_PATH_SUFFIXES = ("exe", "dll", "sys", "scr", "ocx", "cpl", "bin", "elf", "so", "dylib")
+SAMPLE_PATH_WINDOWS_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])([A-Za-z]:[\\/][^\r\n\"'<>|?*]+?\.(?:"
+    + "|".join(SAMPLE_PATH_SUFFIXES)
+    + r"))"
+)
+SAMPLE_PATH_POSIX_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])((?:/|\./|\.\./)[^\r\n\"']+?\.(?:"
+    + "|".join(SAMPLE_PATH_SUFFIXES)
+    + r"))"
+)
+SAMPLE_PATH_QUOTED_RE = re.compile(
+    r"(?i)[\"']((?:[A-Za-z]:[\\/]|/|\./|\.\./)[^\"'\r\n]+?\.(?:"
+    + "|".join(SAMPLE_PATH_SUFFIXES)
+    + r"))[\"']"
+)
 
-# Streamlined deep-agent architecture configuration. Edit the tuple list directly
-# or set DEEP_AGENT_ARCHITECTURE_NAME to one of the named presets below.
+# Worker analyst breadth configuration. Edit the tuple list directly or set
+# DEEP_AGENT_ARCHITECTURE_NAME to one of the named presets below.
 DEEP_AGENT_ARCHITECTURE_PRESETS: Dict[str, List[Tuple[str, int]]] = {
     "minimal": [
         ("static_generalist", 1),
@@ -181,12 +199,88 @@ if DEEP_AGENT_ARCHITECTURE_NAME not in DEEP_AGENT_ARCHITECTURE_PRESETS:
 DEEP_AGENT_ARCHITECTURE: List[Tuple[str, int]] = list(
     DEEP_AGENT_ARCHITECTURE_PRESETS[DEEP_AGENT_ARCHITECTURE_NAME]
 )
-# Optional direct override example:
+# Optional direct override example for worker breadth:
 # DEEP_AGENT_ARCHITECTURE = [
 #     ("triage_analyst", 1),
 #     ("control_flow_analyst", 2),
 #     ("obfuscation_analyst", 1),
 #     ("string_analyst", 1),
+# ]
+
+
+def _stage_template(
+    name: str,
+    stage_kind: str,
+    architecture: Optional[List[Tuple[str, int]]] = None,
+    use_worker_architecture: bool = False,
+) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "stage_kind": stage_kind,
+        "architecture": list(architecture or []),
+        "use_worker_architecture": use_worker_architecture,
+    }
+
+
+DEEP_AGENT_PIPELINE_PRESETS: Dict[str, List[Dict[str, Any]]] = {
+    "planner_workers_reporter": [
+        _stage_template("planner", "planner", architecture=[("planning_analyst", 1)]),
+        _stage_template("workers", "workers", use_worker_architecture=True),
+        _stage_template("reporter", "reporter", architecture=[("reporting_analyst", 1)]),
+    ],
+    "planner_workers_validators_reporter": [
+        _stage_template("planner", "planner", architecture=[("planning_analyst", 1)]),
+        _stage_template("workers", "workers", use_worker_architecture=True),
+        _stage_template("validators", "validators", architecture=[("evidence_validator", 2)]),
+        _stage_template("reporter", "reporter", architecture=[("reporting_analyst", 1)]),
+    ],
+    "planner_workers_dual_validators_reporter": [
+        _stage_template("planner", "planner", architecture=[("planning_analyst", 1)]),
+        _stage_template("workers", "workers", use_worker_architecture=True),
+        _stage_template(
+            "validators",
+            "validators",
+            architecture=[("evidence_validator", 1), ("triage_analyst", 1)],
+        ),
+        _stage_template("reporter", "reporter", architecture=[("reporting_analyst", 1)]),
+    ],
+}
+
+DEEP_AGENT_PIPELINE_NAME = (
+    os.environ.get("DEEP_AGENT_PIPELINE_NAME") or "planner_workers_validators_reporter"
+).strip()
+if DEEP_AGENT_PIPELINE_NAME not in DEEP_AGENT_PIPELINE_PRESETS:
+    raise RuntimeError(
+        f"Unknown DEEP_AGENT_PIPELINE_NAME={DEEP_AGENT_PIPELINE_NAME!r}. "
+        f"Available presets: {', '.join(sorted(DEEP_AGENT_PIPELINE_PRESETS))}"
+    )
+
+
+def resolve_pipeline_definition(
+    pipeline_template: List[Dict[str, Any]],
+    worker_architecture: List[Tuple[str, int]],
+) -> List[Dict[str, Any]]:
+    resolved: List[Dict[str, Any]] = []
+    for raw_stage in pipeline_template:
+        stage = dict(raw_stage)
+        if stage.get("use_worker_architecture"):
+            stage["architecture"] = list(worker_architecture)
+        else:
+            stage["architecture"] = list(stage.get("architecture") or [])
+        resolved.append(stage)
+    return resolved
+
+
+DEEP_AGENT_PIPELINE: List[Dict[str, Any]] = resolve_pipeline_definition(
+    DEEP_AGENT_PIPELINE_PRESETS[DEEP_AGENT_PIPELINE_NAME],
+    DEEP_AGENT_ARCHITECTURE,
+)
+# Optional direct override example for explicit staged flow:
+# DEEP_AGENT_PIPELINE = [
+#     _stage_template("planner", "planner", architecture=[("planning_analyst", 1)]),
+#     _stage_template("workers", "workers", architecture=[("control_flow_analyst", 2), ("string_analyst", 1)]),
+#     _stage_template("validators", "validators", architecture=[("evidence_validator", 2)]),
+#     _stage_template("reporter", "reporter", architecture=[("reporting_analyst", 1)]),
 # ]
 
 
@@ -261,6 +355,12 @@ def partition_toolsets(toolsets: List[MCPServerStdio]) -> Tuple[List[MCPServerSt
 
 
 AGENT_ARCHETYPE_SPECS: Dict[str, Dict[str, str]] = {
+    "planning_analyst": {
+        "description": "Planning specialist that decomposes the user request into concrete malware-analysis tasks.",
+        "tool_domain": "all",
+        "preferred_mode": "sync",
+        "typical_complexity": "moderate",
+    },
     "static_generalist": {
         "description": "General static reverse-engineering specialist.",
         "tool_domain": "static",
@@ -297,17 +397,23 @@ AGENT_ARCHETYPE_SPECS: Dict[str, Dict[str, str]] = {
         "preferred_mode": "sync",
         "typical_complexity": "moderate",
     },
-    "dynamic_generalist": {
-        "description": "General runtime behavior specialist.",
-        "tool_domain": "dynamic",
-        "preferred_mode": "auto",
-        "typical_complexity": "complex",
-    },
     "runtime_behavior_analyst": {
         "description": "Runtime specialist focused on behavioral correlation and execution-time artifacts.",
         "tool_domain": "dynamic",
         "preferred_mode": "auto",
         "typical_complexity": "complex",
+    },
+    "evidence_validator": {
+        "description": "Validation specialist that reviews claims for evidentiary support and contradictions.",
+        "tool_domain": "all",
+        "preferred_mode": "sync",
+        "typical_complexity": "moderate",
+    },
+    "reporting_analyst": {
+        "description": "Reporting specialist that synthesizes validated findings into a concise technical report.",
+        "tool_domain": "all",
+        "preferred_mode": "sync",
+        "typical_complexity": "moderate",
     },
 }
 
@@ -394,34 +500,132 @@ def expand_architecture_names(architecture: List[Tuple[str, int]]) -> List[str]:
     return names
 
 
+PIPELINE_STAGE_OUTPUT_CONTRACTS: Dict[str, str] = {
+    "planner": (
+        "Produce a compact execution plan with prioritized work items, suggested worker-role assignments, and concrete evidence targets."
+    ),
+    "workers": (
+        "Produce a structured worker evidence bundle grouped by specialist or topic. Include artifacts and avoid unsupported conclusions."
+    ),
+    "validators": (
+        "Produce validated findings grouped into confirmed, weak/unsupported, contradictions, and unresolved questions."
+    ),
+    "reporter": (
+        "Produce the final concise technical report using validated findings only, plus a short unknowns section."
+    ),
+}
+
+
+def build_stage_manager_instructions(stage_name: str, stage_kind: str, architecture: List[Tuple[str, int]]) -> str:
+    if stage_kind not in PIPELINE_STAGE_MANAGER_PROMPTS:
+        raise RuntimeError(f"Unknown pipeline stage kind: {stage_kind!r}")
+
+    base = PIPELINE_STAGE_MANAGER_PROMPTS[stage_kind].rstrip()
+    delegated_roles = ", ".join(expand_architecture_names(architecture)) or "none"
+    return (
+        f"{base}\n\n"
+        "Current stage configuration:\n"
+        f"- stage_name: {stage_name}\n"
+        f"- stage_kind: {stage_kind}\n"
+        f"- delegated roles: {delegated_roles}\n"
+        "- Prefer normal synchronous delegation for stage work unless there is a strong reason to launch background tasks.\n"
+        "- Do not use async task-management tools (`check_task`, `wait_tasks`, `list_active_tasks`, `answer_subagent`) unless you"
+        " first launched a background task with `task(..., mode=\"async\")` in this same stage.\n"
+        "- `answer_subagent` is only for replying to a subagent question after `check_task` shows that exact returned task ID is"
+        " `WAITING_FOR_ANSWER`.\n"
+        "- Numbered plan items like `1`, `2`, `3` are work-item labels, not subagent task IDs.\n"
+        "- If shared context provides `validated_sample_path`, treat it as the canonical sample path and reuse it verbatim.\n"
+        "- Never invent placeholder/example targets such as `/path/to/...` or `C:\\path\\to\\...`.\n"
+        "- If this stage discovers or confirms the real sample path, include a line exactly like:\n"
+        f"  {PATH_HANDOFF_LINE_PREFIX} <exact existing path>\n"
+        "- Follow the stage output contract exactly.\n"
+    )
+
+
+def build_stage_prompt(
+    stage_name: str,
+    stage_kind: str,
+    user_text: str,
+    prior_stage_outputs: Dict[str, str],
+    architecture: List[Tuple[str, int]],
+    shared_state: Optional[Dict[str, Any]] = None,
+) -> str:
+    shared = shared_state or {}
+    sections = [
+        f"Pipeline stage: {stage_name} ({stage_kind})",
+        "Original user request:",
+        user_text.strip(),
+        "",
+        "Current stage output contract:",
+        PIPELINE_STAGE_OUTPUT_CONTRACTS[stage_kind],
+    ]
+
+    validated_sample_path = (shared.get("validated_sample_path") or "").strip()
+    validated_sample_path_source = (shared.get("validated_sample_path_source") or "").strip()
+    sections.extend(["", "Shared execution context:"])
+    if validated_sample_path:
+        sections.extend(
+            [
+                f"- validated_sample_path: {validated_sample_path}",
+                f"- validated_sample_path_source: {validated_sample_path_source or 'unknown'}",
+                "- Path rule: use this exact path verbatim in every tool call that requires the sample target.",
+            ]
+        )
+    else:
+        sections.extend(
+            [
+                "- validated_sample_path: UNKNOWN",
+                (
+                    f"- If you discover the real sample path during this stage, emit a line exactly like "
+                    f"`{PATH_HANDOFF_LINE_PREFIX} <exact existing path>` near the top of your response."
+                ),
+            ]
+        )
+
+    stage_roles = expand_architecture_names(architecture)
+    if stage_roles:
+        sections.extend(["", "Configured stage roles:", ", ".join(stage_roles)])
+
+    if prior_stage_outputs:
+        sections.extend(["", "Prior stage outputs:"])
+        for prev_name, prev_output in prior_stage_outputs.items():
+            sections.extend([f"## {prev_name}", (prev_output or "").strip()])
+
+    return "\n".join(sections).strip()
+
+
 # ----------------------------
 # Runtime container
 # ----------------------------
 @dataclass
+class PipelineStageRuntime:
+    name: str
+    stage_kind: str
+    architecture: List[Tuple[str, int]]
+    subagent_names: List[str]
+    agent: Agent
+    deps: Any
+
+
+@dataclass
 class MultiAgentRuntime:
-    deep_orchestrator: Agent
-    deep_deps: Any
-    all_toolsets: List[MCPServerStdio]
-    static_toolsets: List[MCPServerStdio]
-    dynamic_toolsets: List[MCPServerStdio]
+    pipeline_name: str
+    stages: List[PipelineStageRuntime]
 
 
 _RUNTIME: Optional[MultiAgentRuntime] = None
 
 
-def build_deep_runtime_components(
-    static_tools: List[MCPServerStdio],
-    dynamic_tools: List[MCPServerStdio],
-) -> Tuple[Agent, Any]:
-    subagents = build_subagent_architecture(DEEP_AGENT_ARCHITECTURE, static_tools, dynamic_tools)
-
-    history_processors = [
+def _build_history_processors() -> List[Any]:
+    return [
         create_sliding_window_processor(
             trigger=("messages", 80),
             keep=("messages", 40),
         )
     ]
 
+
+def _build_skill_directories() -> List[str]:
     skill_directories: List[str] = []
     if DEEP_ENABLE_SKILLS:
         for path in DEEP_SKILL_DIRS:
@@ -440,7 +644,10 @@ def build_deep_runtime_components(
 
         # Keep order stable and remove duplicates
         skill_directories = list(dict.fromkeys(skill_directories))
+    return skill_directories
 
+
+def _build_deep_backend() -> Any:
     deep_backend = None
     if DEEP_PERSIST_BACKEND:
         try:
@@ -451,19 +658,32 @@ def build_deep_runtime_components(
         except Exception as e:
             print(f"[deep backend] persistent LocalBackend unavailable, using StateBackend: {e}")
             deep_backend = None
+    return deep_backend
 
-    memory_dir = DEEP_MEMORY_DIR
+
+def build_stage_runtime(
+    stage_definition: Dict[str, Any],
+    static_tools: List[MCPServerStdio],
+    dynamic_tools: List[MCPServerStdio],
+    skill_directories: List[str],
+    deep_backend: Any,
+) -> PipelineStageRuntime:
+    stage_name = str(stage_definition["name"])
+    stage_kind = str(stage_definition["stage_kind"])
+    architecture = list(stage_definition.get("architecture") or [])
+    subagents = build_subagent_architecture(architecture, static_tools, dynamic_tools) if architecture else []
+    memory_dir = str(Path(DEEP_MEMORY_DIR) / stage_name)
     if deep_backend is not None and memory_dir.startswith("/"):
         memory_dir = memory_dir.lstrip("/")
 
     try:
-        deep_agent = create_deep_agent(
+        stage_agent = create_deep_agent(
             model=OPENAI_MODEL_ID,
-            instructions=DEEP_ORCHESTRATOR_INSTRUCTIONS,
-            subagents=subagents,
+            instructions=build_stage_manager_instructions(stage_name, stage_kind, architecture),
+            subagents=subagents or None,
             include_todo=True,
             include_filesystem=False,
-            include_subagents=True,
+            include_subagents=bool(subagents),
             include_general_purpose_subagent=False,
             include_plan=False,
             include_skills=bool(skill_directories),
@@ -473,14 +693,35 @@ def build_deep_runtime_components(
             include_history_archive=False,
             context_manager=True,
             context_manager_max_tokens=int(os.environ.get("DEEP_CONTEXT_MAX_TOKENS", "18000")),
-            history_processors=history_processors,
+            history_processors=_build_history_processors(),
             retries=DEEP_AGENT_RETRIES,
             cost_tracking=False,
         )
-        deep_deps = create_default_deps(backend=deep_backend) if deep_backend is not None else create_default_deps()
-        return deep_agent, deep_deps
+        stage_deps = create_default_deps(backend=deep_backend) if deep_backend is not None else create_default_deps()
+        return PipelineStageRuntime(
+            name=stage_name,
+            stage_kind=stage_kind,
+            architecture=architecture,
+            subagent_names=expand_architecture_names(architecture),
+            agent=stage_agent,
+            deps=stage_deps,
+        )
     except Exception as e:
-        raise RuntimeError(f"Deep-agent initialization failed: {type(e).__name__}: {e}") from e
+        raise RuntimeError(
+            f"Deep-agent initialization failed for stage {stage_name!r}: {type(e).__name__}: {e}"
+        ) from e
+
+
+def build_deep_runtime_components(
+    static_tools: List[MCPServerStdio],
+    dynamic_tools: List[MCPServerStdio],
+) -> List[PipelineStageRuntime]:
+    skill_directories = _build_skill_directories()
+    deep_backend = _build_deep_backend()
+    return [
+        build_stage_runtime(stage_definition, static_tools, dynamic_tools, skill_directories, deep_backend)
+        for stage_definition in DEEP_AGENT_PIPELINE
+    ]
 
 
 def get_runtime_sync() -> MultiAgentRuntime:
@@ -495,14 +736,17 @@ def get_runtime_sync() -> MultiAgentRuntime:
     print("Static tools:", [s.id for s in static_tools])
     print("Dynamic tools:", [s.id for s in dynamic_tools])
 
-    deep_orchestrator, deep_deps = build_deep_runtime_components(static_tools, dynamic_tools)
+    stages = build_deep_runtime_components(static_tools, dynamic_tools)
     print("Deep-agent mode: required")
     print(
         "Deep config:",
         {
-            "architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,
-            "architecture": DEEP_AGENT_ARCHITECTURE,
-            "expanded_subagents": expand_architecture_names(DEEP_AGENT_ARCHITECTURE),
+            "pipeline_name": DEEP_AGENT_PIPELINE_NAME,
+            "pipeline": DEEP_AGENT_PIPELINE,
+            "worker_architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,
+            "worker_architecture": DEEP_AGENT_ARCHITECTURE,
+            "worker_subagents": expand_architecture_names(DEEP_AGENT_ARCHITECTURE),
+            "pipeline_stage_names": [stage.name for stage in stages],
             "memory": DEEP_ENABLE_MEMORY,
             "memory_dir": DEEP_MEMORY_DIR,
             "persist_backend": DEEP_PERSIST_BACKEND,
@@ -515,11 +759,8 @@ def get_runtime_sync() -> MultiAgentRuntime:
     )
 
     _RUNTIME = MultiAgentRuntime(
-        deep_orchestrator=deep_orchestrator,
-        deep_deps=deep_deps,
-        all_toolsets=toolsets,
-        static_toolsets=static_tools,
-        dynamic_toolsets=dynamic_tools,
+        pipeline_name=DEEP_AGENT_PIPELINE_NAME,
+        stages=stages,
     )
     return _RUNTIME
 
@@ -666,12 +907,112 @@ def compact_shared_state(state: Dict[str, Any]) -> None:
         shared["task_outputs"] = outputs[-MAX_TASK_OUTPUTS:]
 
 
-def run_deepagent_orchestration(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> str:
-    role_key = "deep_orchestrator"
-    old_history = get_role_history(state, role_key)
+def _normalize_path_candidate(candidate: str) -> str:
+    value = (candidate or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    value = value.strip().rstrip(".,;:")
+    if value.endswith(")") and value.count("(") < value.count(")"):
+        value = value[:-1]
+    if value.endswith("]") and value.count("[") < value.count("]"):
+        value = value[:-1]
+    return value.strip()
+
+
+def _looks_like_placeholder_path(candidate: str) -> bool:
+    normalized = _normalize_path_candidate(candidate).lower().replace("\\", "/")
+    if not normalized:
+        return True
+    placeholder_markers = (
+        "/path/to/",
+        "c:/path/to/",
+        "path/to/your/",
+        "path/to/sample",
+        "path/to/program",
+        "your/program",
+        "your/sample",
+        "<sample",
+        "<path",
+        "{sample",
+        "{path",
+    )
+    return any(marker in normalized for marker in placeholder_markers)
+
+
+def _validate_existing_sample_path(candidate: str) -> Optional[str]:
+    normalized = _normalize_path_candidate(candidate)
+    if not normalized or _looks_like_placeholder_path(normalized):
+        return None
+
+    expanded = os.path.expandvars(os.path.expanduser(normalized))
+    if not os.path.exists(expanded):
+        return None
+
+    try:
+        return str(Path(expanded).resolve())
+    except Exception:
+        return os.path.abspath(expanded)
+
+
+def _extract_validated_path_handoff(text: str) -> Optional[str]:
+    for raw_line in (text or "").splitlines():
+        if PATH_HANDOFF_LINE_PREFIX.lower() not in raw_line.lower():
+            continue
+        _, _, candidate = raw_line.partition(":")
+        validated = _validate_existing_sample_path(candidate)
+        if validated:
+            return validated
+    return None
+
+
+def _extract_sample_path_candidates(text: str) -> List[str]:
+    seen: set[str] = set()
+    candidates: List[str] = []
+
+    for pattern in (SAMPLE_PATH_QUOTED_RE, SAMPLE_PATH_WINDOWS_RE, SAMPLE_PATH_POSIX_RE):
+        for match in pattern.finditer(text or ""):
+            validated = _validate_existing_sample_path(match.group(1))
+            if not validated or validated in seen:
+                continue
+            seen.add(validated)
+            candidates.append(validated)
+
+    return candidates
+
+
+def update_validated_sample_path(
+    state: Dict[str, Any],
+    text: str,
+    source: str,
+    *,
+    explicit_only: bool,
+) -> Optional[str]:
+    shared = state.setdefault("shared_state", {})
+    previous = shared.get("validated_sample_path")
+    validated = _extract_validated_path_handoff(text) if explicit_only else None
+
+    if validated is None and not explicit_only:
+        candidates = _extract_sample_path_candidates(text)
+        validated = candidates[0] if candidates else None
+
+    if not validated:
+        return previous
+
+    shared["validated_sample_path"] = validated
+    shared["validated_sample_path_source"] = source
+    if previous != validated:
+        append_status(state, f"Validated sample path set from {source}: {validated}")
+    return validated
+
+
+def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> str:
     append_status(
         state,
-        f"Deep orchestration started (architecture={DEEP_AGENT_ARCHITECTURE_NAME}, subagents={', '.join(expand_architecture_names(DEEP_AGENT_ARCHITECTURE))})",
+        (
+            f"Deep pipeline started (pipeline={runtime.pipeline_name}, "
+            f"worker_breadth={DEEP_AGENT_ARCHITECTURE_NAME}, "
+            f"stages={', '.join(stage.name for stage in runtime.stages)})"
+        ),
     )
     t0 = time.perf_counter()
 
@@ -683,56 +1024,124 @@ def run_deepagent_orchestration(runtime: MultiAgentRuntime, user_text: str, stat
             "run_count": 0,
             "turn_task_runs": 0,
             "total_task_runs": 0,
+            "validated_sample_path": "",
+            "validated_sample_path_source": "",
         }
 
     state["shared_state"]["task_outputs"] = []
+    state["shared_state"]["pipeline_stage_outputs"] = []
     state["shared_state"]["turn_task_runs"] = 0
     state["shared_state"]["last_user_request"] = user_text
-    state["shared_state"]["orchestration_mode"] = "deep"
+    state["shared_state"]["execution_mode"] = "deep_pipeline"
     state["shared_state"]["deep_architecture_name"] = DEEP_AGENT_ARCHITECTURE_NAME
     state["shared_state"]["deep_architecture"] = list(DEEP_AGENT_ARCHITECTURE)
     state["shared_state"]["deep_subagents"] = expand_architecture_names(DEEP_AGENT_ARCHITECTURE)
+    state["shared_state"]["deep_pipeline_name"] = runtime.pipeline_name
+    state["shared_state"]["deep_pipeline"] = list(DEEP_AGENT_PIPELINE)
+    update_validated_sample_path(state, user_text, "user_request", explicit_only=False)
 
-    try:
-        result = runtime.deep_orchestrator.run_sync(
-            user_text,
-            message_history=old_history if old_history else None,
-            deps=runtime.deep_deps,
+    prior_stage_outputs: Dict[str, str] = {}
+    final_output = ""
+
+    for stage in runtime.stages:
+        role_key = f"pipeline_{stage.name}"
+        old_history = get_role_history(state, role_key)
+        stage_prompt = build_stage_prompt(
+            stage_name=stage.name,
+            stage_kind=stage.stage_kind,
+            user_text=user_text,
+            prior_stage_outputs=prior_stage_outputs,
+            architecture=stage.architecture,
+            shared_state=state.get("shared_state"),
         )
-    except Exception as e:
-        append_status(state, f"Deep orchestration failed after {time.perf_counter() - t0:.1f}s: {type(e).__name__}")
-        raise
-    new_history = result.all_messages()
-    set_role_history(state, role_key, new_history)
-    append_tool_log_delta(state, role_key, old_history, new_history)
 
-    assistant_text = str(result.output)
-    state["shared_state"]["task_outputs"].append(
-        {
-            "task_id": "deep_orchestrator",
-            "worker": "deep",
-            "objective": "Run deep-agent orchestration with delegated subagents",
+        append_status(
+            state,
+            (
+                f"Stage started: {stage.name} "
+                f"(kind={stage.stage_kind}, subagents={', '.join(stage.subagent_names) or 'none'})"
+            ),
+        )
+        stage_t0 = time.perf_counter()
+        try:
+            result = stage.agent.run_sync(
+                stage_prompt,
+                message_history=old_history if old_history else None,
+                deps=stage.deps,
+            )
+        except Exception as e:
+            append_status(
+                state,
+                f"Stage failed: {stage.name} after {time.perf_counter() - stage_t0:.1f}s ({type(e).__name__})",
+            )
+            raise
+
+        new_history = result.all_messages()
+        set_role_history(state, role_key, new_history)
+        append_tool_log_delta(state, role_key, old_history, new_history)
+
+        stage_output = str(result.output)
+        if stage.stage_kind != "reporter":
+            update_validated_sample_path(
+                state,
+                stage_output,
+                f"stage:{stage.name}",
+                explicit_only=True,
+            )
+        prior_stage_outputs[stage.name] = stage_output
+        final_output = stage_output
+
+        stage_entry = {
+            "task_id": f"stage:{stage.name}",
+            "worker": stage.stage_kind,
+            "objective": f"Pipeline stage `{stage.name}`",
             "status": "ok",
-            "output_text": assistant_text,
+            "output_text": stage_output,
+            "subagents": list(stage.subagent_names),
         }
-    )
-    state["shared_state"]["run_count"] = int(state["shared_state"].get("run_count", 0)) + 1
-    state["shared_state"]["turn_task_runs"] = int(state["shared_state"].get("turn_task_runs", 0)) + 1
-    state["shared_state"]["total_task_runs"] = int(state["shared_state"].get("total_task_runs", 0)) + 1
-    compact_shared_state(state)
+        state["shared_state"]["pipeline_stage_outputs"].append(
+            {
+                "stage_name": stage.name,
+                "stage_kind": stage.stage_kind,
+                "subagents": list(stage.subagent_names),
+                "output_text": stage_output,
+            }
+        )
+        state["shared_state"]["task_outputs"].append(stage_entry)
+        state["shared_state"]["turn_task_runs"] = int(state["shared_state"].get("turn_task_runs", 0)) + 1
+        state["shared_state"]["total_task_runs"] = int(state["shared_state"].get("total_task_runs", 0)) + 1
+        compact_shared_state(state)
+        append_status(state, f"Stage finished: {stage.name} in {time.perf_counter() - stage_t0:.1f}s")
 
-    append_status(state, f"Deep orchestration finished in {time.perf_counter() - t0:.1f}s")
-    return assistant_text
+    state["shared_state"]["run_count"] = int(state["shared_state"].get("run_count", 0)) + 1
+    state["shared_state"]["final_output"] = final_output
+    append_status(state, f"Deep pipeline finished in {time.perf_counter() - t0:.1f}s")
+    return final_output
 
 
 # ----------------------------
 # Gradio handlers
 # ----------------------------
+def _message_input(value: str = "", interactive: bool = True):
+    return gr.update(value=value, interactive=interactive)
+
+
+def _send_button(interactive: bool = True):
+    return gr.update(interactive=interactive)
+
+
 def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[str, Any]):
     user_text = (user_text or "").strip()
     if not user_text:
         state = state or {}
-        yield "", chat_history, state, state.get("tool_log", ""), state.get("status_log", "")
+        yield (
+            _message_input(value="", interactive=True),
+            chat_history,
+            state,
+            state.get("tool_log", ""),
+            state.get("status_log", ""),
+            _send_button(interactive=True),
+        )
         return
 
     chat_history = chat_history or []
@@ -750,28 +1159,37 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
         "run_count": 0,
         "turn_task_runs": 0,
         "total_task_runs": 0,
+        "validated_sample_path": "",
+        "validated_sample_path_source": "",
     })
 
     append_status(state, f"New query: {_shorten(user_text, max_chars=220)}")
-    running_note = "[orchestration running... status timeline is live]"
+    running_note = "[deep pipeline running... status timeline is live]"
 
     # Show user input immediately and begin streaming status/tool log updates.
     chat_history = chat_history + [
         {"role": "user", "content": user_text},
         {"role": "assistant", "content": running_note},
     ]
-    yield "", chat_history, state, state.get("tool_log", ""), state.get("status_log", "")
+    yield (
+        _message_input(value="", interactive=False),
+        chat_history,
+        state,
+        state.get("tool_log", ""),
+        state.get("status_log", ""),
+        _send_button(interactive=False),
+    )
 
-    def _run_deep_orchestrator() -> Tuple[str, str]:
+    def _run_deep_pipeline() -> Tuple[str, str]:
         runtime = get_runtime_sync()
-        return run_deepagent_orchestration(runtime, user_text, state), "deep"
+        return run_deepagent_pipeline(runtime, user_text, state), "deep_pipeline"
 
     result_box: Dict[str, str] = {"assistant_text": running_note}
     done = Event()
 
     def _runner() -> None:
         try:
-            assistant_text, mode = _run_deep_orchestrator()
+            assistant_text, mode = _run_deep_pipeline()
             append_status(state, f"Chat turn finished in {time.perf_counter() - turn_t0:.1f}s (mode={mode})")
             result_box["assistant_text"] = assistant_text
             return
@@ -781,7 +1199,7 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
                 append_status(state, "Detected invalid tool history; clearing role histories and retrying once")
                 state["role_histories"] = {}
                 try:
-                    assistant_text, mode = _run_deep_orchestrator()
+                    assistant_text, mode = _run_deep_pipeline()
                     append_status(
                         state,
                         f"Chat turn recovered after history reset in {time.perf_counter() - turn_t0:.1f}s (mode={mode})",
@@ -793,10 +1211,10 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
                         state,
                         f"Chat turn failed after history-reset retry ({type(e2).__name__}) in {time.perf_counter() - turn_t0:.1f}s",
                     )
-                    result_box["assistant_text"] = f"[multi-agent orchestration error] {type(e2).__name__}: {e2}"
+                    result_box["assistant_text"] = f"[multi-agent pipeline error] {type(e2).__name__}: {e2}"
                     return
             append_status(state, f"Chat turn failed ({type(e).__name__}) in {time.perf_counter() - turn_t0:.1f}s")
-            result_box["assistant_text"] = f"[multi-agent orchestration error] {type(e).__name__}: {e}"
+            result_box["assistant_text"] = f"[multi-agent pipeline error] {type(e).__name__}: {e}"
         finally:
             done.set()
 
@@ -811,14 +1229,28 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
         if status_now != last_status or tool_now != last_tool_log:
             last_status = status_now
             last_tool_log = tool_now
-            yield "", chat_history, state, tool_now, status_now
+            yield (
+                _message_input(value="", interactive=False),
+                chat_history,
+                state,
+                tool_now,
+                status_now,
+                _send_button(interactive=False),
+            )
 
     worker.join(timeout=0.1)
 
     # Update UI chat
     chat_history[-1] = {"role": "assistant", "content": result_box["assistant_text"]}
 
-    yield "", chat_history, state, state.get("tool_log", ""), state.get("status_log", "")
+    yield (
+        _message_input(value="", interactive=True),
+        chat_history,
+        state,
+        state.get("tool_log", ""),
+        state.get("status_log", ""),
+        _send_button(interactive=True),
+    )
 
 
 def reset():
@@ -833,6 +1265,8 @@ def reset():
             "run_count": 0,
             "turn_task_runs": 0,
             "total_task_runs": 0,
+            "validated_sample_path": "",
+            "validated_sample_path_source": "",
         },
     }, "", ""
 
@@ -842,7 +1276,7 @@ def reset():
 # ----------------------------
 with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
     gr.Markdown("# MCP Deep-Agent Tool Bench (PydanticAI + MCPServerStdio)")
-    gr.Markdown("Deep orchestrator -> delegated subagents")
+    gr.Markdown("Deep pipeline -> staged delegated subagents")
 
     state = gr.State({
         "role_histories": {},
@@ -855,6 +1289,8 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
             "run_count": 0,
             "turn_task_runs": 0,
             "total_task_runs": 0,
+            "validated_sample_path": "",
+            "validated_sample_path_source": "",
         },
     })
 
@@ -876,8 +1312,8 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
             gr.Markdown("### Tool / MCP Log (best-effort)")
             tool_log = gr.Code(label="Log", language="json", lines=30)
 
-    send.click(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, status_log])
-    user.submit(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, status_log])
+    send.click(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, status_log, send])
+    user.submit(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, status_log, send])
     clear.click(reset, inputs=None, outputs=[chat, state, tool_log, status_log])
 
 demo.queue()
