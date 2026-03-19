@@ -29,6 +29,12 @@
     "preferred_mode": "sync",
     "typical_complexity": "complex"
   },
+  "ghidra_analyst": {
+    "description": "Static Ghidra-focused specialist that pivots from candidate artifacts to xrefs, surrounding context, and analyst-relevant meaning.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "complex"
+  },
   "string_analyst": {
     "description": "Static specialist focused on recovered strings, stack strings, decoded values, and configuration material.",
     "tool_domain": "static",
@@ -55,13 +61,13 @@
   },
   "evidence_validator": {
     "description": "Validation specialist that reviews claims for evidentiary support and contradictions.",
-    "tool_domain": "all",
+    "tool_domain": "none",
     "preferred_mode": "sync",
     "typical_complexity": "moderate"
   },
   "reporting_analyst": {
     "description": "Reporting specialist that synthesizes validated findings into a concise technical report.",
-    "tool_domain": "all",
+    "tool_domain": "none",
     "preferred_mode": "sync",
     "typical_complexity": "moderate"
   }

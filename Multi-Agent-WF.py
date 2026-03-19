@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from threading import Event, Thread, Lock
+from uuid import uuid4
 
 import gradio as gr
 
@@ -107,13 +108,25 @@ _load_dotenv_if_present()
 if not os.environ.get("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = getpass.getpass("Enter your OpenAI API Key: ")
 
-OPENAI_MODEL_ID = os.environ.get("OPENAI_MODEL_ID", "openai:gpt-4o-mini")
+OPENAI_MODEL_ID = os.environ.get("OPENAI_MODEL_ID", "openai:gpt-5-mini")
 MAX_ROLE_HISTORY_MESSAGES = int(os.environ.get("MAX_ROLE_HISTORY_MESSAGES", "16"))
 MAX_TASK_OUTPUTS = int(os.environ.get("MAX_TASK_OUTPUTS", "32"))
 MAX_TOOL_LOG_CHARS = int(os.environ.get("MAX_TOOL_LOG_CHARS", "120000"))
 MAX_TOOL_RESULT_CACHE_ENTRIES = int(os.environ.get("MAX_TOOL_RESULT_CACHE_ENTRIES", "64"))
 PLANNER_WORK_ITEMS_START = "WORK_ITEMS_JSON_START"
 PLANNER_WORK_ITEMS_END = "WORK_ITEMS_JSON_END"
+VALIDATION_DECISION_START = "VALIDATION_GATE_JSON_START"
+VALIDATION_DECISION_END = "VALIDATION_GATE_JSON_END"
+MAX_VALIDATION_REPLAN_RETRIES = int(os.environ.get("MAX_VALIDATION_REPLAN_RETRIES", "2"))
+VALIDATOR_REVIEW_LEVEL_CHOICES = [
+    ("easy (Business Manager)", "easy"),
+    ("default (CS Background)", "default"),
+    ("intermediate (CS Professor)", "intermediate"),
+    ("strict (Seasoned Professional Malware Analyst)", "strict"),
+]
+VALIDATOR_REVIEW_LEVEL_LABELS = {
+    value: label for label, value in VALIDATOR_REVIEW_LEVEL_CHOICES
+}
 TOOL_RESULT_CACHE_SERVER_MARKERS = tuple(
     marker.strip().lower()
     for marker in os.environ.get(
@@ -138,6 +151,21 @@ def _parse_path_list(raw: str) -> List[str]:
     return [p.strip() for p in raw.split(sep) if p.strip()]
 
 
+def _normalize_validator_review_level(value: Any) -> str:
+    if isinstance(value, bool):
+        return "strict" if value else "default"
+    normalized = str(value or "").strip().lower()
+    if normalized in {"easy", "default", "intermediate", "strict"}:
+        return normalized
+    if normalized in {"business", "business manager", "manager", "simple", "easy review"}:
+        return "easy"
+    if normalized in {"balanced", "normal", "cs", "cs background"}:
+        return "default"
+    if normalized in {"professor", "cs professor", "medium", "moderate"}:
+        return "intermediate"
+    return "default"
+
+
 DEEP_ENABLE_MEMORY = _env_flag("DEEP_ENABLE_MEMORY", True)
 DEEP_MEMORY_DIR = os.environ.get("DEEP_MEMORY_DIR", ".deep/memory")
 DEEP_PERSIST_BACKEND = _env_flag("DEEP_PERSIST_BACKEND", True)
@@ -148,6 +176,10 @@ DEEP_SKILL_DIRS = _parse_path_list(os.environ.get("DEEP_SKILL_DIRS", ""))
 MAX_STATUS_LOG_LINES = int(os.environ.get("MAX_STATUS_LOG_LINES", "400"))
 STATUS_LOG_STDOUT = _env_flag("STATUS_LOG_STDOUT", True)
 DEEP_AGENT_RETRIES = int(os.environ.get("DEEP_AGENT_RETRIES", "4"))
+DEFAULT_ALLOW_PARENT_INPUT = _env_flag("DEFAULT_ALLOW_PARENT_INPUT", False)
+DEFAULT_VALIDATOR_REVIEW_LEVEL = _normalize_validator_review_level(
+    os.environ.get("DEFAULT_VALIDATOR_REVIEW_LEVEL", "default")
+)
 PATH_HANDOFF_LINE_PREFIX = "Validated sample path:"
 SAMPLE_PATH_SUFFIXES = ("exe", "dll", "sys", "scr", "ocx", "cpl", "bin", "elf", "so", "dylib")
 SAMPLE_PATH_WINDOWS_RE = re.compile(
@@ -172,6 +204,8 @@ WORKFLOW_CONFIG = load_workflow_config(
     placeholders={
         "PLANNER_WORK_ITEMS_START": PLANNER_WORK_ITEMS_START,
         "PLANNER_WORK_ITEMS_END": PLANNER_WORK_ITEMS_END,
+        "VALIDATION_DECISION_START": VALIDATION_DECISION_START,
+        "VALIDATION_DECISION_END": VALIDATION_DECISION_END,
     },
 )
 AGENT_ARCHETYPE_PROMPTS: Dict[str, str] = WORKFLOW_CONFIG["agent_archetype_prompts"]
@@ -320,6 +354,15 @@ def partition_toolsets(toolsets: List[MCPServerStdio]) -> Tuple[List[MCPServerSt
     return static_tools, dynamic_tools
 
 
+def _sandbox_tool_ids(toolsets: List[MCPServerStdio]) -> List[str]:
+    out: List[str] = []
+    for tool in toolsets:
+        sid = (tool.id or "").lower()
+        if any(marker in sid for marker in ("vm", "sandbox", "snapshot", "isolat")):
+            out.append(tool.id or "")
+    return out
+
+
 def _server_allows_result_cache(server_id: str) -> bool:
     sid = (server_id or "").lower()
     return bool(sid) and any(marker in sid for marker in TOOL_RESULT_CACHE_SERVER_MARKERS)
@@ -455,6 +498,8 @@ def _toolsets_for_domain(
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
 ) -> List[MCPServerStdio]:
+    if tool_domain == "none":
+        return []
     if tool_domain == "preflight":
         preferred = [
             tool
@@ -498,7 +543,7 @@ def build_subagent_architecture(
 
         spec = AGENT_ARCHETYPE_SPECS[archetype_name]
         toolsets = _toolsets_for_domain(spec["tool_domain"], static_tools, dynamic_tools)
-        if not toolsets:
+        if spec["tool_domain"] != "none" and not toolsets:
             raise RuntimeError(
                 f"Deep-agent architecture requested {archetype_name!r}, but no {spec['tool_domain']} MCP toolsets are configured."
             )
@@ -506,6 +551,8 @@ def build_subagent_architecture(
         for idx in range(quantity):
             instance_name = archetype_name if quantity == 1 else f"{archetype_name}_{idx + 1}"
             instructions = AGENT_ARCHETYPE_PROMPTS[archetype_name]
+            can_ask_questions = archetype_name not in {"evidence_validator", "reporting_analyst"}
+            max_questions = 1 if can_ask_questions else 0
             if quantity > 1:
                 instructions += (
                     "\n\nCollaboration note:\n"
@@ -521,6 +568,8 @@ def build_subagent_architecture(
                     "toolsets": toolsets,
                     "preferred_mode": spec["preferred_mode"],
                     "typical_complexity": spec["typical_complexity"],
+                    "can_ask_questions": can_ask_questions,
+                    "max_questions": max_questions,
                     "agent_kwargs": {
                         "event_stream_handler": make_live_tool_event_handler(stage_name, instance_name),
                     },
@@ -614,6 +663,48 @@ def build_stage_prompt(
         else:
             sections.append("- Do not mention missing internal path metadata in the final user-facing report.")
 
+    available_static_tools = [str(x).strip() for x in (shared.get("available_static_tools") or []) if str(x).strip()]
+    available_dynamic_tools = [str(x).strip() for x in (shared.get("available_dynamic_tools") or []) if str(x).strip()]
+    available_sandbox_tools = [str(x).strip() for x in (shared.get("available_sandbox_tools") or []) if str(x).strip()]
+    supports_dynamic_analysis = bool(shared.get("supports_dynamic_analysis"))
+    supports_sandboxed_execution = bool(shared.get("supports_sandboxed_execution"))
+    allow_parent_input = bool(shared.get("allow_parent_input"))
+    validator_review_level = _normalize_validator_review_level(
+        shared.get("validator_review_level", shared.get("validator_strict_mode", "default"))
+    )
+    validator_review_label = VALIDATOR_REVIEW_LEVEL_LABELS.get(validator_review_level, validator_review_level)
+    sections.extend(["", "Available execution capabilities:"])
+    sections.append(f"- static_tools: {', '.join(available_static_tools) if available_static_tools else 'none'}")
+    sections.append(f"- dynamic_tools: {', '.join(available_dynamic_tools) if available_dynamic_tools else 'none'}")
+    sections.append(f"- sandbox_tools: {', '.join(available_sandbox_tools) if available_sandbox_tools else 'none'}")
+    sections.append(f"- supports_dynamic_analysis: {'yes' if supports_dynamic_analysis else 'no'}")
+    sections.append(f"- supports_sandboxed_execution: {'yes' if supports_sandboxed_execution else 'no'}")
+    sections.append(f"- allow_parent_input: {'yes' if allow_parent_input else 'no'}")
+    sections.append(f"- validator_review_level: {validator_review_level}")
+    sections.append(f"- validator_review_profile: {validator_review_label}")
+    if allow_parent_input:
+        sections.append("- Clarification rule: if a critical ambiguity remains after reading provided context, you may ask at most one concise parent question.")
+    else:
+        sections.append("- Clarification rule: parent input is disabled for this run; do not rely on follow-up questions.")
+    if stage_kind == "workers":
+        if validator_review_level == "easy":
+            sections.append("- Validator mode rule: easy mode is enabled. Assume reviewers mainly care that the output is relevant, understandable, and technically substantial-sounding; prioritize clear high-level relevance over exhaustive artifact collection.")
+        elif validator_review_level == "strict":
+            sections.append("- Validator mode rule: strict mode is enabled. Assume validators will expect stronger raw artifacts, exact excerpts, explicit proof for key claims, and minimal reliance on inference.")
+        elif validator_review_level == "intermediate":
+            sections.append("- Validator mode rule: intermediate mode is enabled. Expect methodical review with representative artifacts for major claims, but not exhaustive appendices for every minor point.")
+        else:
+            sections.append("- Validator mode rule: default mode is enabled. Prioritize adequately answering the user request with concrete evidence without over-collecting exhaustive raw appendices unless needed.")
+    elif stage_kind == "validators":
+        if validator_review_level == "easy":
+            sections.append("- Validator mode rule: easy mode is enabled. Review like a business manager: accept output that is relevant to the request, plausible, and communicates technical complexity clearly, without demanding deep artifact-level proof.")
+        elif validator_review_level == "strict":
+            sections.append("- Validator mode rule: strict mode is enabled. Review like a seasoned professional malware analyst: require strong exact proof for key claims before signoff.")
+        elif validator_review_level == "intermediate":
+            sections.append("- Validator mode rule: intermediate mode is enabled. Review like a CS professor: require methodical reasoning and representative artifacts for major claims, while allowing minor non-critical gaps.")
+        else:
+            sections.append("- Validator mode rule: default mode is enabled. Review like a technically strong CS background reader: focus on whether the user request is adequately answered with enough evidence, not exhaustive proof for every sub-claim.")
+
     planned_work_items = shared.get("planned_work_items") or []
     if planned_work_items and stage_kind != "planner":
         sections.extend(["", "Host-managed planner work items:"])
@@ -625,6 +716,24 @@ def build_stage_prompt(
             sections.append(f"- {item_id}: {objective}")
             sections.append(f"  recommended_roles: {roles}")
             sections.append(f"  evidence_targets: {targets}")
+
+    validation_retry_count = int(shared.get("validation_retry_count") or 0)
+    validation_max_retries = int(shared.get("validation_max_retries") or MAX_VALIDATION_REPLAN_RETRIES)
+    validation_last_decision = str(shared.get("validation_last_decision") or "").strip()
+    validation_replan_feedback = str(shared.get("validation_replan_feedback") or "").strip()
+    if validation_retry_count or validation_last_decision or validation_replan_feedback:
+        sections.extend(
+            [
+                "",
+                "Validation loop context:",
+                f"- validation_retry_count: {validation_retry_count}",
+                f"- validation_max_retries: {validation_max_retries}",
+            ]
+        )
+        if validation_last_decision:
+            sections.append(f"- validation_last_decision: {validation_last_decision}")
+        if validation_replan_feedback and stage_kind in {"planner", "workers", "validators"}:
+            sections.extend(["", "Latest validator feedback to address:", validation_replan_feedback])
 
     stage_roles = expand_architecture_names(architecture)
     if stage_roles:
@@ -655,6 +764,9 @@ class PipelineStageRuntime:
 class MultiAgentRuntime:
     pipeline_name: str
     stages: List[PipelineStageRuntime]
+    static_tool_ids: List[str]
+    dynamic_tool_ids: List[str]
+    sandbox_tool_ids: List[str]
 
 
 _RUNTIME: Optional[MultiAgentRuntime] = None
@@ -672,6 +784,8 @@ _ACTIVE_PIPELINE_STAGE: ContextVar[Optional[str]] = ContextVar(
 )
 _TOOL_RESULT_CACHE_INFLIGHT_LOCK = Lock()
 _TOOL_RESULT_CACHE_INFLIGHT: Dict[str, asyncio.Task[Any]] = {}
+_PARENT_INPUT_LOCK = Lock()
+_PARENT_INPUT_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
 
 def _build_history_processors() -> List[Any]:
@@ -734,8 +848,8 @@ def build_stage_runtime(
         if architecture
         else []
     )
-    planner_stage = stage_kind == "planner"
-    stage_skill_directories = [] if planner_stage else list(skill_directories)
+    tool_free_stage = stage_kind in {"planner", "validators", "reporter"}
+    stage_skill_directories = [] if tool_free_stage else list(skill_directories)
     memory_dir = str(Path(DEEP_MEMORY_DIR) / stage_name)
     if deep_backend is not None and memory_dir.startswith("/"):
         memory_dir = memory_dir.lstrip("/")
@@ -826,6 +940,9 @@ def get_runtime_sync() -> MultiAgentRuntime:
     _RUNTIME = MultiAgentRuntime(
         pipeline_name=DEEP_AGENT_PIPELINE_NAME,
         stages=stages,
+        static_tool_ids=[s.id or "" for s in static_tools],
+        dynamic_tool_ids=[s.id or "" for s in dynamic_tools],
+        sandbox_tool_ids=_sandbox_tool_ids(dynamic_tools),
     )
     return _RUNTIME
 
@@ -1158,6 +1275,178 @@ def compact_shared_state(state: Dict[str, Any]) -> None:
         shared["task_outputs"] = outputs[-MAX_TASK_OUTPUTS:]
 
 
+def _pending_parent_input(state: Dict[str, Any]) -> Dict[str, Any]:
+    pending = state.get("pending_parent_input")
+    if not isinstance(pending, dict):
+        pending = _empty_parent_input()
+        state["pending_parent_input"] = pending
+    return pending
+
+
+def _clear_pending_parent_input(state: Dict[str, Any], *, request_id: str = "") -> None:
+    pending = _pending_parent_input(state)
+    if request_id and str(pending.get("request_id") or "") != request_id:
+        return
+    state["pending_parent_input"] = _empty_parent_input()
+    _store_ui_snapshot(state=state)
+
+
+def _start_parent_input_request(
+    state: Dict[str, Any],
+    *,
+    question: str,
+    options: List[Dict[str, str]],
+    source: str,
+) -> Tuple[str, Event, str]:
+    pending = _pending_parent_input(state)
+    current_id = str(pending.get("request_id") or "")
+    if current_id and str(pending.get("status") or "") == "waiting":
+        return "", Event(), "Error: Another parent-input question is already pending"
+
+    request_id = uuid4().hex
+    event = Event()
+    with _PARENT_INPUT_LOCK:
+        _PARENT_INPUT_REQUESTS[request_id] = {
+            "event": event,
+            "response": None,
+        }
+
+    state["pending_parent_input"] = {
+        "request_id": request_id,
+        "question": str(question or "").strip(),
+        "options": list(options or []),
+        "response": "",
+        "source": source,
+        "asked_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "waiting",
+    }
+    append_status(state, f"Parent input requested by {source}")
+    _store_ui_snapshot(state=state)
+    return request_id, event, ""
+
+
+def _resolve_parent_input_request(
+    state: Dict[str, Any],
+    *,
+    response: str,
+    declined: bool = False,
+) -> bool:
+    pending = _pending_parent_input(state)
+    request_id = str(pending.get("request_id") or "")
+    if not request_id:
+        return False
+
+    with _PARENT_INPUT_LOCK:
+        request = _PARENT_INPUT_REQUESTS.get(request_id)
+    if request is None:
+        _clear_pending_parent_input(state, request_id=request_id)
+        return False
+
+    text = (response or "").strip()
+    final_response = "Error: Parent declined to provide input" if declined else (text or "Error: Parent provided an empty response")
+    request["response"] = final_response
+    event = request.get("event")
+    if isinstance(event, Event):
+        event.set()
+
+    append_status(
+        state,
+        "Parent input declined" if declined else "Parent input submitted",
+    )
+    _clear_pending_parent_input(state, request_id=request_id)
+    return True
+
+
+def _wait_for_parent_input_response(
+    state: Dict[str, Any],
+    *,
+    question: str,
+    options: List[Dict[str, str]],
+    source: str,
+    timeout_sec: float = 300.0,
+) -> str:
+    request_id, event, error = _start_parent_input_request(
+        state,
+        question=question,
+        options=options,
+        source=source,
+    )
+    if error:
+        return error
+
+    if not event.wait(timeout_sec):
+        with _PARENT_INPUT_LOCK:
+            _PARENT_INPUT_REQUESTS.pop(request_id, None)
+        append_status(state, f"Parent input timed out for {source}")
+        _clear_pending_parent_input(state, request_id=request_id)
+        return "Error: Parent did not respond in time"
+
+    with _PARENT_INPUT_LOCK:
+        request = _PARENT_INPUT_REQUESTS.pop(request_id, None)
+
+    response = str((request or {}).get("response") or "").strip()
+    if not response:
+        response = "Error: Parent response was unavailable"
+    _clear_pending_parent_input(state, request_id=request_id)
+    return response
+
+
+def _make_parent_input_callback(state: Dict[str, Any], source: str):
+    async def _callback(question: str, options: List[Dict[str, str]]) -> str:
+        if not bool(state.get("allow_parent_input")):
+            return "Error: Parent input is disabled for this run"
+        normalized_options: List[Dict[str, str]] = []
+        for item in options or []:
+            if not isinstance(item, dict):
+                continue
+            normalized_options.append({str(k): str(v) for k, v in item.items()})
+        return await asyncio.to_thread(
+            _wait_for_parent_input_response,
+            state,
+            question=str(question or ""),
+            options=normalized_options,
+            source=source,
+        )
+
+    return _callback
+
+
+def render_parent_input_panel(state: Dict[str, Any]) -> str:
+    pending = _pending_parent_input(state or {})
+    if str(pending.get("status") or "") != "waiting":
+        return ""
+
+    question = html.escape(str(pending.get("question") or ""))
+    source = html.escape(str(pending.get("source") or "agent"))
+    asked_at = html.escape(str(pending.get("asked_at") or ""))
+    options = pending.get("options") or []
+    options_html = ""
+    if options:
+        rows: List[str] = []
+        for item in options:
+            if not isinstance(item, dict):
+                continue
+            label = html.escape(str(item.get("label") or "option"))
+            description = html.escape(str(item.get("description") or ""))
+            rows.append(f"<li><strong>{label}</strong>{': ' + description if description else ''}</li>")
+        if rows:
+            options_html = (
+                "<div style='margin-top: 8px; color: #202124;'>Suggested options:</div>"
+                f"<ul style='margin-top: 4px; padding-left: 18px;'>{''.join(rows)}</ul>"
+            )
+
+    return (
+        "<div style='padding: 12px; border: 1px solid #f0c36d; border-radius: 10px; background: #fff8e1; margin-top: 12px;'>"
+        "<div style='display: flex; justify-content: space-between; gap: 12px; align-items: baseline;'>"
+        "<strong>Follow-up Question</strong>"
+        f"<span style='color: #5f6368; font-size: 12px;'>{source} | {asked_at}</span>"
+        "</div>"
+        f"<div style='margin-top: 8px; color: #202124;'>{question}</div>"
+        + options_html
+        + "</div>"
+    )
+
+
 def _normalize_path_candidate(candidate: str) -> str:
     value = (candidate or "").strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
@@ -1312,6 +1601,29 @@ def _new_shared_state() -> Dict[str, Any]:
         "planned_work_items_parse_error": "",
         "pipeline_stage_outputs": [],
         "pipeline_stage_progress": [],
+        "available_static_tools": [],
+        "available_dynamic_tools": [],
+        "available_sandbox_tools": [],
+        "supports_dynamic_analysis": False,
+        "supports_sandboxed_execution": False,
+        "validator_review_level": "default",
+        "validation_retry_count": 0,
+        "validation_max_retries": MAX_VALIDATION_REPLAN_RETRIES,
+        "validation_last_decision": "",
+        "validation_replan_feedback": "",
+        "validation_history": [],
+    }
+
+
+def _empty_parent_input() -> Dict[str, Any]:
+    return {
+        "request_id": "",
+        "question": "",
+        "options": [],
+        "response": "",
+        "source": "",
+        "asked_at": "",
+        "status": "idle",
     }
 
 
@@ -1325,6 +1637,9 @@ _UI_SNAPSHOT: Dict[str, Any] = {
         "_tool_log_seen_keys": {},
         "tool_result_cache": {},
         "status_log": "",
+        "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
+        "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
+        "pending_parent_input": _empty_parent_input(),
         "shared_state": _new_shared_state(),
     },
     "tool_log": "",
@@ -1345,6 +1660,9 @@ def _snapshot_state_default() -> Dict[str, Any]:
         "_tool_log_seen_keys": {},
         "tool_result_cache": {},
         "status_log": "",
+        "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
+        "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
+        "pending_parent_input": _empty_parent_input(),
         "shared_state": _new_shared_state(),
     }
 
@@ -1582,6 +1900,160 @@ def update_planned_work_items_from_planner_output(state: Dict[str, Any], planner
     _store_ui_snapshot(state=state)
 
 
+def _normalize_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        normalized = " ".join(value.split())
+        return [normalized] if normalized else []
+    if isinstance(value, (list, tuple, set)):
+        out: List[str] = []
+        for item in value:
+            normalized = " ".join(str(item).split())
+            if normalized:
+                out.append(normalized)
+        return out
+    normalized = " ".join(str(value).split())
+    return [normalized] if normalized else []
+
+
+def extract_validation_gate(text: str, *, required_signoffs: int) -> Tuple[Dict[str, Any], str]:
+    payload = ""
+    marker_re = re.compile(
+        rf"{re.escape(VALIDATION_DECISION_START)}\s*(.*?)\s*{re.escape(VALIDATION_DECISION_END)}",
+        flags=re.DOTALL,
+    )
+    marker_match = marker_re.search(text or "")
+    if marker_match:
+        payload = marker_match.group(1)
+    else:
+        fenced_json_re = re.compile(r"```json\s*(\{[\s\S]*?\})\s*```", flags=re.IGNORECASE)
+        fenced_match = fenced_json_re.search(text or "")
+        if fenced_match:
+            payload = fenced_match.group(1)
+        else:
+            return {}, "validator output did not include a parseable validation block"
+
+    payload = _strip_optional_json_fence(payload)
+    try:
+        parsed = json.loads(payload)
+    except Exception as e:
+        return {}, f"validator gate JSON parse failed: {type(e).__name__}: {e}"
+
+    if not isinstance(parsed, dict):
+        return {}, "validator gate block must decode to a JSON object"
+
+    raw_decision = " ".join(str(parsed.get("decision") or parsed.get("status") or parsed.get("result") or "").split()).lower()
+    accepted_aliases = {"accept", "accepted", "approve", "approved", "pass", "passed", "signoff", "signed_off"}
+    rejected_aliases = {"reject", "rejected", "deny", "denied", "fail", "failed"}
+    if raw_decision in accepted_aliases:
+        accepted = True
+    elif raw_decision in rejected_aliases:
+        accepted = False
+    else:
+        return {}, f"validator decision must be accept/reject, got {raw_decision or '<missing>'!r}"
+
+    parsed_required = parsed.get("required_signoffs")
+    if parsed_required is None:
+        required = max(1, required_signoffs)
+    else:
+        try:
+            required = max(1, int(parsed_required))
+        except Exception:
+            required = max(1, required_signoffs)
+
+    parsed_signoff_count = parsed.get("signoff_count")
+    if parsed_signoff_count is None:
+        signoff_count = required if accepted else 0
+    else:
+        try:
+            signoff_count = max(0, int(parsed_signoff_count))
+        except Exception:
+            signoff_count = required if accepted else 0
+
+    rejection_reasons = _normalize_string_list(parsed.get("rejection_reasons") or parsed.get("reasons"))
+    planner_fixes = _normalize_string_list(parsed.get("planner_fixes") or parsed.get("required_fixes") or parsed.get("fixes"))
+    accepted_findings = _normalize_string_list(parsed.get("accepted_findings") or parsed.get("confirmed_findings"))
+    rejected_findings = _normalize_string_list(parsed.get("rejected_findings") or parsed.get("weak_findings"))
+    out_of_scope_work_items = _normalize_string_list(
+        parsed.get("out_of_scope_work_items") or parsed.get("planner_defects") or parsed.get("unsupported_work_items")
+    )
+    summary = " ".join(str(parsed.get("summary") or parsed.get("validator_summary") or "").split())
+
+    if accepted and signoff_count < required:
+        accepted = False
+        rejection_reasons.append(
+            f"validator signoff threshold not met ({signoff_count}/{required})"
+        )
+
+    return {
+        "decision": "accept" if accepted else "reject",
+        "accepted": accepted,
+        "signoff_count": signoff_count,
+        "required_signoffs": required,
+        "accepted_findings": accepted_findings,
+        "rejected_findings": rejected_findings,
+        "out_of_scope_work_items": out_of_scope_work_items,
+        "rejection_reasons": rejection_reasons,
+        "planner_fixes": planner_fixes,
+        "summary": summary,
+    }, ""
+
+
+def _format_validation_feedback(gate: Dict[str, Any], raw_output: str, parse_error: str = "") -> str:
+    lines: List[str] = []
+    if parse_error:
+        lines.append(f"Validation gate parse issue: {parse_error}")
+    decision = str(gate.get("decision") or "").strip()
+    if decision:
+        lines.append(f"Validation decision: {decision}")
+    signoff_count = gate.get("signoff_count")
+    required_signoffs = gate.get("required_signoffs")
+    if signoff_count is not None and required_signoffs is not None:
+        lines.append(f"Validator signoff count: {signoff_count}/{required_signoffs}")
+    summary = str(gate.get("summary") or "").strip()
+    if summary:
+        lines.append(f"Summary: {summary}")
+    reasons = gate.get("rejection_reasons") or []
+    if reasons:
+        lines.append("Rejection reasons:")
+        lines.extend(f"- {item}" for item in reasons)
+    out_of_scope = gate.get("out_of_scope_work_items") or []
+    if out_of_scope:
+        lines.append("Out-of-scope work items:")
+        lines.extend(f"- {item}" for item in out_of_scope)
+    fixes = gate.get("planner_fixes") or []
+    if fixes:
+        lines.append("Planner fixes:")
+        lines.extend(f"- {item}" for item in fixes)
+    if not lines:
+        lines.append("Validation gate rejected without structured feedback.")
+    if raw_output and not summary and not reasons and not fixes:
+        lines.extend(["Raw validator output:", raw_output.strip()])
+    return "\n".join(lines).strip()
+
+
+def _reset_pipeline_stages_to_pending(state: Dict[str, Any], stage_names: List[str]) -> None:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    progress = shared.setdefault("pipeline_stage_progress", [])
+    target_names = set(stage_names)
+    for entry in progress:
+        if str(entry.get("stage_name") or "") not in target_names:
+            continue
+        entry["status"] = "pending"
+        entry["started_at_epoch"] = None
+        entry["finished_at_epoch"] = None
+        entry["duration_sec"] = None
+        entry["error"] = ""
+    _store_ui_snapshot(state=state)
+
+
+def _clear_stage_role_histories(state: Dict[str, Any], stage_names: List[str]) -> None:
+    histories = state.setdefault("role_histories", {})
+    for stage_name in stage_names:
+        histories.pop(f"pipeline_{stage_name}", None)
+
+
 def _planner_work_item_rollup(progress: List[Dict[str, Any]]) -> Tuple[str, str, str]:
     statuses = {str(item.get("stage_name") or ""): str(item.get("status") or "pending") for item in progress}
     if any(status == "failed" for status in statuses.values()):
@@ -1682,6 +2154,124 @@ def render_planned_work_items_panel(state: Dict[str, Any]) -> str:
     )
 
 
+def render_validation_gate_panel(state: Dict[str, Any]) -> str:
+    shared = (state or {}).get("shared_state") or {}
+    progress = shared.get("pipeline_stage_progress") or []
+    validator_entry = next((item for item in progress if str(item.get("stage_kind") or "") == "validators"), None) or {}
+    planner_entry = next((item for item in progress if str(item.get("stage_kind") or "") == "planner"), None) or {}
+    worker_entry = next((item for item in progress if str(item.get("stage_kind") or "") == "workers"), None) or {}
+
+    validation_history = shared.get("validation_history") or []
+    retry_count = int(shared.get("validation_retry_count") or 0)
+    max_retries = int(shared.get("validation_max_retries") or MAX_VALIDATION_REPLAN_RETRIES)
+    last_decision = str(shared.get("validation_last_decision") or "").strip().lower()
+    replan_feedback = str(shared.get("validation_replan_feedback") or "").strip()
+    latest = validation_history[-1] if validation_history else {}
+    signoff_count = latest.get("signoff_count")
+    required_signoffs = latest.get("required_signoffs")
+    validator_status = str(validator_entry.get("status") or "pending")
+    planner_status = str(planner_entry.get("status") or "pending")
+    worker_status = str(worker_entry.get("status") or "pending")
+
+    tone = "#5f6368"
+    badge_bg = "#f1f3f4"
+    headline = "Awaiting validation"
+    detail = "Validator gate has not run yet."
+
+    if validator_status == "running":
+        tone = "#0b57d0"
+        badge_bg = "#e8f0fe"
+        headline = "Validation in progress"
+        detail = "Validators are reviewing worker evidence."
+    elif last_decision == "accept":
+        tone = "#1b6e3a"
+        badge_bg = "#e6f4ea"
+        headline = "Validation accepted"
+        if signoff_count is not None and required_signoffs is not None:
+            detail = f"Validator signoff: {signoff_count}/{required_signoffs}"
+        else:
+            detail = "Validated findings are cleared for reporting."
+    elif last_decision == "reject":
+        if retry_count < max_retries and planner_status in {"running", "pending"}:
+            tone = "#b06000"
+            badge_bg = "#fef7e0"
+            headline = f"Replanning ({retry_count}/{max_retries})"
+            detail = "Planner is revising the work plan based on validator feedback."
+        elif retry_count < max_retries and worker_status in {"running", "pending"}:
+            tone = "#b06000"
+            badge_bg = "#fef7e0"
+            headline = f"Retry in progress ({retry_count}/{max_retries})"
+            detail = "Workers are addressing validator feedback."
+        else:
+            tone = "#a61b29"
+            badge_bg = "#fce8e6"
+            headline = "Validation rejected"
+            detail = "Validation did not clear the findings for reporting."
+
+    summary_lines: List[str] = []
+    if validation_history:
+        latest_attempt = int(latest.get("attempt") or retry_count)
+        summary_lines.append(f"Latest review attempt: {latest_attempt}/{max_retries}")
+        if signoff_count is not None and required_signoffs is not None:
+            summary_lines.append(f"Signoffs: {signoff_count}/{required_signoffs}")
+    else:
+        summary_lines.append(f"Retry budget: {retry_count}/{max_retries}")
+
+    feedback_html = ""
+    if replan_feedback:
+        feedback_html = (
+            "<div style='margin-top: 10px;'>"
+            "<div style='font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #5f6368;'>"
+            "Latest validator feedback</div>"
+            "<pre style='margin-top: 6px; white-space: pre-wrap; overflow-x: auto; background: #ffffff; border: 1px solid #d5d8dd; "
+            "border-radius: 8px; padding: 10px; color: #202124; font-size: 12px;'>"
+            f"{html.escape(replan_feedback)}</pre>"
+            "</div>"
+        )
+
+    history_html = ""
+    if validation_history:
+        rows: List[str] = []
+        for item in reversed(validation_history[-3:]):
+            attempt = int(item.get("attempt") or 0)
+            decision = html.escape(str(item.get("decision") or "unknown"))
+            signoffs = item.get("signoff_count")
+            required = item.get("required_signoffs")
+            reason_bits = item.get("rejection_reasons") or []
+            if not reason_bits:
+                reason_bits = item.get("out_of_scope_work_items") or []
+            reason_text = html.escape("; ".join(str(x) for x in reason_bits[:2])) if reason_bits else ""
+            meta = decision
+            if signoffs is not None and required is not None:
+                meta = f"{meta} ({signoffs}/{required})"
+            rows.append(
+                "<div style='margin-top: 6px; padding-top: 6px; border-top: 1px solid #e0e3e7;'>"
+                f"<div style='font-size: 12px; color: #202124;'><strong>Attempt {attempt}</strong> - {meta}</div>"
+                + (f"<div style='margin-top: 2px; color: #5f6368; font-size: 12px;'>{reason_text}</div>" if reason_text else "")
+                + "</div>"
+            )
+        history_html = (
+            "<div style='margin-top: 10px;'>"
+            "<div style='font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #5f6368;'>"
+            "Recent validation history</div>"
+            + "".join(rows)
+            + "</div>"
+        )
+
+    return (
+        "<div style='padding: 12px; border: 1px solid #d5d8dd; border-radius: 10px; background: #fbfbfc; margin-bottom: 12px;'>"
+        "<div style='display: flex; justify-content: space-between; gap: 12px; align-items: baseline;'>"
+        "<strong>Validation Gate</strong>"
+        f"<span style='padding: 2px 8px; border-radius: 999px; background: {badge_bg}; color: {tone}; font-size: 12px;'>{html.escape(headline)}</span>"
+        "</div>"
+        f"<div style='margin-top: 8px; color: #202124;'>{html.escape(detail)}</div>"
+        f"<div style='margin-top: 6px; color: #5f6368; font-size: 12px;'>{html.escape(' | '.join(summary_lines))}</div>"
+        + feedback_html
+        + history_html
+        + "</div>"
+    )
+
+
 def render_pipeline_todo_board(state: Dict[str, Any]) -> str:
     shared = (state or {}).get("shared_state") or {}
     progress = shared.get("pipeline_stage_progress") or []
@@ -1776,18 +2366,34 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     if "shared_state" not in state:
         state["shared_state"] = _new_shared_state()
 
-    state["shared_state"]["task_outputs"] = []
-    state["shared_state"]["pipeline_stage_outputs"] = []
-    state["shared_state"]["turn_task_runs"] = 0
-    state["shared_state"]["last_user_request"] = user_text
-    state["shared_state"]["execution_mode"] = "deep_pipeline"
-    state["shared_state"]["deep_architecture_name"] = DEEP_AGENT_ARCHITECTURE_NAME
-    state["shared_state"]["deep_architecture"] = list(DEEP_AGENT_ARCHITECTURE)
-    state["shared_state"]["deep_subagents"] = expand_architecture_names(DEEP_AGENT_ARCHITECTURE)
-    state["shared_state"]["deep_pipeline_name"] = runtime.pipeline_name
-    state["shared_state"]["deep_pipeline"] = list(DEEP_AGENT_PIPELINE)
-    state["shared_state"]["planned_work_items"] = []
-    state["shared_state"]["planned_work_items_parse_error"] = ""
+    shared = state["shared_state"]
+    shared["task_outputs"] = []
+    shared["pipeline_stage_outputs"] = []
+    shared["turn_task_runs"] = 0
+    shared["last_user_request"] = user_text
+    shared["execution_mode"] = "deep_pipeline"
+    shared["allow_parent_input"] = bool(state.get("allow_parent_input"))
+    shared["validator_review_level"] = _normalize_validator_review_level(
+        state.get("validator_review_level", state.get("validator_strict_mode", "default"))
+    )
+    shared["deep_architecture_name"] = DEEP_AGENT_ARCHITECTURE_NAME
+    shared["deep_architecture"] = list(DEEP_AGENT_ARCHITECTURE)
+    shared["deep_subagents"] = expand_architecture_names(DEEP_AGENT_ARCHITECTURE)
+    shared["deep_pipeline_name"] = runtime.pipeline_name
+    shared["deep_pipeline"] = list(DEEP_AGENT_PIPELINE)
+    shared["available_static_tools"] = list(runtime.static_tool_ids)
+    shared["available_dynamic_tools"] = list(runtime.dynamic_tool_ids)
+    shared["available_sandbox_tools"] = list(runtime.sandbox_tool_ids)
+    shared["supports_dynamic_analysis"] = bool(runtime.dynamic_tool_ids)
+    shared["supports_sandboxed_execution"] = bool(runtime.sandbox_tool_ids)
+    shared["planned_work_items"] = []
+    shared["planned_work_items_parse_error"] = ""
+    shared["validation_retry_count"] = 0
+    shared["validation_max_retries"] = MAX_VALIDATION_REPLAN_RETRIES
+    shared["validation_last_decision"] = ""
+    shared["validation_replan_feedback"] = ""
+    shared["validation_history"] = []
+    state["pending_parent_input"] = _empty_parent_input()
     _seed_pipeline_stage_progress(
         state,
         [(stage.name, stage.stage_kind, list(stage.subagent_names)) for stage in runtime.stages],
@@ -1796,8 +2402,17 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
 
     prior_stage_outputs: Dict[str, str] = {}
     final_output = ""
+    stage_name_to_index = {stage.name: idx for idx, stage in enumerate(runtime.stages)}
+    planner_restart_index = next(
+        (idx for idx, stage in enumerate(runtime.stages) if stage.stage_kind == "planner"),
+        next((idx for idx, stage in enumerate(runtime.stages) if stage.stage_kind == "workers"), 0),
+    )
+    restart_stage_names = [stage.name for stage in runtime.stages[planner_restart_index:]]
+    stage_index = 0
 
-    for stage in runtime.stages:
+    while stage_index < len(runtime.stages):
+        stage = runtime.stages[stage_index]
+        stage.deps.ask_user = _make_parent_input_callback(state, stage.name)
         role_key = f"pipeline_{stage.name}"
         old_history = get_role_history(state, role_key)
         stage_prompt = build_stage_prompt(
@@ -1905,8 +2520,90 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         compact_shared_state(state)
         append_status(state, f"Stage finished: {stage.name} in {time.perf_counter() - stage_t0:.1f}s")
 
-    state["shared_state"]["run_count"] = int(state["shared_state"].get("run_count", 0)) + 1
-    state["shared_state"]["final_output"] = final_output
+        if stage.stage_kind == "validators":
+            required_signoffs = max(1, len(stage.subagent_names) or len(stage.architecture) or 1)
+            gate, gate_error = extract_validation_gate(stage_output, required_signoffs=required_signoffs)
+            shared["validation_history"].append(
+                {
+                    "attempt": int(shared.get("validation_retry_count") or 0),
+                    "stage_name": stage.name,
+                    "decision": str(gate.get("decision") or "reject"),
+                    "signoff_count": gate.get("signoff_count"),
+                    "required_signoffs": gate.get("required_signoffs", required_signoffs),
+                    "parse_error": gate_error,
+                    "out_of_scope_work_items": list(gate.get("out_of_scope_work_items") or []),
+                    "rejection_reasons": list(gate.get("rejection_reasons") or []),
+                    "planner_fixes": list(gate.get("planner_fixes") or []),
+                }
+            )
+            if gate_error:
+                append_status(state, f"Validation gate parse warning: {gate_error}")
+
+            accepted = bool(gate.get("accepted")) and not gate_error
+            shared["validation_last_decision"] = "accept" if accepted else "reject"
+
+            if accepted:
+                shared["validation_replan_feedback"] = ""
+                append_status(
+                    state,
+                    (
+                        "Validation gate accepted "
+                        f"({gate.get('signoff_count', required_signoffs)}/{gate.get('required_signoffs', required_signoffs)} signoffs)"
+                    ),
+                )
+            else:
+                feedback = _format_validation_feedback(gate, stage_output, gate_error)
+                shared["validation_replan_feedback"] = feedback
+                retries_used = int(shared.get("validation_retry_count") or 0)
+                if retries_used < MAX_VALIDATION_REPLAN_RETRIES:
+                    retries_used += 1
+                    shared["validation_retry_count"] = retries_used
+                    append_status(
+                        state,
+                        (
+                            "Validation gate rejected; returning to planner "
+                            f"(replan {retries_used}/{MAX_VALIDATION_REPLAN_RETRIES})"
+                        ),
+                    )
+                    _reset_pipeline_stages_to_pending(state, restart_stage_names)
+                    _clear_stage_role_histories(state, restart_stage_names)
+                    shared["planned_work_items"] = []
+                    shared["planned_work_items_parse_error"] = ""
+                    prior_stage_outputs = {
+                        name: output
+                        for name, output in prior_stage_outputs.items()
+                        if stage_name_to_index.get(name, -1) < planner_restart_index
+                    }
+                    final_output = ""
+                    compact_shared_state(state)
+                    stage_index = planner_restart_index
+                    continue
+
+                _set_pipeline_stage_status(
+                    state,
+                    stage.name,
+                    stage_kind=stage.stage_kind,
+                    subagents=list(stage.subagent_names),
+                    status="failed",
+                    error="Validation gate rejected after max replans",
+                )
+                append_status(
+                    state,
+                    (
+                        "Validation gate rejected after max replans; "
+                        "stopping before reporter stage"
+                    ),
+                )
+                final_output = _sanitize_user_facing_output(feedback)
+                shared["run_count"] = int(shared.get("run_count", 0)) + 1
+                shared["final_output"] = final_output
+                append_status(state, f"Deep pipeline stopped in {time.perf_counter() - t0:.1f}s")
+                return final_output
+
+        stage_index += 1
+
+    shared["run_count"] = int(shared.get("run_count", 0)) + 1
+    shared["final_output"] = final_output
     append_status(state, f"Deep pipeline finished in {time.perf_counter() - t0:.1f}s")
     return final_output
 
@@ -1922,12 +2619,71 @@ def _send_button(interactive: bool = True, visible: bool = True):
     return gr.update(interactive=interactive, visible=visible)
 
 
+def _allow_parent_input_checkbox(state: Dict[str, Any], interactive: bool = True, visible: bool = True):
+    return gr.update(value=bool((state or {}).get("allow_parent_input")), interactive=interactive, visible=visible)
+
+
+def _validator_review_level_dropdown(state: Dict[str, Any], interactive: bool = True, visible: bool = True):
+    value = _normalize_validator_review_level(
+        (state or {}).get("validator_review_level", (state or {}).get("validator_strict_mode", "default"))
+    )
+    return gr.update(
+        choices=VALIDATOR_REVIEW_LEVEL_CHOICES,
+        value=value,
+        interactive=interactive,
+        visible=visible,
+    )
+
+
 def _todo_board(state: Dict[str, Any], visible: bool):
     return gr.update(value=render_pipeline_todo_board(state), visible=visible)
 
 
 def _planned_work_items_board(state: Dict[str, Any]):
     return gr.update(value=render_planned_work_items_panel(state), visible=True)
+
+
+def _validation_gate_board(state: Dict[str, Any]):
+    return gr.update(value=render_validation_gate_panel(state), visible=True)
+
+
+def _parent_input_signature(state: Dict[str, Any]) -> str:
+    pending = _pending_parent_input(state or {})
+    return "|".join(
+        [
+            str(pending.get("request_id") or ""),
+            str(pending.get("status") or ""),
+            str(pending.get("question") or ""),
+        ]
+    )
+
+
+def _parent_input_component_updates(
+    state: Dict[str, Any],
+    *,
+    interactive: bool,
+    reset_response: bool,
+) -> Tuple[Any, Any, Any, Any]:
+    pending = _pending_parent_input(state or {})
+    visible = str(pending.get("status") or "") == "waiting"
+    response_update = gr.update(
+        interactive=interactive,
+        visible=visible,
+        placeholder="Type a concise answer for the agent...",
+    )
+    if reset_response:
+        response_update = gr.update(
+            value="",
+            interactive=interactive,
+            visible=visible,
+            placeholder="Type a concise answer for the agent...",
+        )
+    return (
+        gr.update(value=render_parent_input_panel(state), visible=visible),
+        response_update,
+        gr.update(interactive=interactive, visible=visible),
+        gr.update(interactive=interactive, visible=visible),
+    )
 
 
 def _tool_log_text_for_stage(state: Dict[str, Any], stage_name: str, stage_kind: str) -> str:
@@ -1962,6 +2718,13 @@ def _ui_updates(
     message_update: Any,
     chat_history: Any,
     state: Dict[str, Any],
+    allow_parent_input_update: Any,
+    validator_review_level_update: Any,
+    parent_prompt_update: Any,
+    parent_response_update: Any,
+    parent_submit_update: Any,
+    parent_decline_update: Any,
+    validation_gate_update: Any,
     planned_work_items_update: Any,
     send_update: Any,
     clear_update: Any,
@@ -1971,6 +2734,13 @@ def _ui_updates(
         message_update,
         chat_history,
         state,
+        allow_parent_input_update,
+        validator_review_level_update,
+        parent_prompt_update,
+        parent_response_update,
+        parent_submit_update,
+        parent_decline_update,
+        validation_gate_update,
         planned_work_items_update,
         *_tool_log_updates(state),
         send_update,
@@ -1987,6 +2757,13 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
     send_visible = bool(snapshot.get("send_visible", True)) and not active
     clear_visible = bool(snapshot.get("clear_visible", True)) and not active
     todo_visible = bool(snapshot.get("todo_visible", False)) or active
+    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+        _parent_input_component_updates(
+            state,
+            interactive=True,
+            reset_response=False,
+        )
+    )
     return _ui_updates(
         _message_input(
             value="",
@@ -1995,6 +2772,21 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
         ),
         chat_history,
         state,
+        _allow_parent_input_checkbox(
+            state,
+            interactive=not active,
+            visible=True,
+        ),
+        _validator_review_level_dropdown(
+            state,
+            interactive=not active,
+            visible=True,
+        ),
+        parent_prompt_update,
+        parent_response_update,
+        parent_submit_update,
+        parent_decline_update,
+        _validation_gate_board(state),
         _planned_work_items_board(state),
         _send_button(
             interactive=send_visible,
@@ -2020,6 +2812,13 @@ def poll_active_ui_snapshot():
             gr.skip(),
             gr.skip(),
             gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
             *_tool_log_skip_updates(),
             gr.skip(),
             gr.skip(),
@@ -2028,14 +2827,34 @@ def poll_active_ui_snapshot():
     return _restore_snapshot_outputs(snapshot)
 
 
-def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[str, Any]):
+def chat_turn(
+    user_text: str,
+    chat_history: List[Dict[str, str]],
+    state: Dict[str, Any],
+    allow_parent_input_value: bool,
+    validator_review_level_value: str,
+):
     user_text = (user_text or "").strip()
     if not user_text:
         state = state or {}
+        parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+            _parent_input_component_updates(
+                state,
+                interactive=True,
+                reset_response=False,
+            )
+        )
         yield _ui_updates(
             _message_input(value="", interactive=True, visible=True),
             chat_history,
             state,
+            _allow_parent_input_checkbox(state, interactive=True, visible=True),
+            _validator_review_level_dropdown(state, interactive=True, visible=True),
+            parent_prompt_update,
+            parent_response_update,
+            parent_submit_update,
+            parent_decline_update,
+            _validation_gate_board(state),
             _planned_work_items_board(state),
             _send_button(interactive=True, visible=True),
             _send_button(interactive=True, visible=True),
@@ -2056,12 +2875,19 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
     state.setdefault("tool_result_cache", {})
     state.setdefault("status_log", "")
     state.setdefault("shared_state", _new_shared_state())
+    state["allow_parent_input"] = bool(allow_parent_input_value)
+    state["validator_review_level"] = _normalize_validator_review_level(validator_review_level_value)
+    state["pending_parent_input"] = _empty_parent_input()
     state["tool_log"] = ""
     state["tool_log_sections"] = {}
     state["_tool_log_seen_keys"] = {}
     state["shared_state"]["pipeline_stage_progress"] = _stage_progress_from_pipeline_definition()
     state["shared_state"]["planned_work_items"] = []
     state["shared_state"]["planned_work_items_parse_error"] = ""
+    state["shared_state"]["validation_retry_count"] = 0
+    state["shared_state"]["validation_last_decision"] = ""
+    state["shared_state"]["validation_replan_feedback"] = ""
+    state["shared_state"]["validation_history"] = []
 
     append_status(state, f"New query: {_shorten(user_text, max_chars=220)}")
     running_note = "[deep pipeline running... task board is live]"
@@ -2080,10 +2906,24 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
         clear_visible=False,
         todo_visible=True,
     )
+    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+        _parent_input_component_updates(
+            state,
+            interactive=True,
+            reset_response=True,
+        )
+    )
     yield _ui_updates(
         _message_input(value="", interactive=False, visible=False),
         chat_box["history"],
         state,
+        _allow_parent_input_checkbox(state, interactive=False, visible=True),
+        _validator_review_level_dropdown(state, interactive=False, visible=True),
+        parent_prompt_update,
+        parent_response_update,
+        parent_submit_update,
+        parent_decline_update,
+        _validation_gate_board(state),
         _planned_work_items_board(state),
         _send_button(interactive=False, visible=False),
         _send_button(interactive=False, visible=False),
@@ -2145,27 +2985,54 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
     last_tool_log = state.get("tool_log", "")
     last_todo_html = render_pipeline_todo_board(state)
     last_planned_html = render_planned_work_items_panel(state)
+    last_validation_html = render_validation_gate_panel(state)
+    last_parent_input_sig = _parent_input_signature(state)
     while not done.wait(0.35):
         tool_now = state.get("tool_log", "")
         todo_now = render_pipeline_todo_board(state)
         planned_now = render_planned_work_items_panel(state)
-        if tool_now != last_tool_log or todo_now != last_todo_html or planned_now != last_planned_html:
+        validation_now = render_validation_gate_panel(state)
+        parent_input_sig = _parent_input_signature(state)
+        if (
+            tool_now != last_tool_log
+            or todo_now != last_todo_html
+            or planned_now != last_planned_html
+            or validation_now != last_validation_html
+            or parent_input_sig != last_parent_input_sig
+        ):
+            parent_input_changed = parent_input_sig != last_parent_input_sig
             last_tool_log = tool_now
             last_todo_html = todo_now
             last_planned_html = planned_now
+            last_validation_html = validation_now
+            last_parent_input_sig = parent_input_sig
             _store_ui_snapshot(
                 chat_history=chat_box["history"],
                 state=state,
                 run_active=True,
                 composer_visible=False,
                 send_visible=False,
-                clear_visible=False,
-                todo_visible=True,
+                    clear_visible=False,
+                    todo_visible=True,
+                )
+            parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+                _parent_input_component_updates(
+                    state,
+                    interactive=True,
+                    reset_response=parent_input_changed,
+                )
             )
             yield _ui_updates(
                 _message_input(value="", interactive=False, visible=False),
                 chat_box["history"],
                 state,
+                _allow_parent_input_checkbox(state, interactive=False, visible=True),
+                _validator_review_level_dropdown(state, interactive=False, visible=True),
+                parent_prompt_update,
+                parent_response_update,
+                parent_submit_update,
+                parent_decline_update,
+                gr.update(value=validation_now, visible=True),
                 gr.update(value=planned_now, visible=True),
                 _send_button(interactive=False, visible=False),
                 _send_button(interactive=False, visible=False),
@@ -2176,15 +3043,118 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
 
     # Update UI chat
     chat_history = chat_box["history"]
+    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+        _parent_input_component_updates(
+            state,
+            interactive=True,
+            reset_response=True,
+        )
+    )
 
     yield _ui_updates(
         _message_input(value="", interactive=True, visible=True),
         chat_history,
         state,
+        _allow_parent_input_checkbox(state, interactive=True, visible=True),
+        _validator_review_level_dropdown(state, interactive=True, visible=True),
+        parent_prompt_update,
+        parent_response_update,
+        parent_submit_update,
+        parent_decline_update,
+        _validation_gate_board(state),
         _planned_work_items_board(state),
         _send_button(interactive=True, visible=True),
         _send_button(interactive=True, visible=True),
         _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
+    )
+
+
+def set_allow_parent_input(allow_parent_input_value: bool, state: Dict[str, Any]):
+    state = state or _snapshot_state_default()
+    state["allow_parent_input"] = bool(allow_parent_input_value)
+    _store_ui_snapshot(state=state)
+    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+        _parent_input_component_updates(
+            state,
+            interactive=not bool(_get_ui_snapshot().get("run_active")),
+            reset_response=False,
+        )
+    )
+    return (
+        state,
+        _allow_parent_input_checkbox(
+            state,
+            interactive=not bool(_get_ui_snapshot().get("run_active")),
+            visible=True,
+        ),
+        parent_prompt_update,
+        parent_response_update,
+        parent_submit_update,
+        parent_decline_update,
+    )
+
+
+def set_validator_review_level(validator_review_level_value: str, state: Dict[str, Any]):
+    state = state or _snapshot_state_default()
+    state["validator_review_level"] = _normalize_validator_review_level(validator_review_level_value)
+    _store_ui_snapshot(state=state)
+    return (
+        state,
+        _validator_review_level_dropdown(
+            state,
+            interactive=not bool(_get_ui_snapshot().get("run_active")),
+            visible=True,
+        ),
+    )
+
+
+def submit_parent_input(response_text: str, state: Dict[str, Any]):
+    state = state or _snapshot_state_default()
+    _resolve_parent_input_request(state, response=response_text, declined=False)
+    _store_ui_snapshot(state=state)
+    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+        _parent_input_component_updates(
+            state,
+            interactive=bool(_get_ui_snapshot().get("run_active")),
+            reset_response=True,
+        )
+    )
+    return (
+        state,
+        _allow_parent_input_checkbox(
+            state,
+            interactive=not bool(_get_ui_snapshot().get("run_active")),
+            visible=True,
+        ),
+        parent_prompt_update,
+        parent_response_update,
+        parent_submit_update,
+        parent_decline_update,
+    )
+
+
+def decline_parent_input(state: Dict[str, Any]):
+    state = state or _snapshot_state_default()
+    _resolve_parent_input_request(state, response="", declined=True)
+    _store_ui_snapshot(state=state)
+    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+        _parent_input_component_updates(
+            state,
+            interactive=bool(_get_ui_snapshot().get("run_active")),
+            reset_response=True,
+        )
+    )
+    return (
+        state,
+        _allow_parent_input_checkbox(
+            state,
+            interactive=not bool(_get_ui_snapshot().get("run_active")),
+            visible=True,
+        ),
+        parent_prompt_update,
+        parent_response_update,
+        parent_submit_update,
+        parent_decline_update,
     )
 
 
@@ -2197,6 +3167,9 @@ def reset():
         "_tool_log_seen_keys": {},
         "tool_result_cache": {},
         "status_log": "",
+        "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
+        "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
+        "pending_parent_input": _empty_parent_input(),
         "shared_state": fresh_shared_state,
     }
     _store_ui_snapshot(
@@ -2208,10 +3181,24 @@ def reset():
         clear_visible=True,
         todo_visible=False,
     )
+    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+        _parent_input_component_updates(
+            fresh_state,
+            interactive=True,
+            reset_response=True,
+        )
+    )
     return _ui_updates(
         _message_input(value="", interactive=True, visible=True),
         [],
         fresh_state,
+        _allow_parent_input_checkbox(fresh_state, interactive=True, visible=True),
+        _validator_review_level_dropdown(fresh_state, interactive=True, visible=True),
+        parent_prompt_update,
+        parent_response_update,
+        parent_submit_update,
+        parent_decline_update,
+        _validation_gate_board(fresh_state),
         _planned_work_items_board(fresh_state),
         _send_button(interactive=True, visible=True),
         _send_button(interactive=True, visible=True),
@@ -2239,10 +3226,34 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
     state = gr.State(initial_state)
     snapshot_timer = gr.Timer(0.5, active=True, render=False)
 
+    with gr.Sidebar(label="Advanced Settings", open=False, position="right"):
+        gr.Markdown("### Advanced Settings")
+        allow_parent_input = gr.Checkbox(
+            label="Allow agent follow-up questions during run",
+            value=bool(initial_state.get("allow_parent_input")),
+            info="Enable this if you want the agent to pause and ask for clarifications while the pipeline is running.",
+        )
+        validator_review_level = gr.Dropdown(
+            label="Validator review profile",
+            choices=VALIDATOR_REVIEW_LEVEL_CHOICES,
+            value=_normalize_validator_review_level(initial_state.get("validator_review_level", "default")),
+            info="Choose how demanding the validator should be.",
+        )
+
     with gr.Row():
         with gr.Column(scale=3):
             chat = gr.Chatbot(label="Chat", height=330)
             todo_board = gr.HTML(visible=False)
+            parent_prompt_panel = gr.HTML(value=render_parent_input_panel(initial_state), visible=False)
+            parent_response = gr.Textbox(
+                label="Follow-up Response",
+                lines=2,
+                placeholder="Type a concise answer for the agent...",
+                visible=False,
+            )
+            with gr.Row():
+                parent_submit = gr.Button("Submit Answer", visible=False)
+                parent_decline = gr.Button("Decline", visible=False)
             user = gr.Textbox(
                 label="Message",
                 lines=2,
@@ -2254,6 +3265,8 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
 
         with gr.Column(scale=2):
             planned_work_items_panel = gr.HTML(value=render_planned_work_items_panel(initial_state))
+            with gr.Accordion("Validation Gate", open=False):
+                validation_gate_panel = gr.HTML(value=render_validation_gate_panel(initial_state))
             gr.Markdown("### Tool Log")
             tool_log_boxes: List[Any] = []
             for stage_name, stage_kind in PIPELINE_LOG_SLOTS:
@@ -2272,9 +3285,55 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
                         )
                     )
 
-    ui_outputs = [user, chat, state, planned_work_items_panel, *tool_log_boxes, send, clear, todo_board]
-    send.click(chat_turn, inputs=[user, chat, state], outputs=ui_outputs)
-    user.submit(chat_turn, inputs=[user, chat, state], outputs=ui_outputs)
+    ui_outputs = [
+        user,
+        chat,
+        state,
+        allow_parent_input,
+        validator_review_level,
+        parent_prompt_panel,
+        parent_response,
+        parent_submit,
+        parent_decline,
+        validation_gate_panel,
+        planned_work_items_panel,
+        *tool_log_boxes,
+        send,
+        clear,
+        todo_board,
+    ]
+    send.click(chat_turn, inputs=[user, chat, state, allow_parent_input, validator_review_level], outputs=ui_outputs)
+    user.submit(chat_turn, inputs=[user, chat, state, allow_parent_input, validator_review_level], outputs=ui_outputs)
+    allow_parent_input.change(
+        set_allow_parent_input,
+        inputs=[allow_parent_input, state],
+        outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
+        show_progress="hidden",
+    )
+    validator_review_level.change(
+        set_validator_review_level,
+        inputs=[validator_review_level, state],
+        outputs=[state, validator_review_level],
+        show_progress="hidden",
+    )
+    parent_submit.click(
+        submit_parent_input,
+        inputs=[parent_response, state],
+        outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
+        show_progress="hidden",
+    )
+    parent_response.submit(
+        submit_parent_input,
+        inputs=[parent_response, state],
+        outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
+        show_progress="hidden",
+    )
+    parent_decline.click(
+        decline_parent_input,
+        inputs=[state],
+        outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
+        show_progress="hidden",
+    )
     clear.click(reset, inputs=None, outputs=ui_outputs)
     demo.load(restore_last_ui, inputs=None, outputs=ui_outputs)
     snapshot_timer.tick(

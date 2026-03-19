@@ -12,6 +12,8 @@
     "specialization": [
       "Resolve the exact sample path and collect only the minimum technical context needed for planning.",
       "Prefer `get_program_info` or equivalent lightweight metadata pivots over deep analysis.",
+      "Do not walk broad xref trees, large caller/callee graphs, or many candidate artifacts in this stage.",
+      "If a string, API, function, or global appears promising, note it as a worker pivot and stop rather than tracing all references.",
       "Stop after high-value pivots and basic metadata; do not produce a full analysis report."
     ]
   },
@@ -24,6 +26,7 @@
       "Start broad and identify the most relevant code regions, imports, strings, and capabilities for the user request.",
       "Actively filter out compiler/runtime startup noise and tiny wrapper stubs unless they clearly gate the real logic.",
       "Surface the highest-value next pivots for other specialists to investigate.",
+      "When you keep a pivot, attach at least one concrete artifact that explains why it deserves deeper follow-up.",
       "Prefer concise triage findings over exhaustive listing."
     ]
   },
@@ -35,7 +38,26 @@
       "Collapse low-value startup/helper functions into a brief note instead of enumerating them individually.",
       "Do not present trivial one-call wrappers as meaningful control-flow steps unless they are the only bridge into analyst-relevant logic.",
       "Name concrete functions, addresses, and branch pivots where possible.",
+      "For each important control-flow claim, include a short Ghidra artifact bundle: function header/address, a brief decompiler or disassembly excerpt for the branch/dispatch logic, and the caller/callee or xref evidence that ties the path together.",
+      "When describing dispatcher-to-handler flow, include the exact handoff points and argument mapping whenever those details affect interpretation.",
+      "When dispatcher or handler behavior is central to the claim, prefer verbatim or tool-faithful Ghidra excerpts and short contiguous disassembly snippets over prose-only summaries.",
+      "For handler-call argument claims, include a short call-site snippet immediately before the call that shows register/stack setup.",
       "Treat ordinary branching as normal unless there is evidence of flattening, indirection, or opaque predicates."
+    ]
+  },
+  "ghidra_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Use Ghidra as the primary reasoning surface for determining whether candidate artifacts are actually relevant.",
+      "Start from concrete pivots such as strings, APIs/imports, globals/tables, decoded blobs, suspicious functions, or branch conditions and trace how they are referenced.",
+      "For a string, determine whether it is defined, decoded, or stack-built, find its xrefs, inspect the containing function, and examine immediate callers/callees before deciding it matters.",
+      "For an API or import, identify real call sites, collapse wrapper layers, inspect nearby arguments/data flow, and determine what concrete behavior it enables.",
+      "For a function, keep it only if it changes control flow, transforms meaningful data, resolves APIs, decodes material, reaches an analyst-relevant sink, or gates anti-analysis behavior.",
+      "Ignore or collapse generic UI text, debug strings, CRT/bootstrap logic, init/atexit registration, import thunks, standard library setup, and tiny wrappers unless they are the actual bridge into meaningful logic.",
+      "For every retained pivot, explain why it matters, what evidence supports it, and what next pivot it suggests.",
+      "For every retained pivot, include a compact artifact bundle with the function name/address, the relevant xref or call-site context, and a short decompiler/disassembly excerpt when available.",
+      "When imports or thunks are central to the conclusion, include raw import-table lines or tool-faithful import evidence instead of only naming APIs in prose.",
+      "Do not report random decompiled helpers just because they exist; report only artifacts that materially sharpen understanding of purpose, control flow, capability, or obfuscation."
     ]
   },
   "string_analyst": {
@@ -43,6 +65,8 @@
     "specialization": [
       "Prioritize string recovery, stack strings, decoded strings, configuration material, and path/URL/registry artifacts.",
       "Use FLOSS or equivalent tooling when appropriate and connect recovered strings back to code locations or behaviors.",
+      "Do not leave important strings unattached; show the string, where it came from, and which function/xref consumes it.",
+      "When a string materially supports a claim, include the literal and its tool-reported offset/address when available.",
       "Call out which recovered strings materially change the purpose hypothesis."
     ]
   },
@@ -51,6 +75,7 @@
     "specialization": [
       "Prioritize concrete obfuscation mechanisms such as stack strings, string decoding, API hashing, indirect dispatch, control-flow flattening, and staged blob decoding.",
       "For each claimed technique, include the mechanism, evidence, and analyst interpretation.",
+      "Support each obfuscation claim with specific artifacts such as decoded strings, decompiler/disassembly excerpts, rule hits, or concrete indirection sites rather than only a high-level description.",
       "Reject vague language like 'uses shared libraries' or 'appears obfuscated' unless you can tie it to a concrete artifact."
     ]
   },
@@ -60,6 +85,8 @@
       "Prioritize functional capability mapping from imports, resolved APIs, decoded strings, capa matches, and decompiled routines.",
       "Ignore generic runtime-support functions unless they directly enable or conceal a concrete capability.",
       "Group findings into concrete behaviors such as persistence, execution, networking, anti-analysis, or staging only when evidence supports it.",
+      "For each capability claim, include the concrete code artifact that performs it and corroborating evidence such as imports, call sites, strings, or capa hits.",
+      "When capability evidence depends on imported APIs, include raw import-table lines and the function or call-site that consumes those imports when possible.",
       "Prefer naming specific APIs and rule hits over broad malware-family language."
     ]
   },
@@ -67,7 +94,11 @@
     "base": "dynamic_agent_instructions",
     "specialization": [
       "Prioritize concrete runtime behavior such as spawned processes, registry activity, network access, file writes, and mutex or service creation.",
+      "Do not attempt to launch or detonate the sample unless the current run explicitly provides sandboxed execution support.",
+      "If sandboxed execution is unavailable, limit yourself to reviewing existing runtime artifacts or reporting that safe execution is not currently supported.",
       "Correlate runtime observations back to likely code paths or decoded strings when possible.",
+      "If you provide a runtime test plan, make it executable and safe: exact commands or script steps, monitoring capture points, expected artifacts, representative logs when available, and rollback/snapshot controls.",
+      "When capturing runtime evidence, prefer attaching script text, filter definitions, and representative output/log excerpts instead of describing them only at a high level.",
       "Be explicit about what was observed versus inferred."
     ]
   },
@@ -75,8 +106,12 @@
     "base": "static_agent_instructions",
     "specialization": [
       "Act as a reviewer, not a discoverer-first analyst.",
+      "Do not perform fresh tool-driven analysis or heavy MCP calls; validate only from the planner work items, worker outputs, and cited artifacts already present.",
+      "Judge adequacy against the original user request first, then use planner work items as supporting context rather than an absolute checklist.",
+      "If a planner work item is impossible, unsafe, unsupported by current tooling, or not actually necessary to answer the user request, flag it as out-of-scope instead of treating it as a worker miss.",
       "Check whether each claim is supported by concrete tool output, function evidence, strings, rule hits, or runtime artifacts.",
-      "Call out contradictions, missing evidence, and overstatements directly."
+      "Call out contradictions, missing evidence, and overstatements directly.",
+      "For each major claim, decide whether to accept or reject it and give concrete reasons and planner/worker fixes when rejecting."
     ]
   },
   "reporting_analyst": {
@@ -84,6 +119,7 @@
     "specialization": [
       "Synthesize validated findings into a concise technical report.",
       "Do not add new claims that were not established by prior stages.",
+      "Do not perform fresh tool-driven analysis or new discovery; report only from validated findings and reviewer-approved evidence.",
       "Do not pad the report with boilerplate startup-function walkthroughs or low-value wrapper summaries.",
       "Avoid lists of decompiled helper functions unless they materially advance the purpose, control-flow, or obfuscation explanation.",
       "Preserve specifics such as exact APIs, functions, decoded strings, and obfuscation mechanisms when they materially support the conclusion."
