@@ -277,6 +277,9 @@ DEEP_AGENT_PIPELINE: List[Dict[str, Any]] = resolve_pipeline_definition(
     DEEP_AGENT_PIPELINE_PRESETS[DEEP_AGENT_PIPELINE_NAME],
     DEEP_AGENT_ARCHITECTURE,
 )
+PIPELINE_LOG_SLOTS: List[Tuple[str, str]] = [
+    (str(stage["name"]), str(stage["stage_kind"])) for stage in DEEP_AGENT_PIPELINE
+]
 # Optional direct override example for explicit staged flow:
 # DEEP_AGENT_PIPELINE = [
 #     _stage_template("planner", "planner", architecture=[("planning_analyst", 1)]),
@@ -841,6 +844,13 @@ def append_tool_log_delta(
     if len(merged) > MAX_TOOL_LOG_CHARS:
         merged = merged[-MAX_TOOL_LOG_CHARS:]
     state["tool_log"] = merged
+    section_name = role_key[len("pipeline_"):] if role_key.startswith("pipeline_") else role_key
+    sections = state.setdefault("tool_log_sections", {})
+    prev_section = (sections.get(section_name) or "").strip()
+    merged_section = (prev_section + "\n\n" + tool_blob).strip() if prev_section else tool_blob
+    if len(merged_section) > MAX_TOOL_LOG_CHARS:
+        merged_section = merged_section[-MAX_TOOL_LOG_CHARS:]
+    sections[section_name] = merged_section
     _store_ui_snapshot(state=state)
 
 
@@ -1119,6 +1129,7 @@ def _snapshot_state_default() -> Dict[str, Any]:
     return {
         "role_histories": {},
         "tool_log": "",
+        "tool_log_sections": {},
         "status_log": "",
         "shared_state": _new_shared_state(),
     }
@@ -1493,8 +1504,51 @@ def _send_button(interactive: bool = True, visible: bool = True):
 def _todo_board(state: Dict[str, Any], visible: bool):
     return gr.update(value=render_pipeline_todo_board(state), visible=visible)
 
-def _tool_log_update(state: Dict[str, Any]):
-    return gr.update(value=(state or {}).get("tool_log", ""))
+def _tool_log_text_for_stage(state: Dict[str, Any], stage_name: str, stage_kind: str) -> str:
+    state = state or {}
+    sections = state.get("tool_log_sections") or {}
+    progress = ((state.get("shared_state") or {}).get("pipeline_stage_progress") or [])
+    progress_map = {
+        str(item.get("stage_name") or ""): item
+        for item in progress
+    }
+    stage_entry = progress_map.get(stage_name) or {}
+    status = str(stage_entry.get("status") or "pending")
+    log_text = str(sections.get(stage_name) or "").strip()
+    header = f"phase: {stage_name} ({stage_kind})\nstatus: {status}"
+    if not log_text:
+        return f"{header}\n\nNo tool calls recorded for this phase yet."
+    return f"{header}\n\n{log_text}"
+
+
+def _tool_log_updates(state: Dict[str, Any]) -> Tuple[Any, ...]:
+    return tuple(
+        gr.update(value=_tool_log_text_for_stage(state, stage_name, stage_kind))
+        for stage_name, stage_kind in PIPELINE_LOG_SLOTS
+    )
+
+
+def _tool_log_skip_updates() -> Tuple[Any, ...]:
+    return tuple(gr.skip() for _ in PIPELINE_LOG_SLOTS)
+
+
+def _ui_updates(
+    message_update: Any,
+    chat_history: Any,
+    state: Dict[str, Any],
+    send_update: Any,
+    clear_update: Any,
+    todo_update: Any,
+) -> Tuple[Any, ...]:
+    return (
+        message_update,
+        chat_history,
+        state,
+        *_tool_log_updates(state),
+        send_update,
+        clear_update,
+        todo_update,
+    )
 
 
 def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
@@ -1505,15 +1559,14 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
     send_visible = bool(snapshot.get("send_visible", True)) and not active
     clear_visible = bool(snapshot.get("clear_visible", True)) and not active
     todo_visible = bool(snapshot.get("todo_visible", False)) or active
-    return (
-        chat_history,
-        state,
-        _tool_log_update(state),
+    return _ui_updates(
         _message_input(
             value="",
             interactive=composer_visible,
             visible=composer_visible,
         ),
+        chat_history,
+        state,
         _send_button(
             interactive=send_visible,
             visible=send_visible,
@@ -1533,7 +1586,15 @@ def restore_last_ui():
 def poll_active_ui_snapshot():
     snapshot = _get_ui_snapshot()
     if not snapshot.get("run_active"):
-        return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        return (
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+            *_tool_log_skip_updates(),
+            gr.skip(),
+            gr.skip(),
+            gr.skip(),
+        )
     return _restore_snapshot_outputs(snapshot)
 
 
@@ -1541,11 +1602,10 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
     user_text = (user_text or "").strip()
     if not user_text:
         state = state or {}
-        yield (
+        yield _ui_updates(
             _message_input(value="", interactive=True, visible=True),
             chat_history,
             state,
-            _tool_log_update(state),
             _send_button(interactive=True, visible=True),
             _send_button(interactive=True, visible=True),
             _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
@@ -1560,8 +1620,11 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
     # Make sure state keys exist
     state.setdefault("role_histories", {})
     state.setdefault("tool_log", "")
+    state.setdefault("tool_log_sections", {})
     state.setdefault("status_log", "")
     state.setdefault("shared_state", _new_shared_state())
+    state["tool_log"] = ""
+    state["tool_log_sections"] = {}
     state["shared_state"]["pipeline_stage_progress"] = _stage_progress_from_pipeline_definition()
 
     append_status(state, f"New query: {_shorten(user_text, max_chars=220)}")
@@ -1581,11 +1644,10 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
         clear_visible=False,
         todo_visible=True,
     )
-    yield (
+    yield _ui_updates(
         _message_input(value="", interactive=False, visible=False),
         chat_box["history"],
         state,
-        _tool_log_update(state),
         _send_button(interactive=False, visible=False),
         _send_button(interactive=False, visible=False),
         _todo_board(state, visible=True),
@@ -1660,11 +1722,10 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
                 clear_visible=False,
                 todo_visible=True,
             )
-            yield (
+            yield _ui_updates(
                 _message_input(value="", interactive=False, visible=False),
                 chat_box["history"],
                 state,
-                _tool_log_update(state),
                 _send_button(interactive=False, visible=False),
                 _send_button(interactive=False, visible=False),
                 gr.update(value=todo_now, visible=True),
@@ -1675,11 +1736,10 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
     # Update UI chat
     chat_history = chat_box["history"]
 
-    yield (
+    yield _ui_updates(
         _message_input(value="", interactive=True, visible=True),
         chat_history,
         state,
-        _tool_log_update(state),
         _send_button(interactive=True, visible=True),
         _send_button(interactive=True, visible=True),
         _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
@@ -1691,6 +1751,7 @@ def reset():
     fresh_state = {
         "role_histories": {},
         "tool_log": "",
+        "tool_log_sections": {},
         "status_log": "",
         "shared_state": fresh_shared_state,
     }
@@ -1703,11 +1764,10 @@ def reset():
         clear_visible=True,
         todo_visible=False,
     )
-    return (
+    return _ui_updates(
+        _message_input(value="", interactive=True, visible=True),
         [],
         fresh_state,
-        _tool_log_update(fresh_state),
-        _message_input(value="", interactive=True, visible=True),
         _send_button(interactive=True, visible=True),
         _send_button(interactive=True, visible=True),
         _todo_board({"shared_state": fresh_shared_state}, visible=False),
@@ -1748,17 +1808,30 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
                 clear = gr.Button("Reset")
 
         with gr.Column(scale=2):
-            with gr.Accordion("Tool Log (optional)", open=False):
-                tool_log = gr.Code(label="Log", language="json", lines=30)
+            gr.Markdown("### Tool Log")
+            tool_log_boxes: List[Any] = []
+            for stage_name, stage_kind in PIPELINE_LOG_SLOTS:
+                with gr.Accordion(f"{stage_name} ({stage_kind})", open=False):
+                    tool_log_boxes.append(
+                        gr.Textbox(
+                            value=_tool_log_text_for_stage(initial_state, stage_name, stage_kind),
+                            lines=10,
+                            max_lines=24,
+                            buttons=["copy"],
+                            interactive=False,
+                            label="Phase Log",
+                        )
+                    )
 
-    send.click(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, send, clear, todo_board])
-    user.submit(chat_turn, inputs=[user, chat, state], outputs=[user, chat, state, tool_log, send, clear, todo_board])
-    clear.click(reset, inputs=None, outputs=[chat, state, tool_log, user, send, clear, todo_board])
-    demo.load(restore_last_ui, inputs=None, outputs=[chat, state, tool_log, user, send, clear, todo_board])
+    ui_outputs = [user, chat, state, *tool_log_boxes, send, clear, todo_board]
+    send.click(chat_turn, inputs=[user, chat, state], outputs=ui_outputs)
+    user.submit(chat_turn, inputs=[user, chat, state], outputs=ui_outputs)
+    clear.click(reset, inputs=None, outputs=ui_outputs)
+    demo.load(restore_last_ui, inputs=None, outputs=ui_outputs)
     snapshot_timer.tick(
         poll_active_ui_snapshot,
         inputs=None,
-        outputs=[chat, state, tool_log, user, send, clear, todo_board],
+        outputs=ui_outputs,
         show_progress="hidden",
     )
 
