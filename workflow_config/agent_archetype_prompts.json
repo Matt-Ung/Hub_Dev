@@ -1,0 +1,85 @@
+{
+  "planning_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Focus on turning minimal shared context into a concrete, high-value execution plan for downstream analysts.",
+      "Do not perform substantive reverse engineering or report technical findings as if analysis is complete.",
+      "Produce tasking, priorities, rationale, and evidence targets only."
+    ]
+  },
+  "preflight_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Resolve the exact sample path and collect only the minimum technical context needed for planning.",
+      "Prefer `get_program_info` or equivalent lightweight metadata pivots over deep analysis.",
+      "Stop after high-value pivots and basic metadata; do not produce a full analysis report."
+    ]
+  },
+  "static_generalist": {
+    "base": "static_agent_instructions"
+  },
+  "triage_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Start broad and identify the most relevant code regions, imports, strings, and capabilities for the user request.",
+      "Surface the highest-value next pivots for other specialists to investigate.",
+      "Prefer concise triage findings over exhaustive listing."
+    ]
+  },
+  "control_flow_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Prioritize reconstruction of the main execution path, dispatchers, state transitions, and key decision points.",
+      "Name concrete functions, addresses, and branch pivots where possible.",
+      "Treat ordinary branching as normal unless there is evidence of flattening, indirection, or opaque predicates."
+    ]
+  },
+  "string_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Prioritize string recovery, stack strings, decoded strings, configuration material, and path/URL/registry artifacts.",
+      "Use FLOSS or equivalent tooling when appropriate and connect recovered strings back to code locations or behaviors.",
+      "Call out which recovered strings materially change the purpose hypothesis."
+    ]
+  },
+  "obfuscation_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Prioritize concrete obfuscation mechanisms such as stack strings, string decoding, API hashing, indirect dispatch, control-flow flattening, and staged blob decoding.",
+      "For each claimed technique, include the mechanism, evidence, and analyst interpretation.",
+      "Reject vague language like 'uses shared libraries' or 'appears obfuscated' unless you can tie it to a concrete artifact."
+    ]
+  },
+  "capability_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Prioritize functional capability mapping from imports, resolved APIs, decoded strings, capa matches, and decompiled routines.",
+      "Group findings into concrete behaviors such as persistence, execution, networking, anti-analysis, or staging only when evidence supports it.",
+      "Prefer naming specific APIs and rule hits over broad malware-family language."
+    ]
+  },
+  "runtime_behavior_analyst": {
+    "base": "dynamic_agent_instructions",
+    "specialization": [
+      "Prioritize concrete runtime behavior such as spawned processes, registry activity, network access, file writes, and mutex or service creation.",
+      "Correlate runtime observations back to likely code paths or decoded strings when possible.",
+      "Be explicit about what was observed versus inferred."
+    ]
+  },
+  "evidence_validator": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Act as a reviewer, not a discoverer-first analyst.",
+      "Check whether each claim is supported by concrete tool output, function evidence, strings, rule hits, or runtime artifacts.",
+      "Call out contradictions, missing evidence, and overstatements directly."
+    ]
+  },
+  "reporting_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Synthesize validated findings into a concise technical report.",
+      "Do not add new claims that were not established by prior stages.",
+      "Preserve specifics such as exact APIs, functions, decoded strings, and obfuscation mechanisms when they materially support the conclusion."
+    ]
+  }
+}

@@ -2,9 +2,11 @@ import os
 import sys
 import json
 import time
+import asyncio
 import getpass
 import html
 import re
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
@@ -16,16 +18,14 @@ import gradio as gr
 from pydantic_ai import Agent, ModelMessage
 from pydantic_ai.mcp import MCPServerStdio
 from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
-)
-
-from multi_agent_prompts import (
-    AGENT_ARCHETYPE_PROMPTS,
-    PIPELINE_STAGE_MANAGER_PROMPTS,
 )
 
 import pydantic_deep as pydantic_deep_pkg
@@ -35,6 +35,7 @@ from pydantic_deep import (
     create_default_deps,
     create_sliding_window_processor,
 )
+from workflow_config_loader import load_workflow_config
 
 
 # ----------------------------
@@ -110,6 +111,17 @@ OPENAI_MODEL_ID = os.environ.get("OPENAI_MODEL_ID", "openai:gpt-4o-mini")
 MAX_ROLE_HISTORY_MESSAGES = int(os.environ.get("MAX_ROLE_HISTORY_MESSAGES", "16"))
 MAX_TASK_OUTPUTS = int(os.environ.get("MAX_TASK_OUTPUTS", "32"))
 MAX_TOOL_LOG_CHARS = int(os.environ.get("MAX_TOOL_LOG_CHARS", "120000"))
+MAX_TOOL_RESULT_CACHE_ENTRIES = int(os.environ.get("MAX_TOOL_RESULT_CACHE_ENTRIES", "64"))
+PLANNER_WORK_ITEMS_START = "WORK_ITEMS_JSON_START"
+PLANNER_WORK_ITEMS_END = "WORK_ITEMS_JSON_END"
+TOOL_RESULT_CACHE_SERVER_MARKERS = tuple(
+    marker.strip().lower()
+    for marker in os.environ.get(
+        "TOOL_RESULT_CACHE_SERVER_MARKERS",
+        "capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy",
+    ).split(",")
+    if marker.strip()
+)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -155,41 +167,22 @@ SAMPLE_PATH_QUOTED_RE = re.compile(
 )
 GHIDRA_EXECUTABLE_PATH_RE = re.compile(r"(?im)^Executable Path:\s*(.+?)\s*$")
 
-# Worker analyst breadth configuration. Edit the tuple list directly or set
-# DEEP_AGENT_ARCHITECTURE_NAME to one of the named presets below.
-DEEP_AGENT_ARCHITECTURE_PRESETS: Dict[str, List[Tuple[str, int]]] = {
-    "minimal": [
-        ("static_generalist", 1),
-    ],
-    "balanced": [
-        ("triage_analyst", 1),
-        ("control_flow_analyst", 1),
-        ("obfuscation_analyst", 1),
-        ("string_analyst", 1),
-    ],
-    "aws_collaboration": [
-        ("triage_analyst", 1),
-        ("control_flow_analyst", 1),
-        ("string_analyst", 1),
-        ("obfuscation_analyst", 1),
-        ("capability_analyst", 1),
-    ],
-    "runtime_enriched": [
-        ("triage_analyst", 1),
-        ("control_flow_analyst", 1),
-        ("string_analyst", 1),
-        ("obfuscation_analyst", 1),
-        ("capability_analyst", 1),
-        ("runtime_behavior_analyst", 1),
-    ],
-    "static_swarm": [
-        ("triage_analyst", 1),
-        ("control_flow_analyst", 2),
-        ("obfuscation_analyst", 1),
-        ("string_analyst", 1),
-        ("capability_analyst", 1),
-    ],
-}
+WORKFLOW_CONFIG = load_workflow_config(
+    Path(__file__).resolve().parent / "workflow_config",
+    placeholders={
+        "PLANNER_WORK_ITEMS_START": PLANNER_WORK_ITEMS_START,
+        "PLANNER_WORK_ITEMS_END": PLANNER_WORK_ITEMS_END,
+    },
+)
+AGENT_ARCHETYPE_PROMPTS: Dict[str, str] = WORKFLOW_CONFIG["agent_archetype_prompts"]
+PIPELINE_STAGE_MANAGER_PROMPTS: Dict[str, str] = WORKFLOW_CONFIG["stage_manager_prompts"]
+DEEP_AGENT_ARCHITECTURE_PRESETS: Dict[str, List[Tuple[str, int]]] = WORKFLOW_CONFIG["architecture_presets"]
+DEEP_AGENT_PIPELINE_PRESETS: Dict[str, List[Dict[str, Any]]] = WORKFLOW_CONFIG["pipeline_presets"]
+AGENT_ARCHETYPE_SPECS: Dict[str, Dict[str, str]] = WORKFLOW_CONFIG["agent_archetype_specs"]
+PIPELINE_STAGE_OUTPUT_CONTRACTS: Dict[str, str] = WORKFLOW_CONFIG["stage_output_contracts"]
+
+# Worker analyst breadth configuration. Edit `workflow_config/architecture_presets.json`
+# or set DEEP_AGENT_ARCHITECTURE_NAME to one of the named presets below.
 
 DEEP_AGENT_ARCHITECTURE_NAME = (os.environ.get("DEEP_AGENT_ARCHITECTURE_NAME") or "aws_collaboration").strip()
 if DEEP_AGENT_ARCHITECTURE_NAME not in DEEP_AGENT_ARCHITECTURE_PRESETS:
@@ -209,47 +202,8 @@ DEEP_AGENT_ARCHITECTURE: List[Tuple[str, int]] = list(
 #     ("string_analyst", 1),
 # ]
 
-
-def _stage_template(
-    name: str,
-    stage_kind: str,
-    architecture: Optional[List[Tuple[str, int]]] = None,
-    use_worker_architecture: bool = False,
-) -> Dict[str, Any]:
-    return {
-        "name": name,
-        "stage_kind": stage_kind,
-        "architecture": list(architecture or []),
-        "use_worker_architecture": use_worker_architecture,
-    }
-
-
-DEEP_AGENT_PIPELINE_PRESETS: Dict[str, List[Dict[str, Any]]] = {
-    "planner_workers_reporter": [
-        _stage_template("planner", "planner", architecture=[("planning_analyst", 1)]),
-        _stage_template("workers", "workers", use_worker_architecture=True),
-        _stage_template("reporter", "reporter", architecture=[("reporting_analyst", 1)]),
-    ],
-    "planner_workers_validators_reporter": [
-        _stage_template("planner", "planner", architecture=[("planning_analyst", 1)]),
-        _stage_template("workers", "workers", use_worker_architecture=True),
-        _stage_template("validators", "validators", architecture=[("evidence_validator", 2)]),
-        _stage_template("reporter", "reporter", architecture=[("reporting_analyst", 1)]),
-    ],
-    "planner_workers_dual_validators_reporter": [
-        _stage_template("planner", "planner", architecture=[("planning_analyst", 1)]),
-        _stage_template("workers", "workers", use_worker_architecture=True),
-        _stage_template(
-            "validators",
-            "validators",
-            architecture=[("evidence_validator", 1), ("triage_analyst", 1)],
-        ),
-        _stage_template("reporter", "reporter", architecture=[("reporting_analyst", 1)]),
-    ],
-}
-
 DEEP_AGENT_PIPELINE_NAME = (
-    os.environ.get("DEEP_AGENT_PIPELINE_NAME") or "planner_workers_validators_reporter"
+    os.environ.get("DEEP_AGENT_PIPELINE_NAME") or "preflight_planner_workers_validators_reporter"
 ).strip()
 if DEEP_AGENT_PIPELINE_NAME not in DEEP_AGENT_PIPELINE_PRESETS:
     raise RuntimeError(
@@ -282,10 +236,11 @@ PIPELINE_LOG_SLOTS: List[Tuple[str, str]] = [
 ]
 # Optional direct override example for explicit staged flow:
 # DEEP_AGENT_PIPELINE = [
-#     _stage_template("planner", "planner", architecture=[("planning_analyst", 1)]),
-#     _stage_template("workers", "workers", architecture=[("control_flow_analyst", 2), ("string_analyst", 1)]),
-#     _stage_template("validators", "validators", architecture=[("evidence_validator", 2)]),
-#     _stage_template("reporter", "reporter", architecture=[("reporting_analyst", 1)]),
+#     {"name": "preflight", "stage_kind": "preflight", "architecture": [("preflight_analyst", 1)], "use_worker_architecture": False},
+#     {"name": "planner", "stage_kind": "planner", "architecture": [], "use_worker_architecture": False},
+#     {"name": "workers", "stage_kind": "workers", "architecture": [("control_flow_analyst", 2), ("string_analyst", 1)], "use_worker_architecture": False},
+#     {"name": "validators", "stage_kind": "validators", "architecture": [("evidence_validator", 2)], "use_worker_architecture": False},
+#     {"name": "reporter", "stage_kind": "reporter", "architecture": [("reporting_analyst", 1)], "use_worker_architecture": False},
 # ]
 
 
@@ -331,7 +286,13 @@ def load_mcp_servers(path: str) -> List[MCPServerStdio]:
             script_path = (p.parent / args[0]).expanduser().resolve()
             args = [str(script_path), *args[1:]]
 
-        server = MCPServerStdio(command, args=args, timeout=30, id=name)
+        server = MCPServerStdio(
+            command,
+            args=args,
+            timeout=30,
+            id=name,
+            process_tool_call=_make_cached_tool_call_processor(name),
+        )
         servers.append(server)
 
     return servers
@@ -359,75 +320,148 @@ def partition_toolsets(toolsets: List[MCPServerStdio]) -> Tuple[List[MCPServerSt
     return static_tools, dynamic_tools
 
 
-AGENT_ARCHETYPE_SPECS: Dict[str, Dict[str, str]] = {
-    "planning_analyst": {
-        "description": "Planning specialist that decomposes the user request into concrete malware-analysis tasks.",
-        "tool_domain": "all",
-        "preferred_mode": "sync",
-        "typical_complexity": "moderate",
-    },
-    "static_generalist": {
-        "description": "General static reverse-engineering specialist.",
-        "tool_domain": "static",
-        "preferred_mode": "sync",
-        "typical_complexity": "moderate",
-    },
-    "triage_analyst": {
-        "description": "Static triage specialist that identifies the highest-value pivots for the sample.",
-        "tool_domain": "static",
-        "preferred_mode": "sync",
-        "typical_complexity": "moderate",
-    },
-    "control_flow_analyst": {
-        "description": "Static specialist focused on dispatcher logic, execution paths, and major branch pivots.",
-        "tool_domain": "static",
-        "preferred_mode": "sync",
-        "typical_complexity": "complex",
-    },
-    "string_analyst": {
-        "description": "Static specialist focused on recovered strings, stack strings, decoded values, and configuration material.",
-        "tool_domain": "static",
-        "preferred_mode": "sync",
-        "typical_complexity": "moderate",
-    },
-    "obfuscation_analyst": {
-        "description": "Static specialist focused on concrete obfuscation and anti-analysis mechanisms.",
-        "tool_domain": "static",
-        "preferred_mode": "sync",
-        "typical_complexity": "complex",
-    },
-    "capability_analyst": {
-        "description": "Static specialist focused on mapping concrete capabilities from code artifacts and capa evidence.",
-        "tool_domain": "static",
-        "preferred_mode": "sync",
-        "typical_complexity": "moderate",
-    },
-    "runtime_behavior_analyst": {
-        "description": "Runtime specialist focused on behavioral correlation and execution-time artifacts.",
-        "tool_domain": "dynamic",
-        "preferred_mode": "auto",
-        "typical_complexity": "complex",
-    },
-    "evidence_validator": {
-        "description": "Validation specialist that reviews claims for evidentiary support and contradictions.",
-        "tool_domain": "all",
-        "preferred_mode": "sync",
-        "typical_complexity": "moderate",
-    },
-    "reporting_analyst": {
-        "description": "Reporting specialist that synthesizes validated findings into a concise technical report.",
-        "tool_domain": "all",
-        "preferred_mode": "sync",
-        "typical_complexity": "moderate",
-    },
-}
+def _server_allows_result_cache(server_id: str) -> bool:
+    sid = (server_id or "").lower()
+    return bool(sid) and any(marker in sid for marker in TOOL_RESULT_CACHE_SERVER_MARKERS)
 
+
+def _tool_result_cache_key(server_id: str, tool_name: str, tool_args: Dict[str, Any]) -> str:
+    payload = {
+        "server_id": server_id,
+        "tool_name": tool_name,
+        "tool_args": _json_safe(tool_args),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _prune_tool_result_cache(state: Dict[str, Any]) -> None:
+    cache = state.setdefault("tool_result_cache", {})
+    while len(cache) > MAX_TOOL_RESULT_CACHE_ENTRIES:
+        oldest_key = next(iter(cache), None)
+        if oldest_key is None:
+            break
+        cache.pop(oldest_key, None)
+
+
+def _is_cacheable_tool_result(result: Any) -> bool:
+    if result is None:
+        return False
+
+    if isinstance(result, str):
+        stripped = result.strip()
+        if not stripped:
+            return False
+        if stripped.lower().startswith("error:"):
+            return False
+        return True
+
+    if isinstance(result, dict):
+        error_value = result.get("error")
+        if error_value:
+            return False
+        return True
+
+    if isinstance(result, list):
+        return True
+
+    return True
+
+
+def _append_tool_cache_note(
+    state: Dict[str, Any],
+    stage_name: str,
+    kind: str,
+    server_id: str,
+    tool_name: str,
+    tool_args: Dict[str, Any],
+) -> None:
+    _append_tool_log_entries(
+        state,
+        stage_name,
+        [
+            {
+                "stage": stage_name,
+                "kind": kind,
+                "server_id": server_id,
+                "tool_name": tool_name,
+                "args": _json_safe(tool_args),
+                "event_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        ],
+    )
+
+
+def _make_cached_tool_call_processor(server_id: str):
+    cacheable = _server_allows_result_cache(server_id)
+
+    async def _processor(ctx: Any, direct_call: Any, tool_name: str, tool_args: Dict[str, Any]) -> Any:
+        if not cacheable:
+            return await direct_call(tool_name, tool_args)
+
+        state = _ACTIVE_PIPELINE_STATE.get()
+        stage_name = _ACTIVE_PIPELINE_STAGE.get() or "pipeline"
+        if state is None:
+            return await direct_call(tool_name, tool_args)
+
+        cache = state.setdefault("tool_result_cache", {})
+        cache_key = _tool_result_cache_key(server_id, tool_name, tool_args)
+        cached = cache.get(cache_key)
+        if cached and cached.get("ok"):
+            cached["hit_count"] = int(cached.get("hit_count", 0)) + 1
+            _append_tool_cache_note(state, stage_name, "tool_cache_hit", server_id, tool_name, tool_args)
+            return cached.get("result")
+
+        owner = False
+        with _TOOL_RESULT_CACHE_INFLIGHT_LOCK:
+            task = _TOOL_RESULT_CACHE_INFLIGHT.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(direct_call(tool_name, tool_args))
+                _TOOL_RESULT_CACHE_INFLIGHT[cache_key] = task
+                owner = True
+
+        if not owner:
+            _append_tool_cache_note(state, stage_name, "tool_cache_wait", server_id, tool_name, tool_args)
+            return await task
+
+        try:
+            result = await task
+        except Exception:
+            raise
+        finally:
+            with _TOOL_RESULT_CACHE_INFLIGHT_LOCK:
+                if _TOOL_RESULT_CACHE_INFLIGHT.get(cache_key) is task:
+                    _TOOL_RESULT_CACHE_INFLIGHT.pop(cache_key, None)
+
+        if _is_cacheable_tool_result(result):
+            cache[cache_key] = {
+                "ok": True,
+                "server_id": server_id,
+                "tool_name": tool_name,
+                "args": _json_safe(tool_args),
+                "result": result,
+                "cached_at": datetime.now().isoformat(timespec="seconds"),
+                "hit_count": 0,
+            }
+            _prune_tool_result_cache(state)
+            _append_tool_cache_note(state, stage_name, "tool_cache_store", server_id, tool_name, tool_args)
+        else:
+            _append_tool_cache_note(state, stage_name, "tool_cache_skip", server_id, tool_name, tool_args)
+        return result
+
+    return _processor
 
 def _toolsets_for_domain(
     tool_domain: str,
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
 ) -> List[MCPServerStdio]:
+    if tool_domain == "preflight":
+        preferred = [
+            tool
+            for tool in static_tools
+            if any(marker in (tool.id or "").lower() for marker in ("ghidra", "string", "hashdb"))
+        ]
+        return preferred or static_tools
     if tool_domain == "static":
         return static_tools
     if tool_domain == "dynamic":
@@ -447,6 +481,7 @@ def _toolsets_for_domain(
 
 
 def build_subagent_architecture(
+    stage_name: str,
     architecture: List[Tuple[str, int]],
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
@@ -486,6 +521,9 @@ def build_subagent_architecture(
                     "toolsets": toolsets,
                     "preferred_mode": spec["preferred_mode"],
                     "typical_complexity": spec["typical_complexity"],
+                    "agent_kwargs": {
+                        "event_stream_handler": make_live_tool_event_handler(stage_name, instance_name),
+                    },
                 }
             )
 
@@ -503,23 +541,6 @@ def expand_architecture_names(architecture: List[Tuple[str, int]]) -> List[str]:
         for idx in range(quantity):
             names.append(f"{archetype_name}_{idx + 1}")
     return names
-
-
-PIPELINE_STAGE_OUTPUT_CONTRACTS: Dict[str, str] = {
-    "planner": (
-        "Produce a compact execution plan with prioritized work items, suggested worker-role assignments, and concrete evidence targets."
-    ),
-    "workers": (
-        "Produce a structured worker evidence bundle grouped by specialist or topic. Include artifacts and avoid unsupported conclusions."
-    ),
-    "validators": (
-        "Produce validated findings grouped into confirmed, weak/unsupported, contradictions, and unresolved questions."
-    ),
-    "reporter": (
-        "Produce the final concise technical report using validated findings only, plus a short unknowns section."
-    ),
-}
-
 
 def build_stage_manager_instructions(stage_name: str, stage_kind: str, architecture: List[Tuple[str, int]]) -> str:
     if stage_kind not in PIPELINE_STAGE_MANAGER_PROMPTS:
@@ -593,6 +614,18 @@ def build_stage_prompt(
         else:
             sections.append("- Do not mention missing internal path metadata in the final user-facing report.")
 
+    planned_work_items = shared.get("planned_work_items") or []
+    if planned_work_items and stage_kind != "planner":
+        sections.extend(["", "Host-managed planner work items:"])
+        for item in planned_work_items:
+            item_id = str(item.get("id") or "")
+            objective = str(item.get("objective") or "")
+            roles = ", ".join(item.get("recommended_roles") or []) or "unspecified"
+            targets = "; ".join(item.get("evidence_targets") or []) or "none specified"
+            sections.append(f"- {item_id}: {objective}")
+            sections.append(f"  recommended_roles: {roles}")
+            sections.append(f"  evidence_targets: {targets}")
+
     stage_roles = expand_architecture_names(architecture)
     if stage_roles:
         sections.extend(["", "Configured stage roles:", ", ".join(stage_roles)])
@@ -625,6 +658,20 @@ class MultiAgentRuntime:
 
 
 _RUNTIME: Optional[MultiAgentRuntime] = None
+_LIVE_TOOL_LOG_STATE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "live_tool_log_state",
+    default=None,
+)
+_ACTIVE_PIPELINE_STATE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "active_pipeline_state",
+    default=None,
+)
+_ACTIVE_PIPELINE_STAGE: ContextVar[Optional[str]] = ContextVar(
+    "active_pipeline_stage",
+    default=None,
+)
+_TOOL_RESULT_CACHE_INFLIGHT_LOCK = Lock()
+_TOOL_RESULT_CACHE_INFLIGHT: Dict[str, asyncio.Task[Any]] = {}
 
 
 def _build_history_processors() -> List[Any]:
@@ -682,7 +729,13 @@ def build_stage_runtime(
     stage_name = str(stage_definition["name"])
     stage_kind = str(stage_definition["stage_kind"])
     architecture = list(stage_definition.get("architecture") or [])
-    subagents = build_subagent_architecture(architecture, static_tools, dynamic_tools) if architecture else []
+    subagents = (
+        build_subagent_architecture(stage_name, architecture, static_tools, dynamic_tools)
+        if architecture
+        else []
+    )
+    planner_stage = stage_kind == "planner"
+    stage_skill_directories = [] if planner_stage else list(skill_directories)
     memory_dir = str(Path(DEEP_MEMORY_DIR) / stage_name)
     if deep_backend is not None and memory_dir.startswith("/"):
         memory_dir = memory_dir.lstrip("/")
@@ -697,8 +750,8 @@ def build_stage_runtime(
             include_subagents=bool(subagents),
             include_general_purpose_subagent=False,
             include_plan=False,
-            include_skills=bool(skill_directories),
-            skill_directories=skill_directories or None,
+            include_skills=bool(stage_skill_directories),
+            skill_directories=stage_skill_directories or None,
             include_memory=DEEP_ENABLE_MEMORY,
             memory_dir=memory_dir,
             include_history_archive=False,
@@ -707,6 +760,7 @@ def build_stage_runtime(
             history_processors=_build_history_processors(),
             retries=DEEP_AGENT_RETRIES,
             cost_tracking=False,
+            event_stream_handler=make_live_tool_event_handler(stage_name, f"{stage_name}.manager"),
         )
         stage_deps = create_default_deps(backend=deep_backend) if deep_backend is not None else create_default_deps()
         return PipelineStageRuntime(
@@ -779,7 +833,77 @@ def get_runtime_sync() -> MultiAgentRuntime:
 # ----------------------------
 # Tool log extraction (best-effort)
 # ----------------------------
-def extract_tool_log_from_messages(messages: List[ModelMessage]) -> str:
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
+
+def _normalize_tool_args(args: Any) -> Any:
+    if args is None:
+        return {}
+    if isinstance(args, dict):
+        return _json_safe(args)
+    if isinstance(args, str):
+        stripped = args.strip()
+        if not stripped:
+            return {}
+        try:
+            return _json_safe(json.loads(stripped))
+        except Exception:
+            return stripped
+    return str(args)
+
+
+def _tool_call_entry(
+    stage_name: str,
+    tool_name: str,
+    tool_call_id: str,
+    args: Any,
+    *,
+    source: Optional[str] = None,
+) -> Dict[str, Any]:
+    entry: Dict[str, Any] = {
+        "stage": stage_name,
+        "kind": "tool_call",
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id,
+        "args": _normalize_tool_args(args),
+    }
+    if source:
+        entry["source"] = source
+    return entry
+
+
+def _tool_result_entry(
+    stage_name: str,
+    tool_name: str,
+    tool_call_id: str,
+    content: Any,
+    *,
+    source: Optional[str] = None,
+    kind: str = "tool_return",
+) -> Dict[str, Any]:
+    entry: Dict[str, Any] = {
+        "stage": stage_name,
+        "kind": kind,
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id,
+        "content": _coerce_tool_return_text(content),
+    }
+    if source:
+        entry["source"] = source
+    return entry
+
+
+def extract_tool_log_entries_from_messages(
+    messages: List[ModelMessage],
+    stage_name: str,
+) -> List[Dict[str, Any]]:
     """
     Walk the message stream and pull out tool calls + tool returns.
     This is for debugging/UI visibility, not a stable format.
@@ -791,41 +915,141 @@ def extract_tool_log_from_messages(messages: List[ModelMessage]) -> str:
             for part in getattr(m, "parts", []) or []:
                 if isinstance(part, ToolReturnPart):
                     out.append(
-                        {
-                            "kind": "tool_return",
-                            "tool_name": part.tool_name,
-                            "tool_call_id": part.tool_call_id,
-                            "content": part.content,
-                        }
+                        _tool_result_entry(
+                            stage_name,
+                            part.tool_name,
+                            part.tool_call_id,
+                            part.content,
+                        )
                     )
 
         elif isinstance(m, ModelResponse):
             for part in getattr(m, "parts", []) or []:
                 if isinstance(part, ToolCallPart):
                     out.append(
-                        {
-                            "kind": "tool_call",
-                            "tool_name": part.tool_name,
-                            "tool_call_id": part.tool_call_id,
-                            "args": part.args,
-                        }
+                        _tool_call_entry(
+                            stage_name,
+                            part.tool_name,
+                            part.tool_call_id,
+                            part.args,
+                        )
                     )
                 elif isinstance(part, ToolReturnPart):
                     out.append(
-                        {
-                            "kind": "tool_return",
-                            "tool_name": part.tool_name,
-                            "tool_call_id": part.tool_call_id,
-                            "content": part.content,
-                        }
+                        _tool_result_entry(
+                            stage_name,
+                            part.tool_name,
+                            part.tool_call_id,
+                            part.content,
+                        )
                     )
 
-    return json.dumps(out, indent=2, ensure_ascii=False) if out else ""
+    return out
+
+
+def _tool_log_dedupe_key(entry: Dict[str, Any]) -> str:
+    stable = {k: v for k, v in entry.items() if k != "source"}
+    return json.dumps(stable, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _append_tool_log_entries(
+    state: Dict[str, Any],
+    stage_name: str,
+    entries: List[Dict[str, Any]],
+) -> None:
+    if not entries:
+        return
+
+    seen = state.setdefault("_tool_log_seen_keys", {})
+    sections = state.setdefault("tool_log_sections", {})
+    rendered_entries: List[str] = []
+
+    for entry in entries:
+        dedupe_key = _tool_log_dedupe_key(entry)
+        if seen.get(dedupe_key):
+            continue
+        seen[dedupe_key] = True
+        rendered_entries.append(json.dumps(_json_safe(entry), indent=2, ensure_ascii=False))
+
+    if not rendered_entries:
+        return
+
+    addition = "\n\n".join(rendered_entries)
+
+    prev = str(state.get("tool_log") or "").strip()
+    merged = f"{prev}\n\n{addition}".strip() if prev else addition
+    if len(merged) > MAX_TOOL_LOG_CHARS:
+        merged = merged[-MAX_TOOL_LOG_CHARS:]
+    state["tool_log"] = merged
+
+    prev_section = str(sections.get(stage_name) or "").strip()
+    merged_section = f"{prev_section}\n\n{addition}".strip() if prev_section else addition
+    if len(merged_section) > MAX_TOOL_LOG_CHARS:
+        merged_section = merged_section[-MAX_TOOL_LOG_CHARS:]
+    sections[stage_name] = merged_section
+    _store_ui_snapshot(state=state)
+
+
+def _build_live_tool_log_entries(
+    stage_name: str,
+    source_label: str,
+    event: Any,
+) -> List[Dict[str, Any]]:
+    if isinstance(event, FunctionToolCallEvent):
+        return [
+            _tool_call_entry(
+                stage_name,
+                event.part.tool_name,
+                event.tool_call_id,
+                event.part.args,
+                source=source_label,
+            )
+        ]
+
+    if isinstance(event, FunctionToolResultEvent):
+        if isinstance(event.result, ToolReturnPart):
+            return [
+                _tool_result_entry(
+                    stage_name,
+                    event.result.tool_name,
+                    event.tool_call_id,
+                    event.result.content,
+                    source=source_label,
+                )
+            ]
+        if isinstance(event.result, RetryPromptPart):
+            return [
+                _tool_result_entry(
+                    stage_name,
+                    event.result.tool_name or "<retry>",
+                    event.tool_call_id,
+                    event.result.content,
+                    source=source_label,
+                    kind="tool_retry",
+                )
+            ]
+
+    return []
+
+
+def make_live_tool_event_handler(stage_name: str, source_label: str):
+    async def _handler(_ctx: Any, events: Any) -> None:
+        async for event in events:
+            state = _LIVE_TOOL_LOG_STATE.get()
+            if state is None:
+                continue
+            _append_tool_log_entries(
+                state,
+                stage_name,
+                _build_live_tool_log_entries(stage_name, source_label, event),
+            )
+
+    return _handler
 
 
 def append_tool_log_delta(
     state: Dict[str, Any],
-    role_key: str,
+    stage_name: str,
     old_history: List[ModelMessage],
     new_history: List[ModelMessage],
 ) -> None:
@@ -834,24 +1058,7 @@ def append_tool_log_delta(
     """
     old_len = len(old_history) if old_history else 0
     delta = new_history[old_len:]
-    tool_blob = extract_tool_log_from_messages(delta)
-    if not tool_blob:
-        return
-
-    prev = (state.get("tool_log") or "").strip()
-    tagged = f"/* {role_key} */\n{tool_blob}"
-    merged = (prev + "\n\n" + tagged).strip() if prev else tagged
-    if len(merged) > MAX_TOOL_LOG_CHARS:
-        merged = merged[-MAX_TOOL_LOG_CHARS:]
-    state["tool_log"] = merged
-    section_name = role_key[len("pipeline_"):] if role_key.startswith("pipeline_") else role_key
-    sections = state.setdefault("tool_log_sections", {})
-    prev_section = (sections.get(section_name) or "").strip()
-    merged_section = (prev_section + "\n\n" + tool_blob).strip() if prev_section else tool_blob
-    if len(merged_section) > MAX_TOOL_LOG_CHARS:
-        merged_section = merged_section[-MAX_TOOL_LOG_CHARS:]
-    sections[section_name] = merged_section
-    _store_ui_snapshot(state=state)
+    _append_tool_log_entries(state, stage_name, extract_tool_log_entries_from_messages(delta, stage_name))
 
 
 def _sanitize_user_facing_output(text: str) -> str:
@@ -1101,6 +1308,8 @@ def _new_shared_state() -> Dict[str, Any]:
         "total_task_runs": 0,
         "validated_sample_path": "",
         "validated_sample_path_source": "",
+        "planned_work_items": [],
+        "planned_work_items_parse_error": "",
         "pipeline_stage_outputs": [],
         "pipeline_stage_progress": [],
     }
@@ -1112,6 +1321,9 @@ _UI_SNAPSHOT: Dict[str, Any] = {
     "state": {
         "role_histories": {},
         "tool_log": "",
+        "tool_log_sections": {},
+        "_tool_log_seen_keys": {},
+        "tool_result_cache": {},
         "status_log": "",
         "shared_state": _new_shared_state(),
     },
@@ -1130,6 +1342,8 @@ def _snapshot_state_default() -> Dict[str, Any]:
         "role_histories": {},
         "tool_log": "",
         "tool_log_sections": {},
+        "_tool_log_seen_keys": {},
+        "tool_result_cache": {},
         "status_log": "",
         "shared_state": _new_shared_state(),
     }
@@ -1272,6 +1486,203 @@ def _format_elapsed(seconds: Optional[float]) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def _strip_optional_json_fence(raw: str) -> str:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def extract_planned_work_items(text: str) -> Tuple[List[Dict[str, Any]], str]:
+    payload = ""
+    marker_re = re.compile(
+        rf"{re.escape(PLANNER_WORK_ITEMS_START)}\s*(.*?)\s*{re.escape(PLANNER_WORK_ITEMS_END)}",
+        flags=re.DOTALL,
+    )
+    marker_match = marker_re.search(text or "")
+    if marker_match:
+        payload = marker_match.group(1)
+    else:
+        fenced_json_re = re.compile(r"```json\s*(\[[\s\S]*?\])\s*```", flags=re.IGNORECASE)
+        fenced_match = fenced_json_re.search(text or "")
+        if fenced_match:
+            payload = fenced_match.group(1)
+        else:
+            return [], "planner output did not include a parseable work-item block"
+
+    payload = _strip_optional_json_fence(payload)
+    try:
+        parsed = json.loads(payload)
+    except Exception as e:
+        return [], f"planner work-item JSON parse failed: {type(e).__name__}: {e}"
+
+    if isinstance(parsed, dict):
+        parsed = parsed.get("work_items")
+    if not isinstance(parsed, list):
+        return [], "planner work-item block must decode to a JSON array"
+
+    normalized: List[Dict[str, Any]] = []
+    for idx, raw_item in enumerate(parsed, start=1):
+        if not isinstance(raw_item, dict):
+            continue
+        item_id = " ".join(str(raw_item.get("id") or f"W{idx}").split()) or f"W{idx}"
+        objective = " ".join(
+            str(
+                raw_item.get("objective")
+                or raw_item.get("title")
+                or raw_item.get("description")
+                or f"Work item {idx}"
+            ).split()
+        )
+
+        roles_raw = raw_item.get("recommended_roles") or raw_item.get("roles") or []
+        if isinstance(roles_raw, str):
+            recommended_roles = [" ".join(roles_raw.split())] if roles_raw.strip() else []
+        else:
+            recommended_roles = [
+                " ".join(str(role).split())
+                for role in roles_raw
+                if str(role).strip()
+            ]
+
+        evidence_raw = raw_item.get("evidence_targets") or raw_item.get("artifacts") or raw_item.get("targets") or []
+        if isinstance(evidence_raw, str):
+            evidence_targets = [" ".join(evidence_raw.split())] if evidence_raw.strip() else []
+        else:
+            evidence_targets = [
+                " ".join(str(target).split())
+                for target in evidence_raw
+                if str(target).strip()
+            ]
+
+        normalized.append(
+            {
+                "id": item_id,
+                "objective": objective,
+                "recommended_roles": recommended_roles,
+                "evidence_targets": evidence_targets,
+            }
+        )
+
+    if not normalized:
+        return [], "planner work-item block was present but empty"
+    return normalized, ""
+
+
+def update_planned_work_items_from_planner_output(state: Dict[str, Any], planner_output: str) -> None:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    items, error = extract_planned_work_items(planner_output)
+    shared["planned_work_items"] = items
+    shared["planned_work_items_parse_error"] = error
+    if items:
+        append_status(state, f"Planner work items parsed: {len(items)}")
+    elif error:
+        append_status(state, f"Planner work-item parse warning: {error}")
+    _store_ui_snapshot(state=state)
+
+
+def _planner_work_item_rollup(progress: List[Dict[str, Any]]) -> Tuple[str, str, str]:
+    statuses = {str(item.get("stage_name") or ""): str(item.get("status") or "pending") for item in progress}
+    if any(status == "failed" for status in statuses.values()):
+        return "☒", "#a61b29", "blocked"
+    if statuses.get("reporter") == "completed":
+        return "☑", "#1b6e3a", "completed"
+    if statuses.get("reporter") == "running":
+        return "☑", "#0b57d0", "reporting"
+    if statuses.get("validators") == "completed":
+        return "☑", "#1b6e3a", "validated"
+    if statuses.get("validators") == "running":
+        return "☑", "#0b57d0", "under review"
+    if statuses.get("workers") == "completed":
+        return "☑", "#1b6e3a", "executed"
+    if statuses.get("workers") == "running":
+        return "☐", "#0b57d0", "in execution"
+    if statuses.get("planner") == "completed":
+        return "☐", "#5f6368", "planned"
+    if statuses.get("planner") == "running":
+        return "☐", "#0b57d0", "drafting"
+    if statuses.get("preflight") == "completed":
+        return "☐", "#5f6368", "context ready"
+    if statuses.get("preflight") == "running":
+        return "☐", "#0b57d0", "preflight"
+    return "☐", "#5f6368", "pending"
+
+
+def render_planned_work_items_panel(state: Dict[str, Any]) -> str:
+    shared = (state or {}).get("shared_state") or {}
+    items = shared.get("planned_work_items") or []
+    parse_error = str(shared.get("planned_work_items_parse_error") or "").strip()
+    progress = shared.get("pipeline_stage_progress") or []
+    planner_status = ""
+    preflight_status = ""
+    for item in progress:
+        if str(item.get("stage_name") or "") == "planner":
+            planner_status = str(item.get("status") or "")
+        elif str(item.get("stage_name") or "") == "preflight":
+            preflight_status = str(item.get("status") or "")
+    if not items and not parse_error:
+        waiting_message = "Planner work items will appear after the planning stage completes."
+        if preflight_status == "running":
+            waiting_message = "Preflight stage is running. Planner work items will appear after minimal context gathering and planning complete."
+        elif planner_status == "running":
+            waiting_message = "Planning stage is running. Planner work items will appear here once parsed."
+        return (
+            "<div style='padding: 12px; border: 1px solid #d5d8dd; border-radius: 10px; background: #fbfbfc; margin-bottom: 12px;'>"
+            "<div style='display: flex; justify-content: space-between; gap: 12px; align-items: baseline;'>"
+            "<strong>Planned Work Items</strong>"
+            "<span style='color: #5f6368; font-size: 12px;'>host-managed checklist parsed from planner output</span>"
+            "</div>"
+            f"<div style='margin-top: 8px; color: #5f6368;'>{html.escape(waiting_message)}</div>"
+            "</div>"
+        )
+
+    box, tone, status_label = _planner_work_item_rollup(progress)
+    rows: List[str] = []
+    for item in items:
+        item_id = html.escape(str(item.get("id") or ""))
+        objective = html.escape(str(item.get("objective") or ""))
+        roles = ", ".join(item.get("recommended_roles") or []) or "unspecified"
+        targets = item.get("evidence_targets") or []
+        targets_html = "".join(
+            f"<div style='margin-top: 2px; color: #5f6368;'>- {html.escape(str(target))}</div>"
+            for target in targets
+        ) or "<div style='margin-top: 2px; color: #5f6368;'>- none specified</div>"
+
+        rows.append(
+            "<div style='border: 1px solid #d5d8dd; border-radius: 10px; padding: 10px 12px; margin-top: 8px;'>"
+            f"<div style='display: flex; justify-content: space-between; gap: 12px; align-items: center;'>"
+            f"<div style='font-size: 15px;'><span style='font-size: 18px; margin-right: 8px;'>{box}</span>"
+            f"<strong>{item_id}</strong> <span style='color: #202124;'>{objective}</span></div>"
+            f"<div style='color: {tone}; text-transform: uppercase; font-size: 12px; letter-spacing: 0.04em;'>{status_label}</div>"
+            "</div>"
+            f"<div style='margin-top: 4px; color: #5f6368;'>recommended roles: {html.escape(roles)}</div>"
+            "<div style='margin-top: 6px; color: #202124; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;'>"
+            "evidence targets</div>"
+            f"{targets_html}"
+            "</div>"
+        )
+
+    error_html = ""
+    if parse_error:
+        error_html = (
+            "<div style='margin-top: 8px; padding: 8px 10px; border: 1px solid #f3c3c7; border-radius: 8px; "
+            "background: #fff5f5; color: #a61b29;'>"
+            f"{html.escape(parse_error)}</div>"
+        )
+
+    return (
+        "<div style='padding: 12px; border: 1px solid #d5d8dd; border-radius: 10px; background: #fbfbfc; margin-bottom: 12px;'>"
+        "<div style='display: flex; justify-content: space-between; gap: 12px; align-items: baseline;'>"
+        "<strong>Planned Work Items</strong>"
+        "<span style='color: #5f6368; font-size: 12px;'>host-managed checklist parsed from planner output</span>"
+        "</div>"
+        + error_html
+        + "".join(rows)
+        + "</div>"
+    )
+
+
 def render_pipeline_todo_board(state: Dict[str, Any]) -> str:
     shared = (state or {}).get("shared_state") or {}
     progress = shared.get("pipeline_stage_progress") or []
@@ -1376,6 +1787,8 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     state["shared_state"]["deep_subagents"] = expand_architecture_names(DEEP_AGENT_ARCHITECTURE)
     state["shared_state"]["deep_pipeline_name"] = runtime.pipeline_name
     state["shared_state"]["deep_pipeline"] = list(DEEP_AGENT_PIPELINE)
+    state["shared_state"]["planned_work_items"] = []
+    state["shared_state"]["planned_work_items_parse_error"] = ""
     _seed_pipeline_stage_progress(
         state,
         [(stage.name, stage.stage_kind, list(stage.subagent_names)) for stage in runtime.stages],
@@ -1412,6 +1825,9 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
             status="running",
         )
         stage_t0 = time.perf_counter()
+        live_tool_log_token = _LIVE_TOOL_LOG_STATE.set(state)
+        active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
+        active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage.name)
         try:
             result = stage.agent.run_sync(
                 stage_prompt,
@@ -1432,10 +1848,14 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 f"Stage failed: {stage.name} after {time.perf_counter() - stage_t0:.1f}s ({type(e).__name__})",
             )
             raise
+        finally:
+            _ACTIVE_PIPELINE_STAGE.reset(active_stage_token)
+            _ACTIVE_PIPELINE_STATE.reset(active_state_token)
+            _LIVE_TOOL_LOG_STATE.reset(live_tool_log_token)
 
         new_history = result.all_messages()
         set_role_history(state, role_key, new_history)
-        append_tool_log_delta(state, role_key, old_history, new_history)
+        append_tool_log_delta(state, stage.name, old_history, new_history)
         update_validated_sample_path_from_messages(
             state,
             new_history[len(old_history) if old_history else 0:],
@@ -1443,6 +1863,8 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         )
 
         stage_output = str(result.output)
+        if stage.stage_kind == "planner":
+            update_planned_work_items_from_planner_output(state, stage_output)
         if stage.stage_kind != "reporter":
             update_validated_sample_path(
                 state,
@@ -1504,6 +1926,11 @@ def _send_button(interactive: bool = True, visible: bool = True):
 def _todo_board(state: Dict[str, Any], visible: bool):
     return gr.update(value=render_pipeline_todo_board(state), visible=visible)
 
+
+def _planned_work_items_board(state: Dict[str, Any]):
+    return gr.update(value=render_planned_work_items_panel(state), visible=True)
+
+
 def _tool_log_text_for_stage(state: Dict[str, Any], stage_name: str, stage_kind: str) -> str:
     state = state or {}
     sections = state.get("tool_log_sections") or {}
@@ -1536,6 +1963,7 @@ def _ui_updates(
     message_update: Any,
     chat_history: Any,
     state: Dict[str, Any],
+    planned_work_items_update: Any,
     send_update: Any,
     clear_update: Any,
     todo_update: Any,
@@ -1544,6 +1972,7 @@ def _ui_updates(
         message_update,
         chat_history,
         state,
+        planned_work_items_update,
         *_tool_log_updates(state),
         send_update,
         clear_update,
@@ -1567,6 +1996,7 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
         ),
         chat_history,
         state,
+        _planned_work_items_board(state),
         _send_button(
             interactive=send_visible,
             visible=send_visible,
@@ -1590,6 +2020,7 @@ def poll_active_ui_snapshot():
             gr.skip(),
             gr.skip(),
             gr.skip(),
+            gr.skip(),
             *_tool_log_skip_updates(),
             gr.skip(),
             gr.skip(),
@@ -1606,6 +2037,7 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
             _message_input(value="", interactive=True, visible=True),
             chat_history,
             state,
+            _planned_work_items_board(state),
             _send_button(interactive=True, visible=True),
             _send_button(interactive=True, visible=True),
             _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
@@ -1621,11 +2053,16 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
     state.setdefault("role_histories", {})
     state.setdefault("tool_log", "")
     state.setdefault("tool_log_sections", {})
+    state.setdefault("_tool_log_seen_keys", {})
+    state.setdefault("tool_result_cache", {})
     state.setdefault("status_log", "")
     state.setdefault("shared_state", _new_shared_state())
     state["tool_log"] = ""
     state["tool_log_sections"] = {}
+    state["_tool_log_seen_keys"] = {}
     state["shared_state"]["pipeline_stage_progress"] = _stage_progress_from_pipeline_definition()
+    state["shared_state"]["planned_work_items"] = []
+    state["shared_state"]["planned_work_items_parse_error"] = ""
 
     append_status(state, f"New query: {_shorten(user_text, max_chars=220)}")
     running_note = "[deep pipeline running... task board is live]"
@@ -1648,6 +2085,7 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
         _message_input(value="", interactive=False, visible=False),
         chat_box["history"],
         state,
+        _planned_work_items_board(state),
         _send_button(interactive=False, visible=False),
         _send_button(interactive=False, visible=False),
         _todo_board(state, visible=True),
@@ -1707,12 +2145,15 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
 
     last_tool_log = state.get("tool_log", "")
     last_todo_html = render_pipeline_todo_board(state)
+    last_planned_html = render_planned_work_items_panel(state)
     while not done.wait(0.35):
         tool_now = state.get("tool_log", "")
         todo_now = render_pipeline_todo_board(state)
-        if tool_now != last_tool_log or todo_now != last_todo_html:
+        planned_now = render_planned_work_items_panel(state)
+        if tool_now != last_tool_log or todo_now != last_todo_html or planned_now != last_planned_html:
             last_tool_log = tool_now
             last_todo_html = todo_now
+            last_planned_html = planned_now
             _store_ui_snapshot(
                 chat_history=chat_box["history"],
                 state=state,
@@ -1726,6 +2167,7 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
                 _message_input(value="", interactive=False, visible=False),
                 chat_box["history"],
                 state,
+                gr.update(value=planned_now, visible=True),
                 _send_button(interactive=False, visible=False),
                 _send_button(interactive=False, visible=False),
                 gr.update(value=todo_now, visible=True),
@@ -1740,6 +2182,7 @@ def chat_turn(user_text: str, chat_history: List[Dict[str, str]], state: Dict[st
         _message_input(value="", interactive=True, visible=True),
         chat_history,
         state,
+        _planned_work_items_board(state),
         _send_button(interactive=True, visible=True),
         _send_button(interactive=True, visible=True),
         _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
@@ -1752,6 +2195,8 @@ def reset():
         "role_histories": {},
         "tool_log": "",
         "tool_log_sections": {},
+        "_tool_log_seen_keys": {},
+        "tool_result_cache": {},
         "status_log": "",
         "shared_state": fresh_shared_state,
     }
@@ -1768,6 +2213,7 @@ def reset():
         _message_input(value="", interactive=True, visible=True),
         [],
         fresh_state,
+        _planned_work_items_board(fresh_state),
         _send_button(interactive=True, visible=True),
         _send_button(interactive=True, visible=True),
         _todo_board({"shared_state": fresh_shared_state}, visible=False),
@@ -1808,22 +2254,26 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
                 clear = gr.Button("Reset")
 
         with gr.Column(scale=2):
+            planned_work_items_panel = gr.HTML(value=render_planned_work_items_panel(initial_state))
             gr.Markdown("### Tool Log")
             tool_log_boxes: List[Any] = []
             for stage_name, stage_kind in PIPELINE_LOG_SLOTS:
                 with gr.Accordion(f"{stage_name} ({stage_kind})", open=False):
                     tool_log_boxes.append(
-                        gr.Textbox(
+                        gr.Code(
                             value=_tool_log_text_for_stage(initial_state, stage_name, stage_kind),
-                            lines=10,
-                            max_lines=24,
-                            buttons=["copy"],
+                            language=None,
+                            lines=12,
+                            max_lines=28,
+                            wrap_lines=True,
+                            show_line_numbers=False,
+                            buttons=["copy", "download"],
                             interactive=False,
                             label="Phase Log",
                         )
                     )
 
-    ui_outputs = [user, chat, state, *tool_log_boxes, send, clear, todo_board]
+    ui_outputs = [user, chat, state, planned_work_items_panel, *tool_log_boxes, send, clear, todo_board]
     send.click(chat_turn, inputs=[user, chat, state], outputs=ui_outputs)
     user.submit(chat_turn, inputs=[user, chat, state], outputs=ui_outputs)
     clear.click(reset, inputs=None, outputs=ui_outputs)

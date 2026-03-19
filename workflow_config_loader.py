@@ -1,0 +1,169 @@
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+
+def _load_json_file(config_dir: Path, filename: str) -> Any:
+    path = (config_dir / filename).resolve()
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as e:
+        raise RuntimeError(f"Workflow config file not found: {path}") from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Workflow config JSON parse failed for {path}: {e}") from e
+
+
+def _expect_mapping(value: Any, label: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{label} must be a JSON object")
+    return value
+
+
+def _expect_string_list(value: Any, label: str) -> List[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise RuntimeError(f"{label} must be a list of strings")
+    return value
+
+
+def _apply_placeholders(text: str, placeholders: Dict[str, str]) -> str:
+    rendered = text
+    for key, value in placeholders.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", value)
+    return rendered
+
+
+def _render_text_block(value: Any, label: str, placeholders: Dict[str, str]) -> str:
+    if isinstance(value, str):
+        return _apply_placeholders(value.rstrip(), placeholders)
+    if isinstance(value, list):
+        lines = _expect_string_list(value, label)
+        return _apply_placeholders("\n".join(lines).rstrip(), placeholders)
+    raise RuntimeError(f"{label} must be either a string or a list of strings")
+
+
+def _normalize_architecture(value: Any, label: str) -> List[Tuple[str, int]]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"{label} must be a list")
+
+    normalized: List[Tuple[str, int]] = []
+    for idx, item in enumerate(value, start=1):
+        if not isinstance(item, list) or len(item) != 2:
+            raise RuntimeError(f"{label}[{idx}] must be a two-item list like [role, quantity]")
+        role, quantity = item
+        if not isinstance(role, str) or not role.strip():
+            raise RuntimeError(f"{label}[{idx}][0] must be a non-empty role name")
+        if not isinstance(quantity, int):
+            raise RuntimeError(f"{label}[{idx}][1] must be an integer quantity")
+        normalized.append((role, quantity))
+    return normalized
+
+
+def _load_architecture_presets(config_dir: Path) -> Dict[str, List[Tuple[str, int]]]:
+    raw = _expect_mapping(_load_json_file(config_dir, "architecture_presets.json"), "architecture_presets.json")
+    return {
+        name: _normalize_architecture(value, f"architecture_presets.json::{name}")
+        for name, value in raw.items()
+    }
+
+
+def _normalize_pipeline_stage(raw_stage: Any, label: str) -> Dict[str, Any]:
+    if not isinstance(raw_stage, dict):
+        raise RuntimeError(f"{label} must be an object")
+
+    name = raw_stage.get("name")
+    stage_kind = raw_stage.get("stage_kind")
+    if not isinstance(name, str) or not name.strip():
+        raise RuntimeError(f"{label}.name must be a non-empty string")
+    if not isinstance(stage_kind, str) or not stage_kind.strip():
+        raise RuntimeError(f"{label}.stage_kind must be a non-empty string")
+
+    architecture = _normalize_architecture(raw_stage.get("architecture", []), f"{label}.architecture")
+    use_worker_architecture = bool(raw_stage.get("use_worker_architecture", False))
+
+    return {
+        "name": name,
+        "stage_kind": stage_kind,
+        "architecture": architecture,
+        "use_worker_architecture": use_worker_architecture,
+    }
+
+
+def _load_pipeline_presets(config_dir: Path) -> Dict[str, List[Dict[str, Any]]]:
+    raw = _expect_mapping(_load_json_file(config_dir, "pipeline_presets.json"), "pipeline_presets.json")
+    presets: Dict[str, List[Dict[str, Any]]] = {}
+    for preset_name, stages in raw.items():
+        if not isinstance(stages, list):
+            raise RuntimeError(f"pipeline_presets.json::{preset_name} must be a list")
+        presets[preset_name] = [
+            _normalize_pipeline_stage(stage, f"pipeline_presets.json::{preset_name}[{idx}]")
+            for idx, stage in enumerate(stages, start=1)
+        ]
+    return presets
+
+
+def _load_agent_archetype_specs(config_dir: Path) -> Dict[str, Dict[str, str]]:
+    raw = _expect_mapping(_load_json_file(config_dir, "agent_archetype_specs.json"), "agent_archetype_specs.json")
+    specs: Dict[str, Dict[str, str]] = {}
+    required_keys = ("description", "tool_domain", "preferred_mode", "typical_complexity")
+    for name, value in raw.items():
+        entry = _expect_mapping(value, f"agent_archetype_specs.json::{name}")
+        normalized: Dict[str, str] = {}
+        for key in required_keys:
+            raw_field = entry.get(key)
+            if not isinstance(raw_field, str) or not raw_field.strip():
+                raise RuntimeError(f"agent_archetype_specs.json::{name}.{key} must be a non-empty string")
+            normalized[key] = raw_field
+        specs[name] = normalized
+    return specs
+
+
+def _load_text_map(config_dir: Path, filename: str, placeholders: Dict[str, str]) -> Dict[str, str]:
+    raw = _expect_mapping(_load_json_file(config_dir, filename), filename)
+    return {
+        name: _render_text_block(value, f"{filename}::{name}", placeholders)
+        for name, value in raw.items()
+    }
+
+
+def _load_base_prompts(config_dir: Path, placeholders: Dict[str, str]) -> Dict[str, str]:
+    return _load_text_map(config_dir, "base_prompts.json", placeholders)
+
+
+def _load_agent_archetype_prompts(
+    config_dir: Path,
+    base_prompts: Dict[str, str],
+    placeholders: Dict[str, str],
+) -> Dict[str, str]:
+    raw = _expect_mapping(_load_json_file(config_dir, "agent_archetype_prompts.json"), "agent_archetype_prompts.json")
+    prompts: Dict[str, str] = {}
+
+    for name, value in raw.items():
+        entry = _expect_mapping(value, f"agent_archetype_prompts.json::{name}")
+        base_key = entry.get("base")
+        if not isinstance(base_key, str) or base_key not in base_prompts:
+            raise RuntimeError(
+                f"agent_archetype_prompts.json::{name}.base must reference a key from base_prompts.json"
+            )
+
+        prompt = base_prompts[base_key].rstrip()
+        specialization = entry.get("specialization")
+        if specialization is not None:
+            rules = _expect_string_list(specialization, f"agent_archetype_prompts.json::{name}.specialization")
+            if rules:
+                prompt += "\n\nSpecialization:\n" + "\n".join(f"- {rule}" for rule in rules) + "\n"
+
+        prompts[name] = _apply_placeholders(prompt.rstrip(), placeholders)
+
+    return prompts
+
+
+def load_workflow_config(config_dir: Path, placeholders: Dict[str, str]) -> Dict[str, Any]:
+    base_prompts = _load_base_prompts(config_dir, placeholders)
+    return {
+        "architecture_presets": _load_architecture_presets(config_dir),
+        "pipeline_presets": _load_pipeline_presets(config_dir),
+        "agent_archetype_specs": _load_agent_archetype_specs(config_dir),
+        "stage_output_contracts": _load_text_map(config_dir, "stage_output_contracts.json", placeholders),
+        "stage_manager_prompts": _load_text_map(config_dir, "stage_manager_prompts.json", placeholders),
+        "agent_archetype_prompts": _load_agent_archetype_prompts(config_dir, base_prompts, placeholders),
+    }

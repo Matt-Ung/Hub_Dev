@@ -1,0 +1,164 @@
+{
+  "preflight_planner_workers_reporter": [
+    {
+      "name": "preflight",
+      "stage_kind": "preflight",
+      "architecture": [["preflight_analyst", 1]],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "planner",
+      "stage_kind": "planner",
+      "architecture": [],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "workers",
+      "stage_kind": "workers",
+      "architecture": [],
+      "use_worker_architecture": true
+    },
+    {
+      "name": "reporter",
+      "stage_kind": "reporter",
+      "architecture": [["reporting_analyst", 1]],
+      "use_worker_architecture": false
+    }
+  ],
+  "preflight_planner_workers_validators_reporter": [
+    {
+      "name": "preflight",
+      "stage_kind": "preflight",
+      "architecture": [["preflight_analyst", 1]],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "planner",
+      "stage_kind": "planner",
+      "architecture": [],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "workers",
+      "stage_kind": "workers",
+      "architecture": [],
+      "use_worker_architecture": true
+    },
+    {
+      "name": "validators",
+      "stage_kind": "validators",
+      "architecture": [["evidence_validator", 2]],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "reporter",
+      "stage_kind": "reporter",
+      "architecture": [["reporting_analyst", 1]],
+      "use_worker_architecture": false
+    }
+  ],
+  "preflight_planner_workers_dual_validators_reporter": [
+    {
+      "name": "preflight",
+      "stage_kind": "preflight",
+      "architecture": [["preflight_analyst", 1]],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "planner",
+      "stage_kind": "planner",
+      "architecture": [],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "workers",
+      "stage_kind": "workers",
+      "architecture": [],
+      "use_worker_architecture": true
+    },
+    {
+      "name": "validators",
+      "stage_kind": "validators",
+      "architecture": [["evidence_validator", 1], ["triage_analyst", 1]],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "reporter",
+      "stage_kind": "reporter",
+      "architecture": [["reporting_analyst", 1]],
+      "use_worker_architecture": false
+    }
+  ],
+  "planner_workers_reporter": [
+    {
+      "name": "planner",
+      "stage_kind": "planner",
+      "architecture": [],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "workers",
+      "stage_kind": "workers",
+      "architecture": [],
+      "use_worker_architecture": true
+    },
+    {
+      "name": "reporter",
+      "stage_kind": "reporter",
+      "architecture": [["reporting_analyst", 1]],
+      "use_worker_architecture": false
+    }
+  ],
+  "planner_workers_validators_reporter": [
+    {
+      "name": "planner",
+      "stage_kind": "planner",
+      "architecture": [],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "workers",
+      "stage_kind": "workers",
+      "architecture": [],
+      "use_worker_architecture": true
+    },
+    {
+      "name": "validators",
+      "stage_kind": "validators",
+      "architecture": [["evidence_validator", 2]],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "reporter",
+      "stage_kind": "reporter",
+      "architecture": [["reporting_analyst", 1]],
+      "use_worker_architecture": false
+    }
+  ],
+  "planner_workers_dual_validators_reporter": [
+    {
+      "name": "planner",
+      "stage_kind": "planner",
+      "architecture": [],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "workers",
+      "stage_kind": "workers",
+      "architecture": [],
+      "use_worker_architecture": true
+    },
+    {
+      "name": "validators",
+      "stage_kind": "validators",
+      "architecture": [["evidence_validator", 1], ["triage_analyst", 1]],
+      "use_worker_architecture": false
+    },
+    {
+      "name": "reporter",
+      "stage_kind": "reporter",
+      "architecture": [["reporting_analyst", 1]],
+      "use_worker_architecture": false
+    }
+  ]
+}

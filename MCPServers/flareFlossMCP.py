@@ -10,6 +10,7 @@ FastMCP server that exposes FLOSS via:
 import argparse
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -26,6 +27,33 @@ mcp = FastMCP(
 # ----------------------------
 # Command parsing + validation
 # ----------------------------
+_PROGRESS_PATTERNS = (
+    re.compile(r"\b\d+%\|.*\[[^\]]*(?:it/s|functions/s)[^\]]*\]"),
+    re.compile(r"^(?:decoding|finding)\s+.*features:\s+\d+%\|", re.IGNORECASE),
+)
+
+
+def _strip_progress_noise(text: str) -> str:
+    if not text:
+        return ""
+
+    cleaned_lines: List[str] = []
+    for raw_line in re.split(r"[\r\n]+", text):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if any(pattern.search(line) for pattern in _PROGRESS_PATTERNS):
+            continue
+        cleaned_lines.append(raw_line)
+
+    return "\n".join(cleaned_lines).strip()
+
+
+def _format_stream_block(label: str, text: str) -> str:
+    cleaned = _strip_progress_noise(text)
+    return f"{label}:\n{cleaned}\n" if cleaned else ""
+
+
 def _split_command(command: str) -> List[str]:
     command = (command or "").strip()
     if not command:
@@ -187,37 +215,33 @@ def runFloss(command: str, timeout_sec: int = 300) -> str:
         )
 
         cmd_str = " ".join(shlex.quote(a) for a in argv)
+        stdout_block = _format_stream_block("stdout", r.stdout or "")
+        stderr_block = _format_stream_block("stderr", r.stderr or "")
 
         if r.returncode != 0:
             return (
                 "Error: FLOSS execution failed.\n"
                 f"rc={r.returncode}\n"
                 f"command={cmd_str}\n"
-                "stdout:\n"
-                f"{r.stdout or ''}\n"
-                "stderr:\n"
-                f"{r.stderr or ''}"
+                f"{stdout_block}"
+                f"{stderr_block}"
             )
 
         return (
             "FLOSS execution complete.\n"
             f"rc={r.returncode}\n"
             f"command={cmd_str}\n"
-            "stdout:\n"
-            f"{r.stdout or ''}\n"
-            "stderr:\n"
-            f"{r.stderr or ''}"
+            f"{stdout_block}"
+            f"{stderr_block}"
         )
 
     except subprocess.TimeoutExpired as e:
-        out = e.stdout if isinstance(e.stdout, str) else ""
-        err = e.stderr if isinstance(e.stderr, str) else ""
+        out = _format_stream_block("stdout", e.stdout if isinstance(e.stdout, str) else "")
+        err = _format_stream_block("stderr", e.stderr if isinstance(e.stderr, str) else "")
         return (
             "Error: FLOSS execution timed out.\n"
             f"timeout_sec={timeout_sec}\n"
-            "stdout:\n"
-            f"{out}\n"
-            "stderr:\n"
+            f"{out}"
             f"{err}"
         )
     except FileNotFoundError:
@@ -237,23 +261,21 @@ def flossHelp(timeout_sec: int = 5) -> str:
             errors="replace",
             timeout=max(1, int(timeout_sec)),
         )
+        stdout_block = _format_stream_block("stdout", r.stdout or "")
+        stderr_block = _format_stream_block("stderr", r.stderr or "")
         return (
             "floss --help\n"
             f"rc={r.returncode}\n"
-            "stdout:\n"
-            f"{r.stdout or ''}\n"
-            "stderr:\n"
-            f"{r.stderr or ''}"
+            f"{stdout_block}"
+            f"{stderr_block}"
         )
     except subprocess.TimeoutExpired as e:
-        out = e.stdout if isinstance(e.stdout, str) else ""
-        err = e.stderr if isinstance(e.stderr, str) else ""
+        out = _format_stream_block("stdout", e.stdout if isinstance(e.stdout, str) else "")
+        err = _format_stream_block("stderr", e.stderr if isinstance(e.stderr, str) else "")
         return (
             "Error: `floss --help` timed out.\n"
             f"timeout_sec={timeout_sec}\n"
-            "stdout:\n"
-            f"{out}\n"
-            "stderr:\n"
+            f"{out}"
             f"{err}"
         )
     except FileNotFoundError:

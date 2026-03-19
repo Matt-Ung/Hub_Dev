@@ -10,10 +10,9 @@ import java.util.*;
 /**
  * Builds a CALL-only call graph and returns structured JSON (as a String).
  *
- * Root resolution strategy (in order):
- *  1) Symbols marked isExternalEntryPoint() (often exports / entry-ish)
- *  2) Functions named like main/_start/start/WinMain/DllMain/etc if present
- *  3) Fallback: lowest-address function (weak fallback, but better than nothing)
+ * Root resolution strategy:
+ *  1) Explicit roots from the caller, when provided
+ *  2) Otherwise heuristics: external entry points, common entry-ish names, then lowest address
  *
  * Graph is bounded via maxDepth and maxNodes to keep payloads manageable for MCP.
  */
@@ -21,7 +20,13 @@ public final class CallGraphBuilder {
 
     private CallGraphBuilder() {}
 
-    public static String build(Program program, int maxDepth, int maxNodes) {
+    public static String build(
+            Program program,
+            Collection<Function> requestedRoots,
+            String rootStrategy,
+            int maxDepth,
+            int maxNodes
+    ) {
         if (program == null) {
             return errorJson("No program loaded");
         }
@@ -33,23 +38,34 @@ public final class CallGraphBuilder {
         SymbolTable symtab = program.getSymbolTable();
 
         // --- pick roots ---
-        List<Function> roots = resolveRoots(program, fm, symtab);
+        List<Function> roots = dedupeRoots(requestedRoots);
+        String effectiveRootStrategy = safe(rootStrategy);
+        if (roots.isEmpty()) {
+            roots = resolveRoots(program, fm, symtab);
+            effectiveRootStrategy = "heuristic";
+        } else if (effectiveRootStrategy.isEmpty()) {
+            effectiveRootStrategy = "explicit";
+        }
 
         // --- BFS build ---
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         ArrayList<Edge> edges = new ArrayList<>();
         ArrayDeque<WorkItem> q = new ArrayDeque<>();
         HashSet<String> enqueued = new HashSet<>();
+        HashSet<String> edgeKeys = new HashSet<>();
+        boolean truncated = false;
 
         for (Function r : roots) {
+            if (nodes.size() >= maxNodes) {
+                truncated = true;
+                break;
+            }
             Node rn = nodeForFunction(r);
             nodes.put(rn.id, rn);
             WorkItem wi = new WorkItem(r, 0);
             q.add(wi);
             enqueued.add(rn.id);
         }
-
-        boolean truncated = false;
 
         while (!q.isEmpty()) {
             WorkItem wi = q.removeFirst();
@@ -83,8 +99,8 @@ public final class CallGraphBuilder {
                     if (callee != null) {
                         calleeNode = nodeForFunction(callee);
                     } else {
-                        // external / unresolved / indirect-ish: try symbol name; else use address
-                        calleeNode = nodeForUnknown(symtab, to);
+                        // external / unresolved / indirect-ish: keep ids specific enough for analysis
+                        calleeNode = nodeForUnknown(symtab, to, instr.getAddress());
                     }
 
                     // Insert node if new
@@ -96,12 +112,16 @@ public final class CallGraphBuilder {
                         nodes.put(calleeNode.id, calleeNode);
                     }
 
-                    edges.add(new Edge(
-                            nodeIdForFunction(f),
-                            calleeNode.id,
-                            site,
-                            "call"
-                    ));
+                    String fromId = nodeIdForFunction(f);
+                    String edgeKey = fromId + "->" + calleeNode.id + "@" + site;
+                    if (edgeKeys.add(edgeKey)) {
+                        edges.add(new Edge(
+                                fromId,
+                                calleeNode.id,
+                                site,
+                                "call"
+                        ));
+                    }
 
                     // Enqueue for expansion if it’s an internal function node
                     if (!calleeNode.external && callee != null) {
@@ -120,7 +140,7 @@ public final class CallGraphBuilder {
         }
 
         // --- JSON serialize ---
-        return graphJson(program, roots, nodes.values(), edges, maxDepth, maxNodes, truncated);
+        return graphJson(program, roots, nodes.values(), edges, effectiveRootStrategy, maxDepth, maxNodes, truncated);
     }
 
     // ----------------------------
@@ -183,6 +203,19 @@ public final class CallGraphBuilder {
         return new ArrayList<>(roots.values());
     }
 
+    private static List<Function> dedupeRoots(Collection<Function> requestedRoots) {
+        LinkedHashMap<String, Function> roots = new LinkedHashMap<>();
+        if (requestedRoots == null) {
+            return new ArrayList<>();
+        }
+        for (Function root : requestedRoots) {
+            if (root != null) {
+                roots.put(nodeIdForFunction(root), root);
+            }
+        }
+        return new ArrayList<>(roots.values());
+    }
+
     // ----------------------------
     // Node/Edge DTO
     // ----------------------------
@@ -235,8 +268,9 @@ public final class CallGraphBuilder {
         return addrStr(f.getEntryPoint());
     }
 
-    private static Node nodeForUnknown(SymbolTable symtab, Address to) {
+    private static Node nodeForUnknown(SymbolTable symtab, Address to, Address siteAddress) {
         String addr = (to == null) ? "" : addrStr(to);
+        String site = addrStr(siteAddress);
 
         // try best-effort symbol name
         String symName = "";
@@ -254,8 +288,19 @@ public final class CallGraphBuilder {
             }
         } catch (Exception ignored) {}
 
-        String name = !symName.isEmpty() ? symName : (!addr.isEmpty() ? addr : "UNKNOWN_CALL_TARGET");
-        String id = (!symName.isEmpty()) ? ("EXTERNAL::" + symName) : ("EXTERNAL::" + name);
+        String name;
+        String id;
+        if (to == null) {
+            name = "UNRESOLVED_CALL";
+            ns = "Unresolved";
+            id = "UNRESOLVED_CALL@" + (site.isEmpty() ? "UNKNOWN_SITE" : site);
+        } else if (!symName.isEmpty()) {
+            name = symName;
+            id = "EXTERNAL::" + ns + "::" + symName + "::" + addr;
+        } else {
+            name = addr;
+            id = "EXTERNAL::" + addr;
+        }
 
         return new Node(id, name, addr, ns, external);
     }
@@ -269,6 +314,7 @@ public final class CallGraphBuilder {
             List<Function> roots,
             Collection<Node> nodes,
             List<Edge> edges,
+            String rootStrategy,
             int maxDepth,
             int maxNodes,
             boolean truncated
@@ -280,8 +326,11 @@ public final class CallGraphBuilder {
         sb.append("\"meta\":{");
         sb.append("\"programName\":").append(jsonStr(safe(program.getName()))).append(",");
         sb.append("\"imageBase\":").append(jsonStr(addrStr(program.getImageBase()))).append(",");
+        sb.append("\"rootStrategy\":").append(jsonStr(safe(rootStrategy))).append(",");
         sb.append("\"maxDepth\":").append(maxDepth).append(",");
         sb.append("\"maxNodes\":").append(maxNodes).append(",");
+        sb.append("\"nodeCount\":").append(nodes.size()).append(",");
+        sb.append("\"edgeCount\":").append(edges.size()).append(",");
         sb.append("\"truncated\":").append(truncated).append(",");
         sb.append("\"roots\":[");
         for (int i = 0; i < roots.size(); i++) {

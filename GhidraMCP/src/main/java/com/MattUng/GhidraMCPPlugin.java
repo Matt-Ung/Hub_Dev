@@ -74,6 +74,18 @@ public class GhidraMCPPlugin extends Plugin {
     private static final String PORT_OPTION_NAME = "Server Port";
     private static final int DEFAULT_PORT = 8080;
 
+    private static final class GraphRootSelection {
+        final List<Function> roots;
+        final String strategy;
+        final String error;
+
+        GraphRootSelection(List<Function> roots, String strategy, String error) {
+            this.roots = roots;
+            this.strategy = strategy;
+            this.error = error;
+        }
+    }
+
     public GhidraMCPPlugin(PluginTool tool) {
         super(tool);
         Msg.info(this, "GhidraMCPPlugin loading...");
@@ -344,7 +356,7 @@ public class GhidraMCPPlugin extends Plugin {
         });
 
         server.createContext("/program_info", exchange -> {
-            sendResponse(exchange, getProgramInfo());
+            sendJsonResponse(exchange, getProgramInfoJson());
         });
         
         server.createContext("/callgraph_json", exchange -> {
@@ -353,11 +365,20 @@ public class GhidraMCPPlugin extends Plugin {
             int maxNodes = parseIntOrDefault(qparams.get("maxNodes"), 2000);
 
             Program program = getCurrentProgram();
-            String json = CallGraphBuilder.build(program, maxDepth, maxNodes);
+            GraphRootSelection rootSelection = selectCallGraphRoots(program, qparams);
+            if (rootSelection.error != null) {
+                sendJsonResponse(exchange, jsonError(rootSelection.error));
+                return;
+            }
 
-            // sendResponse currently works fine even if Content-Type is text/plain;
-            // your client can still JSON-parse it.
-            sendResponse(exchange, json);
+            String json = CallGraphBuilder.build(
+                program,
+                rootSelection.roots,
+                rootSelection.strategy,
+                maxDepth,
+                maxNodes
+            );
+            sendJsonResponse(exchange, json);
         });
 
 
@@ -512,16 +533,14 @@ public class GhidraMCPPlugin extends Plugin {
         return (s == null) ? "" : s;
     }
 
-    private String getProgramInfo() {
+    private String getProgramInfoJson() {
         Program program = getCurrentProgram();
-        if (program == null) return "No program loaded\n";
+        if (program == null) {
+            return "{\"loaded\":false,\"error\":" + jsonStr("No program loaded") + "}";
+        }
 
-        StringBuilder info = new StringBuilder();
-        info.append("Program Information:\n");
-        info.append("---------------------\n");
-
-        // Identity
-        info.append("Name: ").append(safe(program.getName())).append("\n");
+        ProgramLocation location = getCurrentLocationObject();
+        Function currentFunction = getCurrentFunctionObject(program, location);
 
         String domainPath = "";
         try {
@@ -529,22 +548,13 @@ public class GhidraMCPPlugin extends Plugin {
                 domainPath = safe(program.getDomainFile().getPathname());
             }
         } catch (Exception ignored) {}
-        info.append("Ghidra Project Path: ").append(domainPath).append("\n");
 
-        // Original executable metadata (may be empty depending on import/workflow)
-        info.append("Executable Path: ").append(safe(program.getExecutablePath())).append("\n");
-        info.append("Executable MD5: ").append(safe(program.getExecutableMD5())).append("\n");
-        info.append("Executable SHA256: ").append(safe(program.getExecutableSHA256())).append("\n");
-
-        // Architecture / decompilation context
         String languageId = "";
         try {
             if (program.getLanguageID() != null) {
-                // Prefer the stable ID string
                 languageId = program.getLanguageID().getIdAsString();
             }
         } catch (Exception ignored) {}
-        info.append("Language: ").append(safe(languageId)).append("\n");
 
         String compilerId = "";
         try {
@@ -552,13 +562,11 @@ public class GhidraMCPPlugin extends Plugin {
                 compilerId = program.getCompilerSpec().getCompilerSpecID().getIdAsString();
             }
         } catch (Exception ignored) {}
-        info.append("Compiler: ").append(safe(compilerId)).append("\n");
 
         boolean bigEndian = false;
         try {
             bigEndian = program.getLanguage().isBigEndian();
         } catch (Exception ignored) {}
-        info.append("Endianness: ").append(bigEndian ? "big" : "little").append("\n");
 
         String imageBase = "";
         try {
@@ -566,9 +574,142 @@ public class GhidraMCPPlugin extends Plugin {
                 imageBase = program.getImageBase().toString();
             }
         } catch (Exception ignored) {}
-        info.append("Image Base: ").append(safe(imageBase)).append("\n");
 
-        return info.toString();
+        StringBuilder sb = new StringBuilder(2048);
+        sb.append("{");
+        sb.append("\"loaded\":true,");
+        sb.append("\"program\":{");
+        sb.append("\"name\":").append(jsonStr(safe(program.getName()))).append(",");
+        sb.append("\"ghidraProjectPath\":").append(jsonStr(domainPath)).append(",");
+        sb.append("\"executablePath\":").append(jsonStr(safe(program.getExecutablePath()))).append(",");
+        sb.append("\"executableMD5\":").append(jsonStr(safe(program.getExecutableMD5()))).append(",");
+        sb.append("\"executableSHA256\":").append(jsonStr(safe(program.getExecutableSHA256()))).append(",");
+        sb.append("\"language\":").append(jsonStr(safe(languageId))).append(",");
+        sb.append("\"compiler\":").append(jsonStr(safe(compilerId))).append(",");
+        sb.append("\"endianness\":").append(jsonStr(bigEndian ? "big" : "little")).append(",");
+        sb.append("\"imageBase\":").append(jsonStr(safe(imageBase))).append(",");
+        sb.append("\"pointerSize\":").append(program.getDefaultPointerSize());
+        sb.append("},");
+        sb.append("\"counts\":{");
+        sb.append("\"functions\":").append(countFunctions(program)).append(",");
+        sb.append("\"imports\":").append(countImports(program)).append(",");
+        sb.append("\"exports\":").append(countExports(program)).append(",");
+        sb.append("\"segments\":").append(program.getMemory().getBlocks().length);
+        sb.append("},");
+        sb.append("\"currentLocation\":");
+        if (location == null || location.getAddress() == null) {
+            sb.append("null");
+        } else {
+            sb.append("{");
+            sb.append("\"address\":").append(jsonStr(location.getAddress().toString())).append(",");
+            sb.append("\"function\":");
+            if (currentFunction == null) {
+                sb.append("null");
+            } else {
+                sb.append("{");
+                sb.append("\"name\":").append(jsonStr(safe(currentFunction.getName()))).append(",");
+                sb.append("\"entry\":").append(jsonStr(currentFunction.getEntryPoint().toString())).append(",");
+                sb.append("\"signature\":").append(jsonStr(safe(currentFunction.getSignature().toString()))).append(",");
+                sb.append("\"namespace\":").append(jsonStr(getNamespaceName(currentFunction.getParentNamespace())));
+                sb.append("}");
+            }
+            sb.append("}");
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+
+    private String getNamespaceName(Namespace namespace) {
+        return (namespace == null) ? "Global" : safe(namespace.getName());
+    }
+
+    private int countFunctions(Program program) {
+        int count = 0;
+        for (Function ignored : program.getFunctionManager().getFunctions(true)) {
+            count++;
+        }
+        return count;
+    }
+
+    private int countImports(Program program) {
+        int count = 0;
+        for (Symbol ignored : program.getSymbolTable().getExternalSymbols()) {
+            count++;
+        }
+        return count;
+    }
+
+    private int countExports(Program program) {
+        int count = 0;
+        SymbolIterator it = program.getSymbolTable().getAllSymbols(true);
+        while (it.hasNext()) {
+            Symbol symbol = it.next();
+            if (symbol.isExternalEntryPoint()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private GraphRootSelection selectCallGraphRoots(Program program, Map<String, String> qparams) {
+        if (program == null) {
+            return new GraphRootSelection(Collections.emptyList(), "unavailable", null);
+        }
+
+        String rootAddress = trimToNull(qparams.get("rootAddress"));
+        if (rootAddress != null) {
+            try {
+                Address addr = program.getAddressFactory().getAddress(rootAddress);
+                Function func = getFunctionForAddress(program, addr);
+                if (func == null) {
+                    return new GraphRootSelection(
+                        Collections.emptyList(),
+                        "explicit_address",
+                        "No function found at or containing rootAddress " + rootAddress
+                    );
+                }
+                return new GraphRootSelection(Collections.singletonList(func), "explicit_address", null);
+            } catch (Exception e) {
+                return new GraphRootSelection(
+                    Collections.emptyList(),
+                    "explicit_address",
+                    "Invalid rootAddress " + rootAddress + ": " + e.getMessage()
+                );
+            }
+        }
+
+        String rootName = trimToNull(qparams.get("rootName"));
+        if (rootName != null) {
+            LinkedHashMap<String, Function> matches = new LinkedHashMap<>();
+            for (Function func : program.getFunctionManager().getFunctions(true)) {
+                if (rootName.equals(func.getName())) {
+                    matches.put(func.getEntryPoint().toString(), func);
+                }
+            }
+            if (matches.isEmpty()) {
+                return new GraphRootSelection(
+                    Collections.emptyList(),
+                    "explicit_name",
+                    "No function found with rootName " + rootName
+                );
+            }
+            return new GraphRootSelection(new ArrayList<>(matches.values()), "explicit_name", null);
+        }
+
+        Function currentFunction = getCurrentFunctionObject();
+        if (currentFunction != null) {
+            return new GraphRootSelection(Collections.singletonList(currentFunction), "current_function", null);
+        }
+
+        return new GraphRootSelection(Collections.emptyList(), "heuristic", null);
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     // ----------------------------------------------------------------------------------
@@ -821,7 +962,7 @@ public class GhidraMCPPlugin extends Plugin {
         CodeViewerService service = tool.getService(CodeViewerService.class);
         if (service == null) return "Code viewer service not available";
 
-        ProgramLocation location = service.getCurrentLocation();
+        ProgramLocation location = getCurrentLocationObject();
         return (location != null) ? location.getAddress().toString() : "No current location";
     }
 
@@ -832,19 +973,35 @@ public class GhidraMCPPlugin extends Plugin {
         CodeViewerService service = tool.getService(CodeViewerService.class);
         if (service == null) return "Code viewer service not available";
 
-        ProgramLocation location = service.getCurrentLocation();
+        ProgramLocation location = getCurrentLocationObject();
         if (location == null) return "No current location";
 
         Program program = getCurrentProgram();
         if (program == null) return "No program loaded";
 
-        Function func = program.getFunctionManager().getFunctionContaining(location.getAddress());
+        Function func = getCurrentFunctionObject(program, location);
         if (func == null) return "No function at current location: " + location.getAddress();
 
         return String.format("Function: %s at %s\nSignature: %s",
             func.getName(),
             func.getEntryPoint(),
             func.getSignature());
+    }
+
+    private ProgramLocation getCurrentLocationObject() {
+        CodeViewerService service = tool.getService(CodeViewerService.class);
+        return (service != null) ? service.getCurrentLocation() : null;
+    }
+
+    private Function getCurrentFunctionObject() {
+        return getCurrentFunctionObject(getCurrentProgram(), getCurrentLocationObject());
+    }
+
+    private Function getCurrentFunctionObject(Program program, ProgramLocation location) {
+        if (program == null || location == null || location.getAddress() == null) {
+            return null;
+        }
+        return program.getFunctionManager().getFunctionContaining(location.getAddress());
     }
 
     /**
@@ -1736,6 +1893,34 @@ private void sendJsonResponse(HttpExchange exchange, String json) throws IOExcep
     } finally {
         os.close();
     }
+}
+
+private String jsonError(String message) {
+    return "{\"error\":" + jsonStr(message) + "}";
+}
+
+private String jsonStr(String s) {
+    if (s == null) return "\"\"";
+    StringBuilder out = new StringBuilder(s.length() + 16);
+    out.append('"');
+    for (int i = 0; i < s.length(); i++) {
+        char c = s.charAt(i);
+        switch (c) {
+            case '\\': out.append("\\\\"); break;
+            case '"':  out.append("\\\""); break;
+            case '\n': out.append("\\n"); break;
+            case '\r': out.append("\\r"); break;
+            case '\t': out.append("\\t"); break;
+            default:
+                if (c < 0x20) {
+                    out.append(String.format("\\u%04x", (int) c));
+                } else {
+                    out.append(c);
+                }
+        }
+    }
+    out.append('"');
+    return out.toString();
 }
 
 

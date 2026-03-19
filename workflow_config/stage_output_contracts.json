@@ -1,0 +1,24 @@
+{
+  "preflight": [
+    "Produce a concise preflight note that resolves the sample path if possible, captures only the minimum program context needed",
+    "for planning, and highlights a few high-value pivots.",
+    "Do not perform deep analysis, full obfuscation assessment, or final purpose conclusions."
+  ],
+  "planner": [
+    "Produce a compact execution plan with prioritized work items, suggested worker-role assignments, and concrete evidence targets.",
+    "Include exactly one machine-readable JSON block delimited by `{{PLANNER_WORK_ITEMS_START}}` and `{{PLANNER_WORK_ITEMS_END}}`.",
+    "The JSON payload must be an array of objects with keys: `id`, `objective`, `recommended_roles`, and `evidence_targets`.",
+    "Base the plan on the original request, shared context, and any prior preflight output.",
+    "Do not perform fresh tool-driven analysis in this stage.",
+    "You may include a brief human-readable summary before or after the block, but do not omit the block."
+  ],
+  "workers": [
+    "Produce a structured worker evidence bundle grouped by specialist or topic. Include artifacts and avoid unsupported conclusions."
+  ],
+  "validators": [
+    "Produce validated findings grouped into confirmed, weak/unsupported, contradictions, and unresolved questions."
+  ],
+  "reporter": [
+    "Produce the final concise technical report using validated findings only, plus a short unknowns section."
+  ]
+}

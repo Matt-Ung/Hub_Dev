@@ -1,0 +1,33 @@
+{
+  "minimal": [
+    ["static_generalist", 1]
+  ],
+  "balanced": [
+    ["triage_analyst", 1],
+    ["control_flow_analyst", 1],
+    ["obfuscation_analyst", 1],
+    ["string_analyst", 1]
+  ],
+  "aws_collaboration": [
+    ["triage_analyst", 1],
+    ["control_flow_analyst", 1],
+    ["string_analyst", 1],
+    ["obfuscation_analyst", 1],
+    ["capability_analyst", 1]
+  ],
+  "runtime_enriched": [
+    ["triage_analyst", 1],
+    ["control_flow_analyst", 1],
+    ["string_analyst", 1],
+    ["obfuscation_analyst", 1],
+    ["capability_analyst", 1],
+    ["runtime_behavior_analyst", 1]
+  ],
+  "static_swarm": [
+    ["triage_analyst", 1],
+    ["control_flow_analyst", 2],
+    ["obfuscation_analyst", 1],
+    ["string_analyst", 1],
+    ["capability_analyst", 1]
+  ]
+}
