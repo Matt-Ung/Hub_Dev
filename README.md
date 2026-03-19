@@ -66,6 +66,18 @@ TESTING:
 Query: Can you perform analysis on the program in ghidra as a whole? Try to get an understanding of the control flow of the program and what it is doing and provide a brief report with analysis. Use tools capa and floss to deduce forms of obfuscation.
 Task: Using all the information gathered and provide an explanation of obfuscation techniques and the program purpose
 
+Excercises to do: experimental data
+
+UPX packed:
+Experiments:
+binwalk? 
+yara, generate yara sigs and testing
+different tools in conjunction,
+declaring structs, patching, deobfuscation int 3
+Hook into auto-analyze
+suggest, ask for approval when loaded,
+Start generating setup guide as well
+
 
 ### Final Analysis Report on `winapi_behavior_test.exe`
 
