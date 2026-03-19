@@ -1159,15 +1159,6 @@ def _get_ui_snapshot() -> Dict[str, Any]:
     with _UI_SNAPSHOT_LOCK:
         return dict(_UI_SNAPSHOT)
 
-
-def _state_has_running_stage(state: Optional[Dict[str, Any]]) -> bool:
-    shared = (state or {}).get("shared_state") or {}
-    for item in shared.get("pipeline_stage_progress") or []:
-        if str(item.get("status") or "") == "running":
-            return True
-    return False
-
-
 def _stage_progress_from_pipeline_definition() -> List[Dict[str, Any]]:
     progress: List[Dict[str, Any]] = []
     for raw_stage in DEEP_AGENT_PIPELINE:
@@ -1509,7 +1500,7 @@ def _tool_log_update(state: Dict[str, Any]):
 def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
     state = snapshot.get("state") or _snapshot_state_default()
     chat_history = snapshot.get("chat_history") or []
-    active = bool(snapshot.get("run_active")) or _state_has_running_stage(state)
+    active = bool(snapshot.get("run_active"))
     composer_visible = bool(snapshot.get("composer_visible", True)) and not active
     send_visible = bool(snapshot.get("send_visible", True)) and not active
     clear_visible = bool(snapshot.get("clear_visible", True)) and not active
@@ -1541,7 +1532,7 @@ def restore_last_ui():
 
 def poll_active_ui_snapshot():
     snapshot = _get_ui_snapshot()
-    if not (snapshot.get("run_active") or _state_has_running_stage(snapshot.get("state"))):
+    if not snapshot.get("run_active"):
         return (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
     return _restore_snapshot_outputs(snapshot)
 
@@ -1741,7 +1732,7 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
         todo_visible=False,
     )
     state = gr.State(initial_state)
-    snapshot_timer = gr.Timer(0.5, active=True)
+    snapshot_timer = gr.Timer(0.5, active=True, render=False)
 
     with gr.Row():
         with gr.Column(scale=3):
