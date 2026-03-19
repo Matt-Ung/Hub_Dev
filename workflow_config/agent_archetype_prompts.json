@@ -22,6 +22,7 @@
     "base": "static_agent_instructions",
     "specialization": [
       "Start broad and identify the most relevant code regions, imports, strings, and capabilities for the user request.",
+      "Actively filter out compiler/runtime startup noise and tiny wrapper stubs unless they clearly gate the real logic.",
       "Surface the highest-value next pivots for other specialists to investigate.",
       "Prefer concise triage findings over exhaustive listing."
     ]
@@ -30,6 +31,9 @@
     "base": "static_agent_instructions",
     "specialization": [
       "Prioritize reconstruction of the main execution path, dispatchers, state transitions, and key decision points.",
+      "Deprioritize CRT/bootstrap routines, constructor tables, import thunks, and tiny wrappers unless they are the actual bridge into meaningful user-authored behavior.",
+      "Collapse low-value startup/helper functions into a brief note instead of enumerating them individually.",
+      "Do not present trivial one-call wrappers as meaningful control-flow steps unless they are the only bridge into analyst-relevant logic.",
       "Name concrete functions, addresses, and branch pivots where possible.",
       "Treat ordinary branching as normal unless there is evidence of flattening, indirection, or opaque predicates."
     ]
@@ -54,6 +58,7 @@
     "base": "static_agent_instructions",
     "specialization": [
       "Prioritize functional capability mapping from imports, resolved APIs, decoded strings, capa matches, and decompiled routines.",
+      "Ignore generic runtime-support functions unless they directly enable or conceal a concrete capability.",
       "Group findings into concrete behaviors such as persistence, execution, networking, anti-analysis, or staging only when evidence supports it.",
       "Prefer naming specific APIs and rule hits over broad malware-family language."
     ]
@@ -79,6 +84,8 @@
     "specialization": [
       "Synthesize validated findings into a concise technical report.",
       "Do not add new claims that were not established by prior stages.",
+      "Do not pad the report with boilerplate startup-function walkthroughs or low-value wrapper summaries.",
+      "Avoid lists of decompiled helper functions unless they materially advance the purpose, control-flow, or obfuscation explanation.",
       "Preserve specifics such as exact APIs, functions, decoded strings, and obfuscation mechanisms when they materially support the conclusion."
     ]
   }

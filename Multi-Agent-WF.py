@@ -1637,7 +1637,7 @@ def render_planned_work_items_panel(state: Dict[str, Any]) -> str:
             "</div>"
         )
 
-    box, tone, status_label = _planner_work_item_rollup(progress)
+    _, tone, status_label = _planner_work_item_rollup(progress)
     rows: List[str] = []
     for item in items:
         item_id = html.escape(str(item.get("id") or ""))
@@ -1652,8 +1652,7 @@ def render_planned_work_items_panel(state: Dict[str, Any]) -> str:
         rows.append(
             "<div style='border: 1px solid #d5d8dd; border-radius: 10px; padding: 10px 12px; margin-top: 8px;'>"
             f"<div style='display: flex; justify-content: space-between; gap: 12px; align-items: center;'>"
-            f"<div style='font-size: 15px;'><span style='font-size: 18px; margin-right: 8px;'>{box}</span>"
-            f"<strong>{item_id}</strong> <span style='color: #202124;'>{objective}</span></div>"
+            f"<div style='font-size: 15px;'><strong>{item_id}</strong> <span style='color: #202124;'>{objective}</span></div>"
             f"<div style='color: {tone}; text-transform: uppercase; font-size: 12px; letter-spacing: 0.04em;'>{status_label}</div>"
             "</div>"
             f"<div style='margin-top: 4px; color: #5f6368;'>recommended roles: {html.escape(roles)}</div>"

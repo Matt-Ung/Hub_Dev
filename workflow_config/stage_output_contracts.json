@@ -13,12 +13,14 @@
     "You may include a brief human-readable summary before or after the block, but do not omit the block."
   ],
   "workers": [
-    "Produce a structured worker evidence bundle grouped by specialist or topic. Include artifacts and avoid unsupported conclusions."
+    "Produce a structured worker evidence bundle grouped by specialist or topic. Include artifacts and avoid unsupported conclusions.",
+    "Do not enumerate startup/runtime scaffolding or trivial call-through wrappers individually; collapse them into a short omission note unless they directly gate meaningful behavior."
   ],
   "validators": [
     "Produce validated findings grouped into confirmed, weak/unsupported, contradictions, and unresolved questions."
   ],
   "reporter": [
-    "Produce the final concise technical report using validated findings only, plus a short unknowns section."
+    "Produce the final concise technical report using validated findings only, plus a short unknowns section.",
+    "Center the report on user-authored logic, meaningful control-flow pivots, concrete capabilities, and supported obfuscation mechanisms rather than CRT/bootstrap helper functions."
   ]
 }

@@ -25,6 +25,7 @@
     "- The JSON payload must be an array of objects with keys: `id`, `objective`, `recommended_roles`, and `evidence_targets`.",
     "- Assume preflight should already have handled path discovery and minimal context gathering.",
     "- Prioritize concrete evidence targets, not generic reverse-engineering steps.",
+    "- Do not create work items centered on compiler/runtime startup scaffolding, CRT initialization, standard-library setup, or trivial call-through wrappers unless they directly gate the real program logic.",
     "- Do not fabricate tool output or conclusions at this stage.",
     "- Do not repeat preflight findings as if they were worker conclusions.",
     "- The plan should make explicit which worker roles are best suited for each work item."
@@ -47,6 +48,8 @@
     "- Numbered plan items like `1`, `2`, `3` are not subagent task IDs.",
     "- If a worker validates the real sample path, have it include `Validated sample path: <exact existing path>` in its answer.",
     "- Favor concrete findings with artifacts over broad malware labels.",
+    "- Do not spend time enumerating low-value startup/runtime functions or trivial wrapper stubs unless they are directly relevant to control transfer into meaningful logic.",
+    "- If worker findings encounter CRT/bootstrap routines or tiny wrappers, collapse them into a short note such as `runtime scaffolding omitted` rather than listing them one by one.",
     "- Synthesize worker results into a structured evidence bundle for validators."
   ],
   "validators": [
@@ -68,6 +71,8 @@
     "- Produce the final answer using validated findings only.",
     "- Preserve concrete technical specificity.",
     "- Exclude generic executable primers and obvious analyst background material unless explicitly requested.",
+    "- Exclude compiler/runtime startup scaffolding and trivial helper-wrapper discussion unless it directly supports the main conclusion.",
+    "- Do not include individual bullet points for functions whose only role is startup, registration, import forwarding, or one-call wrapping.",
     "- Clearly separate confirmed findings from remaining unknowns.",
     "- If the validator stage flagged uncertainty, reflect that uncertainty directly instead of smoothing it over."
   ]

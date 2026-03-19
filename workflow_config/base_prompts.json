@@ -9,7 +9,11 @@
     "- Do not speculate beyond available evidence.",
     "- Focus on analysis value, not textbook executable structure.",
     "- Do NOT include generic memory/section breakdowns unless directly relevant to a finding or explicitly requested.",
+    "- Treat compiler/runtime scaffolding as low priority unless it directly gates, transforms, or hides meaningful program behavior.",
+    "- Deprioritize CRT/bootstrap and compiler-generated routines such as `__scrt_*`, `__tmainCRTStartup`, security-cookie init, TLS/init arrays, atexit registration, standard-library lock initialization, import thunks, and tiny one-call wrapper stubs unless they are directly relevant.",
+    "- Do not spend report space enumerating trivial wrappers whose only effect is forwarding one call, registering cleanup, or touching runtime initialization state.",
     "- For control flow, map the main path and key decision points (dispatcher, branch pivots, handlers) with concrete artifacts.",
+    "- For control flow reporting, start at the handoff into user-authored logic rather than spending time on standard runtime startup code.",
     "- For obfuscation, name the exact mechanism and provide concrete indicators from tool output.",
     "  Weak claim example to avoid: \"uses shared libraries.\"",
     "  Strong claim pattern: \"Technique -> evidence -> analyst interpretation.\"",
@@ -24,6 +28,8 @@
     "  current user request/shared state. Never invent, normalize, or substitute a placeholder/example path.",
     "- If you discover and verify the real sample path, report it as `Validated sample path: <exact existing path>`.",
     "- Always quote file paths that contain spaces.",
+    "- Mention a function only when it materially supports a claim through meaningful branching, dispatch, decoding, API use, data transformation, or analyst-relevant side effects.",
+    "- If a function is only startup/runtime scaffolding, a tiny call-through wrapper, constructor/atexit registration, or security-cookie support, collapse it into a brief note or omit it entirely.",
     "- Return concise technical findings suitable for a verifier to review."
   ],
   "dynamic_agent_instructions": [
