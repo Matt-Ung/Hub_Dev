@@ -127,6 +127,12 @@ VALIDATOR_REVIEW_LEVEL_CHOICES = [
 VALIDATOR_REVIEW_LEVEL_LABELS = {
     value: label for label, value in VALIDATOR_REVIEW_LEVEL_CHOICES
 }
+SHELL_EXECUTION_MODE_CHOICES = [
+    ("None", "none"),
+    ("Yes, with permission from user", "ask"),
+    ("Yes FULL ACCESS (Use at Risk)", "full"),
+]
+SHELL_EXECUTION_MODE_LABELS = {value: label for label, value in SHELL_EXECUTION_MODE_CHOICES}
 TOOL_RESULT_CACHE_SERVER_MARKERS = tuple(
     marker.strip().lower()
     for marker in os.environ.get(
@@ -166,6 +172,19 @@ def _normalize_validator_review_level(value: Any) -> str:
     return "default"
 
 
+def _normalize_shell_execution_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"none", "ask", "full"}:
+        return normalized
+    if normalized in {"off", "disabled", "disable", "no", "false"}:
+        return "none"
+    if normalized in {"prompt", "approval", "approve", "with permission", "permission", "yes with permission"}:
+        return "ask"
+    if normalized in {"on", "enabled", "enable", "yes", "full access", "unsafe", "use at risk"}:
+        return "full"
+    return "none"
+
+
 DEEP_ENABLE_MEMORY = _env_flag("DEEP_ENABLE_MEMORY", True)
 DEEP_MEMORY_DIR = os.environ.get("DEEP_MEMORY_DIR", ".deep/memory")
 DEEP_PERSIST_BACKEND = _env_flag("DEEP_PERSIST_BACKEND", True)
@@ -179,6 +198,9 @@ DEEP_AGENT_RETRIES = int(os.environ.get("DEEP_AGENT_RETRIES", "4"))
 DEFAULT_ALLOW_PARENT_INPUT = _env_flag("DEFAULT_ALLOW_PARENT_INPUT", False)
 DEFAULT_VALIDATOR_REVIEW_LEVEL = _normalize_validator_review_level(
     os.environ.get("DEFAULT_VALIDATOR_REVIEW_LEVEL", "default")
+)
+DEFAULT_SHELL_EXECUTION_MODE = _normalize_shell_execution_mode(
+    os.environ.get("DEFAULT_SHELL_EXECUTION_MODE", "none")
 )
 PATH_HANDOFF_LINE_PREFIX = "Validated sample path:"
 SAMPLE_PATH_SUFFIXES = ("exe", "dll", "sys", "scr", "ocx", "cpl", "bin", "elf", "so", "dylib")
@@ -669,6 +691,10 @@ def build_stage_prompt(
     supports_dynamic_analysis = bool(shared.get("supports_dynamic_analysis"))
     supports_sandboxed_execution = bool(shared.get("supports_sandboxed_execution"))
     allow_parent_input = bool(shared.get("allow_parent_input"))
+    shell_execution_mode = _normalize_shell_execution_mode(
+        shared.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)
+    )
+    shell_execution_label = SHELL_EXECUTION_MODE_LABELS.get(shell_execution_mode, shell_execution_mode)
     validator_review_level = _normalize_validator_review_level(
         shared.get("validator_review_level", shared.get("validator_strict_mode", "default"))
     )
@@ -680,30 +706,46 @@ def build_stage_prompt(
     sections.append(f"- supports_dynamic_analysis: {'yes' if supports_dynamic_analysis else 'no'}")
     sections.append(f"- supports_sandboxed_execution: {'yes' if supports_sandboxed_execution else 'no'}")
     sections.append(f"- allow_parent_input: {'yes' if allow_parent_input else 'no'}")
+    sections.append(f"- shell_execution_mode: {shell_execution_mode}")
+    sections.append(f"- shell_execution_profile: {shell_execution_label}")
     sections.append(f"- validator_review_level: {validator_review_level}")
     sections.append(f"- validator_review_profile: {validator_review_label}")
     if allow_parent_input:
         sections.append("- Clarification rule: if a critical ambiguity remains after reading provided context, you may ask at most one concise parent question.")
     else:
         sections.append("- Clarification rule: parent input is disabled for this run; do not rely on follow-up questions.")
+    if shell_execution_mode == "none":
+        sections.append("- Shell rule: do not call `execute`. Shell command execution is disabled for this run.")
+    elif shell_execution_mode == "ask":
+        sections.append("- Shell rule: `execute` is available only with explicit user approval per command. Keep commands minimal, local, and explainable.")
+    else:
+        sections.append("- Shell rule: `execute` is enabled. Use it sparingly for bounded local verification only.")
+    sections.append(
+        "- Safety rule: shell execution access does not authorize detonating or recklessly running a potentially malicious sample outside approved sandboxing controls."
+    )
     if stage_kind == "workers":
         if validator_review_level == "easy":
             sections.append("- Validator mode rule: easy mode is enabled. Assume reviewers mainly care that the output is relevant, understandable, and technically substantial-sounding; prioritize clear high-level relevance over exhaustive artifact collection.")
+            sections.append("- Easy evidence threshold: for major claims, representative artifacts are enough. Do not spend time collecting exact VA-qualified disassembly for every API call, full raw import dumps, or minor metadata fields unless the user explicitly asked for that depth or the claim would otherwise be weak.")
         elif validator_review_level == "strict":
             sections.append("- Validator mode rule: strict mode is enabled. Assume validators will expect stronger raw artifacts, exact excerpts, explicit proof for key claims, and minimal reliance on inference.")
         elif validator_review_level == "intermediate":
             sections.append("- Validator mode rule: intermediate mode is enabled. Expect methodical review with representative artifacts for major claims, but not exhaustive appendices for every minor point.")
         else:
             sections.append("- Validator mode rule: default mode is enabled. Prioritize adequately answering the user request with concrete evidence without over-collecting exhaustive raw appendices unless needed.")
+            sections.append("- Default evidence threshold: use representative decompiler/disassembly/import/string artifacts for the most important claims. Exact instruction-address bundles, full raw appendices, and minor forensic metadata are optional unless they are central to the disputed point.")
     elif stage_kind == "validators":
         if validator_review_level == "easy":
             sections.append("- Validator mode rule: easy mode is enabled. Review like a business manager: accept output that is relevant to the request, plausible, and communicates technical complexity clearly, without demanding deep artifact-level proof.")
+            sections.append("- Easy acceptance threshold: do not reject solely because exact VA-qualified disassembly snippets, raw import-table dumps, verbatim tool formatting, or minor metadata fields are missing if representative evidence already supports the main claims and there are no major contradictions.")
         elif validator_review_level == "strict":
             sections.append("- Validator mode rule: strict mode is enabled. Review like a seasoned professional malware analyst: require strong exact proof for key claims before signoff.")
         elif validator_review_level == "intermediate":
             sections.append("- Validator mode rule: intermediate mode is enabled. Review like a CS professor: require methodical reasoning and representative artifacts for major claims, while allowing minor non-critical gaps.")
+            sections.append("- Intermediate acceptance threshold: require enough concrete excerpts to re-check the key claims, but do not demand exhaustive per-call-site disassembly or every minor metadata field when the answer is otherwise well-supported.")
         else:
             sections.append("- Validator mode rule: default mode is enabled. Review like a technically strong CS background reader: focus on whether the user request is adequately answered with enough evidence, not exhaustive proof for every sub-claim.")
+            sections.append("- Default acceptance threshold: prefer representative evidence over exhaustive appendices. Do not reject solely for missing exact addresses, verbatim formatting, or minor metadata unless those omissions materially undermine a major claim.")
 
     planned_work_items = shared.get("planned_work_items") or []
     if planned_work_items and stage_kind != "planner":
@@ -788,6 +830,123 @@ _PARENT_INPUT_LOCK = Lock()
 _PARENT_INPUT_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
 
+def _is_affirmative_response(value: str) -> bool:
+    normalized = (value or "").strip().lower()
+    return normalized in {
+        "y",
+        "yes",
+        "approve",
+        "approved",
+        "allow",
+        "allowed",
+        "run",
+        "proceed",
+        "continue",
+        "ok",
+        "okay",
+    }
+
+
+def _request_shell_execute_approval(
+    state: Optional[Dict[str, Any]],
+    *,
+    command: str,
+    source: str,
+    timeout_sec: float = 300.0,
+) -> bool:
+    if not isinstance(state, dict):
+        return False
+
+    response = _wait_for_parent_input_response(
+        state,
+        question=(
+            f"Shell execution approval requested by {source}.\n\n"
+            f"Command:\n{command}\n\n"
+            "Type YES / APPROVE / ALLOW to run this command once, or click Decline to block it."
+        ),
+        options=[
+            {
+                "label": "Approve",
+                "description": "Allow this exact shell command to run once for the current step.",
+            },
+            {
+                "label": "Decline",
+                "description": "Block this command and let the agent continue without shell execution.",
+            },
+        ],
+        source=f"{source} shell approval",
+        timeout_sec=timeout_sec,
+    )
+    return _is_affirmative_response(response)
+
+
+class _ControlledLocalBackend:
+    def __init__(self, root_dir: str | Path):
+        from pydantic_ai_backends import LocalBackend
+
+        self._root_dir = Path(root_dir).expanduser().resolve()
+        self._backend = LocalBackend(root_dir=str(self._root_dir), enable_execute=True)
+
+    def _current_mode(self) -> str:
+        state = _ACTIVE_PIPELINE_STATE.get()
+        if isinstance(state, dict):
+            return _normalize_shell_execution_mode(state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE))
+        return DEFAULT_SHELL_EXECUTION_MODE
+
+    @property
+    def id(self) -> str:
+        return getattr(self._backend, "id")
+
+    @property
+    def root_dir(self) -> Path:
+        return getattr(self._backend, "root_dir")
+
+    @property
+    def execute_enabled(self) -> bool:
+        return self._current_mode() != "none"
+
+    @property
+    def permissions(self) -> Any:
+        return getattr(self._backend, "permissions", None)
+
+    @property
+    def permission_checker(self) -> Any:
+        return getattr(self._backend, "permission_checker", None)
+
+    def execute(self, command: str, timeout: int | None = 120) -> Any:
+        mode = self._current_mode()
+        if mode == "none":
+            raise RuntimeError("Shell execution is disabled for this backend")
+
+        state = _ACTIVE_PIPELINE_STATE.get()
+        source = _ACTIVE_PIPELINE_STAGE.get() or "pipeline"
+        command_preview = _shorten(str(command or ""), max_chars=320)
+
+        if mode == "ask":
+            if isinstance(state, dict):
+                append_status(state, f"Shell approval requested by {source}: {command_preview}")
+            approved = _request_shell_execute_approval(
+                state,
+                command=str(command or ""),
+                source=str(source),
+            )
+            if not approved:
+                if isinstance(state, dict):
+                    append_status(state, f"Shell execution denied for {source}: {command_preview}")
+                from pydantic_ai_backends.types import ExecuteResponse
+
+                return ExecuteResponse(output="Shell execution denied by user", exit_code=1, truncated=False)
+            if isinstance(state, dict):
+                append_status(state, f"Shell execution approved for {source}: {command_preview}")
+        elif isinstance(state, dict):
+            append_status(state, f"Shell execution started for {source}: {command_preview}")
+
+        return self._backend.execute(command, timeout)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._backend, name)
+
+
 def _build_history_processors() -> List[Any]:
     return [
         create_sliding_window_processor(
@@ -823,10 +982,8 @@ def _build_deep_backend() -> Any:
     deep_backend = None
     if DEEP_PERSIST_BACKEND:
         try:
-            from pydantic_ai_backends import LocalBackend
-
             deep_root = Path(DEEP_BACKEND_ROOT).expanduser().resolve()
-            deep_backend = LocalBackend(root_dir=str(deep_root), enable_execute=False)
+            deep_backend = _ControlledLocalBackend(root_dir=deep_root)
         except Exception as e:
             print(f"[deep backend] persistent LocalBackend unavailable, using StateBackend: {e}")
             deep_backend = None
@@ -1606,6 +1763,7 @@ def _new_shared_state() -> Dict[str, Any]:
         "available_sandbox_tools": [],
         "supports_dynamic_analysis": False,
         "supports_sandboxed_execution": False,
+        "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": "default",
         "validation_retry_count": 0,
         "validation_max_retries": MAX_VALIDATION_REPLAN_RETRIES,
@@ -1638,6 +1796,7 @@ _UI_SNAPSHOT: Dict[str, Any] = {
         "tool_result_cache": {},
         "status_log": "",
         "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
+        "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
         "pending_parent_input": _empty_parent_input(),
         "shared_state": _new_shared_state(),
@@ -1661,6 +1820,7 @@ def _snapshot_state_default() -> Dict[str, Any]:
         "tool_result_cache": {},
         "status_log": "",
         "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
+        "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
         "pending_parent_input": _empty_parent_input(),
         "shared_state": _new_shared_state(),
@@ -2373,6 +2533,9 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["last_user_request"] = user_text
     shared["execution_mode"] = "deep_pipeline"
     shared["allow_parent_input"] = bool(state.get("allow_parent_input"))
+    shared["shell_execution_mode"] = _normalize_shell_execution_mode(
+        state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)
+    )
     shared["validator_review_level"] = _normalize_validator_review_level(
         state.get("validator_review_level", state.get("validator_strict_mode", "default"))
     )
@@ -2623,6 +2786,16 @@ def _allow_parent_input_checkbox(state: Dict[str, Any], interactive: bool = True
     return gr.update(value=bool((state or {}).get("allow_parent_input")), interactive=interactive, visible=visible)
 
 
+def _shell_execution_mode_dropdown(state: Dict[str, Any], interactive: bool = True, visible: bool = True):
+    value = _normalize_shell_execution_mode((state or {}).get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE))
+    return gr.update(
+        choices=SHELL_EXECUTION_MODE_CHOICES,
+        value=value,
+        interactive=interactive,
+        visible=visible,
+    )
+
+
 def _validator_review_level_dropdown(state: Dict[str, Any], interactive: bool = True, visible: bool = True):
     value = _normalize_validator_review_level(
         (state or {}).get("validator_review_level", (state or {}).get("validator_strict_mode", "default"))
@@ -2719,6 +2892,7 @@ def _ui_updates(
     chat_history: Any,
     state: Dict[str, Any],
     allow_parent_input_update: Any,
+    shell_execution_mode_update: Any,
     validator_review_level_update: Any,
     parent_prompt_update: Any,
     parent_response_update: Any,
@@ -2735,6 +2909,7 @@ def _ui_updates(
         chat_history,
         state,
         allow_parent_input_update,
+        shell_execution_mode_update,
         validator_review_level_update,
         parent_prompt_update,
         parent_response_update,
@@ -2773,6 +2948,11 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
         chat_history,
         state,
         _allow_parent_input_checkbox(
+            state,
+            interactive=not active,
+            visible=True,
+        ),
+        _shell_execution_mode_dropdown(
             state,
             interactive=not active,
             visible=True,
@@ -2819,6 +2999,7 @@ def poll_active_ui_snapshot():
             gr.skip(),
             gr.skip(),
             gr.skip(),
+            gr.skip(),
             *_tool_log_skip_updates(),
             gr.skip(),
             gr.skip(),
@@ -2832,6 +3013,7 @@ def chat_turn(
     chat_history: List[Dict[str, str]],
     state: Dict[str, Any],
     allow_parent_input_value: bool,
+    shell_execution_mode_value: str,
     validator_review_level_value: str,
 ):
     user_text = (user_text or "").strip()
@@ -2849,6 +3031,7 @@ def chat_turn(
             chat_history,
             state,
             _allow_parent_input_checkbox(state, interactive=True, visible=True),
+            _shell_execution_mode_dropdown(state, interactive=True, visible=True),
             _validator_review_level_dropdown(state, interactive=True, visible=True),
             parent_prompt_update,
             parent_response_update,
@@ -2876,6 +3059,7 @@ def chat_turn(
     state.setdefault("status_log", "")
     state.setdefault("shared_state", _new_shared_state())
     state["allow_parent_input"] = bool(allow_parent_input_value)
+    state["shell_execution_mode"] = _normalize_shell_execution_mode(shell_execution_mode_value)
     state["validator_review_level"] = _normalize_validator_review_level(validator_review_level_value)
     state["pending_parent_input"] = _empty_parent_input()
     state["tool_log"] = ""
@@ -2918,6 +3102,7 @@ def chat_turn(
         chat_box["history"],
         state,
         _allow_parent_input_checkbox(state, interactive=False, visible=True),
+        _shell_execution_mode_dropdown(state, interactive=False, visible=True),
         _validator_review_level_dropdown(state, interactive=False, visible=True),
         parent_prompt_update,
         parent_response_update,
@@ -3027,6 +3212,7 @@ def chat_turn(
                 chat_box["history"],
                 state,
                 _allow_parent_input_checkbox(state, interactive=False, visible=True),
+                _shell_execution_mode_dropdown(state, interactive=False, visible=True),
                 _validator_review_level_dropdown(state, interactive=False, visible=True),
                 parent_prompt_update,
                 parent_response_update,
@@ -3056,6 +3242,7 @@ def chat_turn(
         chat_history,
         state,
         _allow_parent_input_checkbox(state, interactive=True, visible=True),
+        _shell_execution_mode_dropdown(state, interactive=True, visible=True),
         _validator_review_level_dropdown(state, interactive=True, visible=True),
         parent_prompt_update,
         parent_response_update,
@@ -3091,6 +3278,20 @@ def set_allow_parent_input(allow_parent_input_value: bool, state: Dict[str, Any]
         parent_response_update,
         parent_submit_update,
         parent_decline_update,
+    )
+
+
+def set_shell_execution_mode(shell_execution_mode_value: str, state: Dict[str, Any]):
+    state = state or _snapshot_state_default()
+    state["shell_execution_mode"] = _normalize_shell_execution_mode(shell_execution_mode_value)
+    _store_ui_snapshot(state=state)
+    return (
+        state,
+        _shell_execution_mode_dropdown(
+            state,
+            interactive=not bool(_get_ui_snapshot().get("run_active")),
+            visible=True,
+        ),
     )
 
 
@@ -3168,6 +3369,7 @@ def reset():
         "tool_result_cache": {},
         "status_log": "",
         "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
+        "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
         "pending_parent_input": _empty_parent_input(),
         "shared_state": fresh_shared_state,
@@ -3193,6 +3395,7 @@ def reset():
         [],
         fresh_state,
         _allow_parent_input_checkbox(fresh_state, interactive=True, visible=True),
+        _shell_execution_mode_dropdown(fresh_state, interactive=True, visible=True),
         _validator_review_level_dropdown(fresh_state, interactive=True, visible=True),
         parent_prompt_update,
         parent_response_update,
@@ -3232,6 +3435,12 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
             label="Allow agent follow-up questions during run",
             value=bool(initial_state.get("allow_parent_input")),
             info="Enable this if you want the agent to pause and ask for clarifications while the pipeline is running.",
+        )
+        shell_execution_mode = gr.Dropdown(
+            label="Shell command execution",
+            choices=SHELL_EXECUTION_MODE_CHOICES,
+            value=_normalize_shell_execution_mode(initial_state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)),
+            info="Control whether local shell commands are disabled, approval-gated, or fully enabled.",
         )
         validator_review_level = gr.Dropdown(
             label="Validator review profile",
@@ -3290,6 +3499,7 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
         chat,
         state,
         allow_parent_input,
+        shell_execution_mode,
         validator_review_level,
         parent_prompt_panel,
         parent_response,
@@ -3302,12 +3512,26 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
         clear,
         todo_board,
     ]
-    send.click(chat_turn, inputs=[user, chat, state, allow_parent_input, validator_review_level], outputs=ui_outputs)
-    user.submit(chat_turn, inputs=[user, chat, state, allow_parent_input, validator_review_level], outputs=ui_outputs)
+    send.click(
+        chat_turn,
+        inputs=[user, chat, state, allow_parent_input, shell_execution_mode, validator_review_level],
+        outputs=ui_outputs,
+    )
+    user.submit(
+        chat_turn,
+        inputs=[user, chat, state, allow_parent_input, shell_execution_mode, validator_review_level],
+        outputs=ui_outputs,
+    )
     allow_parent_input.change(
         set_allow_parent_input,
         inputs=[allow_parent_input, state],
         outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
+        show_progress="hidden",
+    )
+    shell_execution_mode.change(
+        set_shell_execution_mode,
+        inputs=[shell_execution_mode, state],
+        outputs=[state, shell_execution_mode],
         show_progress="hidden",
     )
     validator_review_level.change(

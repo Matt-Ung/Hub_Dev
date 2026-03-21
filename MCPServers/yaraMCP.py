@@ -28,6 +28,8 @@ _DRIVE_RE = re.compile(r"^/([A-Za-z]):/")
 _MNT_RE = re.compile(r"^/mnt/([A-Za-z])/(.*)")
 
 DEFAULT_RULES_DIR = Path(os.environ.get("YARA_RULES_DIR", str(Path.cwd() / "MCPServers" / "yara_rules")))
+RULE_NAME_RE = re.compile(r"(?mi)^\s*rule\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 mcp = FastMCP(
     "yara_mcp",
     instructions="MCP server that exposes structured YARA scanning tools.",
@@ -129,6 +131,77 @@ def _resolve_rules_path(rules_path: Optional[str]) -> str:
     raise FileNotFoundError(
         f"no YARA rules found. Provide rules_path or create rules under {DEFAULT_RULES_DIR}"
     )
+
+
+def _extract_rule_name(rule_text: str) -> str:
+    match = RULE_NAME_RE.search(rule_text or "")
+    if not match:
+        raise ValueError("could not find a YARA `rule <name>` declaration in rule_text")
+    return match.group(1)
+
+
+def _normalize_rule_filename(filename: str, rule_name: str) -> str:
+    candidate = (filename or "").strip()
+    if candidate:
+        if "/" in candidate or "\\" in candidate:
+            raise ValueError("filename must be a simple file name, not a path")
+        safe = SAFE_FILENAME_RE.sub("_", candidate)
+    else:
+        safe = SAFE_FILENAME_RE.sub("_", rule_name)
+
+    safe = safe.strip("._-") or rule_name
+    if not safe.lower().endswith((".yar", ".yara")):
+        safe += ".yar"
+    return safe
+
+
+def _build_index_contents(rules_dir: Path) -> str:
+    includes: list[str] = []
+    for pattern in ("*.yar", "*.yara"):
+        for path in sorted(rules_dir.glob(pattern)):
+            if path.name.lower() == "index.yar":
+                continue
+            includes.append(f'include "./{path.name}"')
+    return "\n".join(includes) + ("\n" if includes else "")
+
+
+def _validate_rule_text(rule_text: str, timeout_sec: int) -> dict[str, Any]:
+    if not has_command("yara"):
+        return {
+            "ok": True,
+            "validated": False,
+            "warning": "yara not found on PATH; rule text was not syntax-validated before writing",
+        }
+
+    rule_temp: Optional[str] = None
+    target_temp: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yar", delete=False) as handle:
+            handle.write(rule_text)
+            rule_temp = handle.name
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".bin", delete=False) as handle:
+            handle.write(b"")
+            target_temp = handle.name
+
+        result = run_command(["yara", "-w", rule_temp, target_temp], timeout_sec=timeout_sec)
+        ok = result.returncode == 0
+        payload = {
+            "ok": ok,
+            "validated": ok,
+            "validation_command": ["yara", "-w", rule_temp, target_temp],
+            "validation_stdout": truncate_text(result.stdout or "", max_chars=8000),
+            "validation_stderr": truncate_text(result.stderr or "", max_chars=4000),
+        }
+        if not ok:
+            payload["error"] = "YARA validation failed; rule was not written"
+        return payload
+    finally:
+        for temp_path in (rule_temp, target_temp):
+            if temp_path:
+                try:
+                    Path(temp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 def _run_yara_scan(
@@ -252,6 +325,68 @@ def yaraListRules(max_rules: int = 200) -> dict[str, Any]:
         "rules": sorted(rules),
         "count": len(rules),
     }
+
+
+@mcp.tool()
+def yaraWriteRule(
+    rule_text: str,
+    filename: str = "",
+    overwrite: bool = False,
+    validate: bool = True,
+    timeout_sec: int = 15,
+) -> dict[str, Any]:
+    """Write YARA rule text into the configured rules directory and refresh index.yar."""
+    text = (rule_text or "").strip()
+    if not text:
+        return {"ok": False, "error": "rule_text cannot be empty"}
+
+    try:
+        rule_name = _extract_rule_name(text)
+        normalized_name = _normalize_rule_filename(filename, rule_name)
+        rules_dir = DEFAULT_RULES_DIR.resolve()
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        rule_path = rules_dir / normalized_name
+        existed_before_write = rule_path.exists()
+
+        if existed_before_write and not overwrite:
+            return {
+                "ok": False,
+                "error": f"rule file already exists: {rule_path}",
+                "rule_path": str(rule_path),
+            }
+
+        validation: dict[str, Any] = {"ok": True, "validated": False}
+        if validate:
+            validation = _validate_rule_text(text, timeout_sec=timeout_sec)
+            if not validation.get("ok"):
+                return {
+                    "ok": False,
+                    "error": str(validation.get("error") or "rule validation failed"),
+                    "rule_name": rule_name,
+                    "proposed_rule_path": str(rule_path),
+                    "validation_stdout": validation.get("validation_stdout", ""),
+                    "validation_stderr": validation.get("validation_stderr", ""),
+                }
+
+        rule_path.write_text(text.rstrip() + "\n", encoding="utf-8")
+        index_path = rules_dir / "index.yar"
+        index_path.write_text(_build_index_contents(rules_dir), encoding="utf-8")
+
+        return {
+            "ok": True,
+            "rule_name": rule_name,
+            "rule_path": str(rule_path),
+            "rules_dir": str(rules_dir),
+            "index_path": str(index_path),
+            "overwrote_existing": existed_before_write and overwrite,
+            "validated": bool(validation.get("validated")),
+            "validation_warning": validation.get("warning", ""),
+            "validation_stdout": validation.get("validation_stdout", ""),
+            "validation_stderr": validation.get("validation_stderr", ""),
+        }
+    except Exception as e:
+        logger.exception("yaraWriteRule failed")
+        return {"ok": False, "error": str(e)}
 
 
 @mcp.tool()

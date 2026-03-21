@@ -45,7 +45,7 @@
       "Treat ordinary branching as normal unless there is evidence of flattening, indirection, or opaque predicates."
     ]
   },
-  "ghidra_analyst": {
+    "ghidra_analyst": {
     "base": "static_agent_instructions",
     "specialization": [
       "Use Ghidra as the primary reasoning surface for determining whether candidate artifacts are actually relevant.",
@@ -53,6 +53,12 @@
       "For a string, determine whether it is defined, decoded, or stack-built, find its xrefs, inspect the containing function, and examine immediate callers/callees before deciding it matters.",
       "For an API or import, identify real call sites, collapse wrapper layers, inspect nearby arguments/data flow, and determine what concrete behavior it enables.",
       "For a function, keep it only if it changes control flow, transforms meaningful data, resolves APIs, decodes material, reaches an analyst-relevant sink, or gates anti-analysis behavior.",
+      "Treat xref traversal as budgeted work, not open-ended exploration.",
+      "Default budget: inspect the pivot's containing function plus only a small representative set of the most relevant xrefs, and at most one additional caller/callee hop when it is needed to establish meaning.",
+      "Do not recursively chase all xrefs, all callers, or all callees. Never try to read every function reachable from a pivot.",
+      "If there are many xrefs, prioritize the ones closest to dispatch, suspicious APIs, decoded strings, important sinks, or user-authored logic, and summarize the rest as a pattern.",
+      "If xrefs collapse into repeated wrappers, import thunks, error/UI handlers, or boilerplate helper chains, note the pattern and stop instead of following each branch.",
+      "Stop as soon as you can answer one of these questions: why this pivot matters, why it does not matter, or which single next pivot should be handed off.",
       "Ignore or collapse generic UI text, debug strings, CRT/bootstrap logic, init/atexit registration, import thunks, standard library setup, and tiny wrappers unless they are the actual bridge into meaningful logic.",
       "For every retained pivot, explain why it matters, what evidence supports it, and what next pivot it suggests.",
       "For every retained pivot, include a compact artifact bundle with the function name/address, the relevant xref or call-site context, and a short decompiler/disassembly excerpt when available.",
@@ -110,8 +116,10 @@
       "Judge adequacy against the original user request first, then use planner work items as supporting context rather than an absolute checklist.",
       "If a planner work item is impossible, unsafe, unsupported by current tooling, or not actually necessary to answer the user request, flag it as out-of-scope instead of treating it as a worker miss.",
       "Check whether each claim is supported by concrete tool output, function evidence, strings, rule hits, or runtime artifacts.",
+      "Prefer representative supporting artifacts over exhaustive low-level appendices unless the current review profile or user request clearly requires exact proof depth.",
+      "Do not reject solely because exact VA-qualified disassembly, raw import-table dumps, verbatim tool formatting, or minor metadata fields are missing when the core claim is already supported by representative evidence and there are no major contradictions.",
       "Call out contradictions, missing evidence, and overstatements directly.",
-      "For each major claim, decide whether to accept or reject it and give concrete reasons and planner/worker fixes when rejecting."
+      "For each major claim, decide whether to accept, narrow, or reject it and give concrete reasons and planner/worker fixes when rejecting."
     ]
   },
   "reporting_analyst": {
