@@ -6,6 +6,7 @@ import asyncio
 import getpass
 import html
 import re
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
@@ -202,6 +203,30 @@ DEFAULT_VALIDATOR_REVIEW_LEVEL = _normalize_validator_review_level(
 DEFAULT_SHELL_EXECUTION_MODE = _normalize_shell_execution_mode(
     os.environ.get("DEFAULT_SHELL_EXECUTION_MODE", "none")
 )
+AUTOMATION_TRIGGER_ENABLED = _env_flag("AUTOMATION_TRIGGER_ENABLED", True)
+AUTOMATION_TRIGGER_HOST = (os.environ.get("AUTOMATION_TRIGGER_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+AUTOMATION_TRIGGER_PORT = int(os.environ.get("AUTOMATION_TRIGGER_PORT", "7861"))
+AUTOMATION_TRIGGER_PATH = (
+    (os.environ.get("AUTOMATION_TRIGGER_PATH") or "/automation/ghidra-load").strip() or "/automation/ghidra-load"
+)
+AUTOMATION_TRIGGER_HEALTH_PATH = (
+    (os.environ.get("AUTOMATION_TRIGGER_HEALTH_PATH") or "/automation/health").strip() or "/automation/health"
+)
+AUTOMATION_DEFAULT_PROMPT_TEMPLATE = os.environ.get(
+    "AUTOMATION_DEFAULT_PROMPT_TEMPLATE",
+    (
+        "A binary has just finished auto-analysis in Ghidra.\n"
+        "Use the currently opened sample and produce an initial technical triage focused on program purpose, "
+        "key control-flow pivots, concrete capabilities, relevant strings/configuration, obfuscation or "
+        "anti-analysis indicators, and the highest-value next pivots.\n"
+        "Program name: {program_name}\n"
+        "Executable path: {executable_path}\n"
+        "Executable SHA256: {executable_sha256}\n"
+        "Executable MD5: {executable_md5}\n"
+        "Ghidra project path: {ghidra_project_path}\n"
+        "{path_handoff_line}"
+    ),
+)
 PATH_HANDOFF_LINE_PREFIX = "Validated sample path:"
 SAMPLE_PATH_SUFFIXES = ("exe", "dll", "sys", "scr", "ocx", "cpl", "bin", "elf", "so", "dylib")
 SAMPLE_PATH_WINDOWS_RE = re.compile(
@@ -220,6 +245,9 @@ SAMPLE_PATH_QUOTED_RE = re.compile(
     + r"))[\"']"
 )
 GHIDRA_EXECUTABLE_PATH_RE = re.compile(r"(?im)^Executable Path:\s*(.+?)\s*$")
+GHIDRA_EXECUTABLE_MD5_RE = re.compile(r"(?im)^Executable MD5:\s*([0-9a-fA-F]{32})\s*$")
+GHIDRA_EXECUTABLE_SHA256_RE = re.compile(r"(?im)^Executable SHA256:\s*([0-9a-fA-F]{64})\s*$")
+GHIDRA_IMAGE_BASE_RE = re.compile(r"(?im)^Image Base:\s*(.+?)\s*$")
 
 WORKFLOW_CONFIG = load_workflow_config(
     Path(__file__).resolve().parent / "workflow_config",
@@ -666,6 +694,10 @@ def build_stage_prompt(
 
     validated_sample_path = (shared.get("validated_sample_path") or "").strip()
     validated_sample_path_source = (shared.get("validated_sample_path_source") or "").strip()
+    validated_sample_md5 = (shared.get("validated_sample_md5") or "").strip()
+    validated_sample_sha256 = (shared.get("validated_sample_sha256") or "").strip()
+    validated_sample_image_base = (shared.get("validated_sample_image_base") or "").strip()
+    validated_sample_metadata_source = (shared.get("validated_sample_metadata_source") or "").strip()
     sections.extend(["", "Shared execution context:"])
     if validated_sample_path:
         sections.extend(
@@ -675,6 +707,24 @@ def build_stage_prompt(
                 "- Path rule: use this exact path verbatim in every tool call that requires the sample target.",
             ]
         )
+        metadata_lines: List[str] = []
+        if validated_sample_md5:
+            metadata_lines.append(f"- validated_sample_md5: {validated_sample_md5}")
+        if validated_sample_sha256:
+            metadata_lines.append(f"- validated_sample_sha256: {validated_sample_sha256}")
+        if validated_sample_image_base:
+            metadata_lines.append(f"- validated_sample_image_base: {validated_sample_image_base}")
+        if metadata_lines:
+            sections.extend(metadata_lines)
+            sections.append(
+                f"- validated_sample_metadata_source: {validated_sample_metadata_source or validated_sample_path_source or 'unknown'}"
+            )
+            sections.append(
+                "- Metadata trust rule: if these hashes or image-base values came from Ghidra `get_program_info` "
+                "or preflight shared context, treat them as trusted canonical sample metadata for this run. Do not "
+                "create a separate work item only to recompute them unless the user explicitly requested independent "
+                "verification or conflicting evidence appears."
+            )
     else:
         sections.append("- No validated sample path is currently available in shared context.")
         if stage_kind != "reporter":
@@ -727,25 +777,31 @@ def build_stage_prompt(
         if validator_review_level == "easy":
             sections.append("- Validator mode rule: easy mode is enabled. Assume reviewers mainly care that the output is relevant, understandable, and technically substantial-sounding; prioritize clear high-level relevance over exhaustive artifact collection.")
             sections.append("- Easy evidence threshold: for major claims, representative artifacts are enough. Do not spend time collecting exact VA-qualified disassembly for every API call, full raw import dumps, or minor metadata fields unless the user explicitly asked for that depth or the claim would otherwise be weak.")
+            sections.append("- Easy tool-output rule: do not include full raw capa/FLOSS output in the main worker bundle. Extract only the relevant matched rules, strings, offsets, and short excerpts that support the current claim.")
         elif validator_review_level == "strict":
             sections.append("- Validator mode rule: strict mode is enabled. Assume validators will expect stronger raw artifacts, exact excerpts, explicit proof for key claims, and minimal reliance on inference.")
         elif validator_review_level == "intermediate":
             sections.append("- Validator mode rule: intermediate mode is enabled. Expect methodical review with representative artifacts for major claims, but not exhaustive appendices for every minor point.")
+            sections.append("- Intermediate tool-output rule: keep only the relevant capa/FLOSS excerpts in the main worker bundle; use full raw output only when a major disputed claim cannot be resolved otherwise.")
         else:
             sections.append("- Validator mode rule: default mode is enabled. Prioritize adequately answering the user request with concrete evidence without over-collecting exhaustive raw appendices unless needed.")
             sections.append("- Default evidence threshold: use representative decompiler/disassembly/import/string artifacts for the most important claims. Exact instruction-address bundles, full raw appendices, and minor forensic metadata are optional unless they are central to the disputed point.")
+            sections.append("- Default tool-output rule: include only the relevant capa/FLOSS matches, strings, and short supporting excerpts in the worker output. Avoid pasting full raw tool output unless the user explicitly asked for it or a key claim cannot be checked without it.")
     elif stage_kind == "validators":
         if validator_review_level == "easy":
             sections.append("- Validator mode rule: easy mode is enabled. Review like a business manager: accept output that is relevant to the request, plausible, and communicates technical complexity clearly, without demanding deep artifact-level proof.")
             sections.append("- Easy acceptance threshold: do not reject solely because exact VA-qualified disassembly snippets, raw import-table dumps, verbatim tool formatting, or minor metadata fields are missing if representative evidence already supports the main claims and there are no major contradictions.")
+            sections.append("- Easy fix-request rule: do not ask for full raw capa/FLOSS output. If a fix is needed, request only the smallest relevant excerpt or metadata needed to resolve the doubt.")
         elif validator_review_level == "strict":
             sections.append("- Validator mode rule: strict mode is enabled. Review like a seasoned professional malware analyst: require strong exact proof for key claims before signoff.")
         elif validator_review_level == "intermediate":
             sections.append("- Validator mode rule: intermediate mode is enabled. Review like a CS professor: require methodical reasoning and representative artifacts for major claims, while allowing minor non-critical gaps.")
             sections.append("- Intermediate acceptance threshold: require enough concrete excerpts to re-check the key claims, but do not demand exhaustive per-call-site disassembly or every minor metadata field when the answer is otherwise well-supported.")
+            sections.append("- Intermediate fix-request rule: ask for targeted capa/FLOSS excerpts or addresses when needed, but avoid requesting full raw tool dumps unless the dispute genuinely turns on the omitted context.")
         else:
             sections.append("- Validator mode rule: default mode is enabled. Review like a technically strong CS background reader: focus on whether the user request is adequately answered with enough evidence, not exhaustive proof for every sub-claim.")
             sections.append("- Default acceptance threshold: prefer representative evidence over exhaustive appendices. Do not reject solely for missing exact addresses, verbatim formatting, or minor metadata unless those omissions materially undermine a major claim.")
+            sections.append("- Default fix-request rule: prefer targeted additional excerpts over full raw capa/FLOSS output. Only request full raw tool output when a central claim cannot be evaluated from the representative excerpts already provided.")
 
     planned_work_items = shared.get("planned_work_items") or []
     if planned_work_items and stage_kind != "planner":
@@ -826,6 +882,9 @@ _ACTIVE_PIPELINE_STAGE: ContextVar[Optional[str]] = ContextVar(
 )
 _TOOL_RESULT_CACHE_INFLIGHT_LOCK = Lock()
 _TOOL_RESULT_CACHE_INFLIGHT: Dict[str, asyncio.Task[Any]] = {}
+_AUTOMATION_TRIGGER_SERVER: ThreadingHTTPServer | None = None
+_AUTOMATION_TRIGGER_LOCK = Lock()
+_AUTOMATION_TRIGGER_PENDING = False
 _PARENT_INPUT_LOCK = Lock()
 _PARENT_INPUT_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
@@ -1346,9 +1405,19 @@ def _sanitize_user_facing_output(text: str) -> str:
             continue
         if "validated_sample_path_source:" in lowered:
             continue
+        if "validated_sample_md5:" in lowered:
+            continue
+        if "validated_sample_sha256:" in lowered:
+            continue
+        if "validated_sample_image_base:" in lowered:
+            continue
+        if "validated_sample_metadata_source:" in lowered:
+            continue
         if "no validated sample path is currently available in shared context" in lowered:
             continue
         if lowered.startswith("- path rule:") or lowered.startswith("path rule:"):
+            continue
+        if lowered.startswith("- metadata trust rule:") or lowered.startswith("metadata trust rule:"):
             continue
         if lowered.startswith("- if you discover the real sample path"):
             continue
@@ -1694,6 +1763,44 @@ def _extract_ghidra_executable_path(text: str) -> Optional[str]:
     return _validate_existing_sample_path(match.group(1))
 
 
+def _normalize_digest(value: str, expected_len: int) -> str:
+    digest = (value or "").strip().lower()
+    if len(digest) != expected_len:
+        return ""
+    return digest if all(ch in "0123456789abcdef" for ch in digest) else ""
+
+
+def _extract_ghidra_program_metadata(text: str) -> Dict[str, str]:
+    content = text or ""
+    metadata: Dict[str, str] = {}
+    path = _extract_ghidra_executable_path(content)
+    if path:
+        metadata["path"] = path
+    md5_match = GHIDRA_EXECUTABLE_MD5_RE.search(content)
+    if md5_match:
+        md5 = _normalize_digest(md5_match.group(1), 32)
+        if md5:
+            metadata["md5"] = md5
+    sha256_match = GHIDRA_EXECUTABLE_SHA256_RE.search(content)
+    if sha256_match:
+        sha256 = _normalize_digest(sha256_match.group(1), 64)
+        if sha256:
+            metadata["sha256"] = sha256
+    image_base_match = GHIDRA_IMAGE_BASE_RE.search(content)
+    if image_base_match:
+        image_base = image_base_match.group(1).strip()
+        if image_base:
+            metadata["image_base"] = image_base
+    return metadata
+
+
+def _clear_validated_sample_metadata(shared: Dict[str, Any]) -> None:
+    shared["validated_sample_md5"] = ""
+    shared["validated_sample_sha256"] = ""
+    shared["validated_sample_image_base"] = ""
+    shared["validated_sample_metadata_source"] = ""
+
+
 def update_validated_sample_path(
     state: Dict[str, Any],
     text: str,
@@ -1712,6 +1819,8 @@ def update_validated_sample_path(
     if not validated:
         return previous
 
+    if previous and previous != validated:
+        _clear_validated_sample_metadata(shared)
     shared["validated_sample_path"] = validated
     shared["validated_sample_path_source"] = source
     if previous != validated:
@@ -1731,16 +1840,34 @@ def update_validated_sample_path_from_messages(
             if not isinstance(part, ToolReturnPart):
                 continue
             text = _coerce_tool_return_text(part.content)
-            validated = _extract_ghidra_executable_path(text)
-            if not validated:
+            metadata = _extract_ghidra_program_metadata(text)
+            validated = metadata.get("path")
+            if not metadata:
                 continue
             shared = state.setdefault("shared_state", _new_shared_state())
             previous = shared.get("validated_sample_path")
-            shared["validated_sample_path"] = validated
-            shared["validated_sample_path_source"] = source
-            if previous != validated:
-                append_status(state, f"Validated sample path set from {source}: {validated}")
-            return validated
+            if validated:
+                if previous and previous != validated:
+                    _clear_validated_sample_metadata(shared)
+                shared["validated_sample_path"] = validated
+                shared["validated_sample_path_source"] = source
+                if previous != validated:
+                    append_status(state, f"Validated sample path set from {source}: {validated}")
+            metadata_changed = False
+            if metadata.get("md5") and shared.get("validated_sample_md5") != metadata["md5"]:
+                shared["validated_sample_md5"] = metadata["md5"]
+                metadata_changed = True
+            if metadata.get("sha256") and shared.get("validated_sample_sha256") != metadata["sha256"]:
+                shared["validated_sample_sha256"] = metadata["sha256"]
+                metadata_changed = True
+            if metadata.get("image_base") and shared.get("validated_sample_image_base") != metadata["image_base"]:
+                shared["validated_sample_image_base"] = metadata["image_base"]
+                metadata_changed = True
+            if metadata_changed:
+                shared["validated_sample_metadata_source"] = source
+                append_status(state, f"Trusted sample metadata set from {source}.")
+            if validated:
+                return validated
     return state.setdefault("shared_state", _new_shared_state()).get("validated_sample_path")
 
 
@@ -1754,6 +1881,10 @@ def _new_shared_state() -> Dict[str, Any]:
         "total_task_runs": 0,
         "validated_sample_path": "",
         "validated_sample_path_source": "",
+        "validated_sample_md5": "",
+        "validated_sample_sha256": "",
+        "validated_sample_image_base": "",
+        "validated_sample_metadata_source": "",
         "planned_work_items": [],
         "planned_work_items_parse_error": "",
         "pipeline_stage_outputs": [],
@@ -1861,6 +1992,183 @@ def _store_ui_snapshot(
 def _get_ui_snapshot() -> Dict[str, Any]:
     with _UI_SNAPSHOT_LOCK:
         return dict(_UI_SNAPSHOT)
+
+
+def _automation_run_busy() -> bool:
+    snapshot = _get_ui_snapshot()
+    return bool(snapshot.get("run_active"))
+
+
+def _automation_prompt_from_payload(payload: Dict[str, Any]) -> str:
+    user_text = str(payload.get("user_text") or payload.get("prompt") or "").strip()
+    if user_text:
+        return user_text
+
+    program_name = str(payload.get("program_name") or payload.get("name") or "").strip() or "unknown"
+    executable_path = str(payload.get("executable_path") or payload.get("path") or "").strip()
+    executable_sha256 = str(payload.get("executable_sha256") or payload.get("sha256") or "").strip() or "unknown"
+    executable_md5 = str(payload.get("executable_md5") or payload.get("md5") or "").strip() or "unknown"
+    ghidra_project_path = str(payload.get("ghidra_project_path") or payload.get("project_path") or "").strip() or "unknown"
+    path_handoff_line = f"{PATH_HANDOFF_LINE_PREFIX} {executable_path}" if executable_path else ""
+    return AUTOMATION_DEFAULT_PROMPT_TEMPLATE.format(
+        program_name=program_name,
+        executable_path=executable_path or "unknown",
+        executable_sha256=executable_sha256,
+        executable_md5=executable_md5,
+        ghidra_project_path=ghidra_project_path,
+        path_handoff_line=path_handoff_line,
+    ).strip()
+
+
+def _run_automation_trigger(user_text: str, source: str) -> None:
+    global _AUTOMATION_TRIGGER_PENDING
+    try:
+        snapshot = _get_ui_snapshot()
+        state = snapshot.get("state")
+        if not isinstance(state, dict):
+            state = _snapshot_state_default()
+        chat_history = snapshot.get("chat_history") or []
+        if not isinstance(chat_history, list):
+            chat_history = []
+
+        shell_execution_mode = _normalize_shell_execution_mode(
+            state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)
+        )
+        validator_review_level = _normalize_validator_review_level(
+            state.get("validator_review_level", DEFAULT_VALIDATOR_REVIEW_LEVEL)
+        )
+        append_status(state, f"Automation trigger accepted from {source}")
+
+        for _ in chat_turn(
+            user_text,
+            list(chat_history),
+            state,
+            False,
+            shell_execution_mode,
+            validator_review_level,
+        ):
+            pass
+    except Exception as e:
+        print(f"[automation trigger error] {type(e).__name__}: {e}", flush=True)
+    finally:
+        with _AUTOMATION_TRIGGER_LOCK:
+            _AUTOMATION_TRIGGER_PENDING = False
+
+
+class _AutomationTriggerHandler(BaseHTTPRequestHandler):
+    server_version = "MultiAgentWFAutomation/1.0"
+
+    def log_message(self, format: str, *args: Any) -> None:
+        print(f"[automation http] {self.address_string()} - {format % args}", flush=True)
+
+    def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        if self.path.rstrip("/") != AUTOMATION_TRIGGER_HEALTH_PATH.rstrip("/"):
+            self._send_json(404, {"ok": False, "error": "not found"})
+            return
+
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "busy": _automation_run_busy() or _AUTOMATION_TRIGGER_PENDING,
+                "trigger_path": AUTOMATION_TRIGGER_PATH,
+            },
+        )
+
+    def do_POST(self) -> None:
+        if self.path.rstrip("/") != AUTOMATION_TRIGGER_PATH.rstrip("/"):
+            self._send_json(404, {"ok": False, "error": "not found"})
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            content_length = 0
+        raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except Exception as e:
+            self._send_json(400, {"ok": False, "error": f"invalid JSON body: {type(e).__name__}: {e}"})
+            return
+
+        if not isinstance(payload, dict):
+            self._send_json(400, {"ok": False, "error": "JSON body must decode to an object"})
+            return
+
+        source = str(payload.get("source") or "external").strip() or "external"
+        user_text = _automation_prompt_from_payload(payload)
+        if not user_text:
+            self._send_json(400, {"ok": False, "error": "trigger prompt resolved to an empty request"})
+            return
+
+        global _AUTOMATION_TRIGGER_PENDING
+        with _AUTOMATION_TRIGGER_LOCK:
+            if _AUTOMATION_TRIGGER_PENDING or _automation_run_busy():
+                self._send_json(
+                    409,
+                    {
+                        "ok": False,
+                        "accepted": False,
+                        "error": "workflow is already running",
+                    },
+                )
+                return
+            _AUTOMATION_TRIGGER_PENDING = True
+
+        worker = Thread(
+            target=_run_automation_trigger,
+            args=(user_text, source),
+            daemon=True,
+            name=f"automation-trigger-{uuid4().hex[:8]}",
+        )
+        worker.start()
+        self._send_json(
+            202,
+            {
+                "ok": True,
+                "accepted": True,
+                "source": source,
+            },
+        )
+
+
+def _start_automation_trigger_server() -> None:
+    global _AUTOMATION_TRIGGER_SERVER
+    if not AUTOMATION_TRIGGER_ENABLED:
+        print("[automation] trigger server disabled", flush=True)
+        return
+    if _AUTOMATION_TRIGGER_SERVER is not None:
+        return
+
+    try:
+        server = ThreadingHTTPServer((AUTOMATION_TRIGGER_HOST, AUTOMATION_TRIGGER_PORT), _AutomationTriggerHandler)
+    except OSError as e:
+        print(
+            f"[automation] failed to bind trigger server on {AUTOMATION_TRIGGER_HOST}:{AUTOMATION_TRIGGER_PORT}: {e}",
+            flush=True,
+        )
+        return
+
+    server.daemon_threads = True
+    _AUTOMATION_TRIGGER_SERVER = server
+    Thread(
+        target=server.serve_forever,
+        daemon=True,
+        name="multi-agent-automation-trigger",
+    ).start()
+    print(
+        f"[automation] trigger server listening on http://{AUTOMATION_TRIGGER_HOST}:{AUTOMATION_TRIGGER_PORT}{AUTOMATION_TRIGGER_PATH}",
+        flush=True,
+    )
 
 def _stage_progress_from_pipeline_definition() -> List[Dict[str, Any]]:
     progress: List[Dict[str, Any]] = []
@@ -2191,6 +2499,62 @@ def _format_validation_feedback(gate: Dict[str, Any], raw_output: str, parse_err
     if raw_output and not summary and not reasons and not fixes:
         lines.extend(["Raw validator output:", raw_output.strip()])
     return "\n".join(lines).strip()
+
+
+def _latest_pipeline_output_by_kind(shared: Dict[str, Any], stage_kind: str) -> str:
+    outputs = shared.get("pipeline_stage_outputs") or []
+    for entry in reversed(outputs):
+        if str(entry.get("stage_kind") or "").strip() != stage_kind:
+            continue
+        return str(entry.get("output_text") or "").strip()
+    return ""
+
+
+def _build_validation_failure_fallback_output(
+    state: Dict[str, Any],
+    gate: Dict[str, Any],
+    raw_validator_output: str,
+    parse_error: str = "",
+) -> str:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    worker_output = _latest_pipeline_output_by_kind(shared, "workers")
+    planner_output = _latest_pipeline_output_by_kind(shared, "planner")
+    preflight_output = _latest_pipeline_output_by_kind(shared, "preflight")
+    validation_feedback = _format_validation_feedback(gate, raw_validator_output, parse_error)
+
+    sections: List[str] = [
+        "Validation did not pass after the configured retry budget.",
+        "Returning the best available analysis gathered so far, followed by validator caveats.",
+    ]
+
+    accepted_findings = _normalize_string_list(gate.get("accepted_findings"))
+    if accepted_findings:
+        sections.extend(
+            [
+                "",
+                "Still-usable findings:",
+                "\n".join(f"- {item}" for item in accepted_findings),
+            ]
+        )
+
+    best_available = worker_output or planner_output or preflight_output
+    if best_available:
+        label = "Latest worker analysis" if worker_output else "Latest collected analysis"
+        sections.extend(["", f"{label}:", _sanitize_user_facing_output(best_available)])
+
+    sections.extend(["", "Validator caveats:", validation_feedback])
+
+    out_of_scope = _normalize_string_list(gate.get("out_of_scope_work_items"))
+    if out_of_scope:
+        sections.extend(
+            [
+                "",
+                "Out-of-scope or non-blocking items:",
+                "\n".join(f"- {item}" for item in out_of_scope),
+            ]
+        )
+
+    return "\n".join(part for part in sections if part is not None).strip()
 
 
 def _reset_pipeline_stages_to_pending(state: Dict[str, Any], stage_names: List[str]) -> None:
@@ -2754,10 +3118,15 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                     state,
                     (
                         "Validation gate rejected after max replans; "
-                        "stopping before reporter stage"
+                        "returning provisional output before reporter stage"
                     ),
                 )
-                final_output = _sanitize_user_facing_output(feedback)
+                final_output = _build_validation_failure_fallback_output(
+                    state,
+                    gate,
+                    stage_output,
+                    gate_error,
+                )
                 shared["run_count"] = int(shared.get("run_count", 0)) + 1
                 shared["final_output"] = final_output
                 append_status(state, f"Deep pipeline stopped in {time.perf_counter() - t0:.1f}s")
@@ -3568,4 +3937,5 @@ with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
     )
 
 demo.queue()
+_start_automation_trigger_server()
 demo.launch()

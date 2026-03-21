@@ -1,7 +1,9 @@
 package com.MattUng;
 
-import ghidra.framework.plugintool.Plugin;
+import ghidra.app.plugin.ProgramPlugin;
 import ghidra.framework.plugintool.PluginTool;
+import ghidra.app.plugin.core.analysis.AnalysisWorker;
+import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.GlobalNamespace;
 import ghidra.program.model.listing.*;
@@ -51,10 +53,13 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import javax.swing.SwingUtilities;
+import java.io.InputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -67,12 +72,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
     shortDescription = "HTTP server plugin",
     description = "Starts an embedded HTTP server to expose program data. Port configurable via Tool Options."
 )
-public class GhidraMCPPlugin extends Plugin {
+public class GhidraMCPPlugin extends ProgramPlugin {
 
     private HttpServer server;
     private static final String OPTION_CATEGORY_NAME = "GhidraMCP HTTP Server";
     private static final String PORT_OPTION_NAME = "Server Port";
     private static final int DEFAULT_PORT = 8080;
+    private static final String AUTOMATION_OPTION_CATEGORY_NAME = "GhidraMCP Automation";
+    private static final String AUTO_WORKFLOW_ENABLED_OPTION_NAME =
+        "Trigger Multi-Agent workflow after auto-analysis";
+    private static final String AUTO_WORKFLOW_URL_OPTION_NAME = "Multi-Agent trigger URL";
+    private static final String DEFAULT_AUTO_WORKFLOW_URL = "http://127.0.0.1:7861/automation/ghidra-load";
+    private final Set<String> autoWorkflowTriggeredKeys = Collections.synchronizedSet(new HashSet<>());
 
     private static final class GraphRootSelection {
         final List<Function> roots;
@@ -97,6 +108,20 @@ public class GhidraMCPPlugin extends Plugin {
             "The network port number the embedded HTTP server will listen on. " +
             "Requires Ghidra restart or plugin reload to take effect after changing.");
 
+        Options automationOptions = tool.getOptions(AUTOMATION_OPTION_CATEGORY_NAME);
+        automationOptions.registerOption(
+            AUTO_WORKFLOW_ENABLED_OPTION_NAME,
+            false,
+            null,
+            "If enabled, queue a trigger to the local Multi-Agent-WF automation endpoint after the active program's auto-analysis settles."
+        );
+        automationOptions.registerOption(
+            AUTO_WORKFLOW_URL_OPTION_NAME,
+            DEFAULT_AUTO_WORKFLOW_URL,
+            null,
+            "HTTP endpoint exposed by Multi-Agent-WF.py for automated Ghidra load triggers."
+        );
+
         try {
             startServer();
         }
@@ -104,6 +129,187 @@ public class GhidraMCPPlugin extends Plugin {
             Msg.error(this, "Failed to start HTTP server", e);
         }
         Msg.info(this, "GhidraMCPPlugin loaded!");
+    }
+
+    @Override
+    protected void programActivated(Program program) {
+        super.programActivated(program);
+        maybeQueueAutoWorkflowTrigger(program);
+    }
+
+    @Override
+    protected void programClosed(Program program) {
+        super.programClosed(program);
+        autoWorkflowTriggeredKeys.remove(getProgramAutomationKey(program));
+    }
+
+    private void maybeQueueAutoWorkflowTrigger(Program program) {
+        if (program == null || !isAutoWorkflowEnabled()) {
+            return;
+        }
+
+        String key = getProgramAutomationKey(program);
+        if (!autoWorkflowTriggeredKeys.add(key)) {
+            return;
+        }
+
+        Thread worker = new Thread(() -> waitForAutoAnalysisAndTrigger(program, key),
+            "GhidraMCP-AutoWorkflow-" + Integer.toHexString(System.identityHashCode(program)));
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private boolean isAutoWorkflowEnabled() {
+        Options automationOptions = tool.getOptions(AUTOMATION_OPTION_CATEGORY_NAME);
+        return automationOptions.getBoolean(AUTO_WORKFLOW_ENABLED_OPTION_NAME, false);
+    }
+
+    private String getAutoWorkflowUrl() {
+        Options automationOptions = tool.getOptions(AUTOMATION_OPTION_CATEGORY_NAME);
+        return trimToNull(automationOptions.getString(AUTO_WORKFLOW_URL_OPTION_NAME, DEFAULT_AUTO_WORKFLOW_URL));
+    }
+
+    private String getProgramAutomationKey(Program program) {
+        if (program == null) {
+            return "";
+        }
+
+        String domainPath = "";
+        try {
+            if (program.getDomainFile() != null) {
+                domainPath = safe(program.getDomainFile().getPathname());
+            }
+        } catch (Exception ignored) {}
+
+        String executablePath = "";
+        try {
+            executablePath = safe(program.getExecutablePath());
+        } catch (Exception ignored) {}
+
+        String sha256 = "";
+        try {
+            sha256 = safe(program.getExecutableSHA256());
+        } catch (Exception ignored) {}
+
+        String base = !domainPath.isEmpty() ? domainPath : (!executablePath.isEmpty() ? executablePath : safe(program.getName()));
+        if (base.isEmpty()) {
+            base = Integer.toHexString(System.identityHashCode(program));
+        }
+        return base + "|" + sha256;
+    }
+
+    private void waitForAutoAnalysisAndTrigger(Program program, String key) {
+        try {
+            AutoAnalysisManager manager = AutoAnalysisManager.getAnalysisManager(program);
+            boolean scheduled = manager.scheduleWorker(new AnalysisWorker() {
+                @Override
+                public String getWorkerName() {
+                    return "WFTrigger";
+                }
+
+                @Override
+                public boolean analysisWorkerCallback(Program analyzedProgram, Object workerContext, TaskMonitor monitor)
+                        throws Exception {
+                    postAutoWorkflowTrigger(analyzedProgram, key);
+                    return true;
+                }
+            }, null, true, TaskMonitor.DUMMY);
+
+            if (!scheduled) {
+                autoWorkflowTriggeredKeys.remove(key);
+                Msg.warn(this, "Auto workflow trigger was not scheduled for program " + safe(program.getName()));
+            }
+        } catch (Exception e) {
+            autoWorkflowTriggeredKeys.remove(key);
+            Msg.error(this, "Failed to queue auto workflow trigger for " + safe(program.getName()), e);
+        }
+    }
+
+    private void postAutoWorkflowTrigger(Program program, String key) {
+        String targetUrl = getAutoWorkflowUrl();
+        if (program == null || targetUrl == null) {
+            autoWorkflowTriggeredKeys.remove(key);
+            return;
+        }
+
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(targetUrl);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setConnectTimeout(1500);
+            connection.setReadTimeout(5000);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+
+            byte[] body = buildAutoWorkflowPayload(program).getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(body.length);
+            try (OutputStream os = connection.getOutputStream()) {
+                os.write(body);
+            }
+
+            int status = connection.getResponseCode();
+            String response = readHttpResponseBody(connection);
+            if (status >= 200 && status < 300) {
+                Msg.info(this, "Auto-triggered Multi-Agent workflow for " + safe(program.getName()));
+                return;
+            }
+            if (status == 409) {
+                autoWorkflowTriggeredKeys.remove(key);
+                Msg.info(this, "Multi-Agent workflow is already running; skipped auto-trigger for " + safe(program.getName()));
+                return;
+            }
+            autoWorkflowTriggeredKeys.remove(key);
+            Msg.warn(
+                this,
+                "Multi-Agent workflow trigger failed for " + safe(program.getName()) +
+                " with HTTP " + status + (response.isEmpty() ? "" : (": " + response))
+            );
+        } catch (IOException e) {
+            autoWorkflowTriggeredKeys.remove(key);
+            Msg.info(
+                this,
+                "Multi-Agent-WF trigger endpoint not reachable at " + targetUrl +
+                "; skipping auto-trigger for " + safe(program.getName())
+            );
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private String buildAutoWorkflowPayload(Program program) {
+        String domainPath = "";
+        try {
+            if (program.getDomainFile() != null) {
+                domainPath = safe(program.getDomainFile().getPathname());
+            }
+        } catch (Exception ignored) {}
+
+        return "{"
+            + "\"source\":\"ghidra_auto_analysis\","
+            + "\"program_name\":" + jsonStr(safe(program.getName())) + ","
+            + "\"ghidra_project_path\":" + jsonStr(domainPath) + ","
+            + "\"executable_path\":" + jsonStr(safe(program.getExecutablePath())) + ","
+            + "\"executable_md5\":" + jsonStr(safe(program.getExecutableMD5())) + ","
+            + "\"executable_sha256\":" + jsonStr(safe(program.getExecutableSHA256()))
+            + "}";
+    }
+
+    private String readHttpResponseBody(HttpURLConnection connection) throws IOException {
+        InputStream stream = null;
+        try {
+            stream = connection.getResponseCode() >= 400 ? connection.getErrorStream() : connection.getInputStream();
+        } catch (IOException ignored) {
+            stream = connection.getErrorStream();
+        }
+        if (stream == null) {
+            return "";
+        }
+        try (InputStream in = stream) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
+        }
     }
 
     private void startServer() throws IOException {
