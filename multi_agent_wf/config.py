@@ -252,6 +252,7 @@ def _build_runtime_settings(
         "MAX_TOOL_LOG_CHARS": int(env.get("MAX_TOOL_LOG_CHARS", "120000")),
         "MAX_TOOL_RESULT_CACHE_ENTRIES": int(env.get("MAX_TOOL_RESULT_CACHE_ENTRIES", "64")),
         "MAX_VALIDATION_REPLAN_RETRIES": int(env.get("MAX_VALIDATION_REPLAN_RETRIES", "2")),
+        "MAX_PARALLEL_WORKERS": max(1, int(env.get("MAX_PARALLEL_WORKERS", "2"))),
         "TOOL_RESULT_CACHE_SERVER_MARKERS": tuple(
             marker.strip().lower()
             for marker in str(
@@ -262,6 +263,11 @@ def _build_runtime_settings(
             ).split(",")
             if marker.strip()
         ),
+        "SERIAL_MCP_SERVER_MARKERS": tuple(
+            marker.strip().lower()
+            for marker in str(env.get("SERIAL_MCP_SERVER_MARKERS", "ghidra")).split(",")
+            if marker.strip()
+        ),
         "DEEP_ENABLE_MEMORY": _env_flag_from(env, "DEEP_ENABLE_MEMORY", True),
         "DEEP_MEMORY_DIR": env.get("DEEP_MEMORY_DIR", ".deep/memory"),
         "DEEP_PERSIST_BACKEND": _env_flag_from(env, "DEEP_PERSIST_BACKEND", True),
@@ -269,6 +275,7 @@ def _build_runtime_settings(
         "DEEP_ENABLE_SKILLS": _env_flag_from(env, "DEEP_ENABLE_SKILLS", True),
         "DEEP_INCLUDE_BUNDLED_SKILLS": _env_flag_from(env, "DEEP_INCLUDE_BUNDLED_SKILLS", True),
         "DEEP_SKILL_DIRS": _parse_path_list(str(env.get("DEEP_SKILL_DIRS", ""))),
+        "HOST_PARALLEL_WORKER_EXECUTION": _env_flag_from(env, "HOST_PARALLEL_WORKER_EXECUTION", True),
         "DEEP_CONTEXT_MAX_TOKENS": int(env.get("DEEP_CONTEXT_MAX_TOKENS", "18000")),
         "MAX_STATUS_LOG_LINES": int(env.get("MAX_STATUS_LOG_LINES", "400")),
         "STATUS_LOG_STDOUT": _env_flag_from(env, "STATUS_LOG_STDOUT", True),

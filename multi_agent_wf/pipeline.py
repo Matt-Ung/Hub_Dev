@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import html
 import json
 import re
@@ -11,6 +12,8 @@ from .config import (
     DEEP_AGENT_ARCHITECTURE_NAME,
     DEEP_AGENT_PIPELINE,
     DEFAULT_SHELL_EXECUTION_MODE,
+    HOST_PARALLEL_WORKER_EXECUTION,
+    MAX_PARALLEL_WORKERS,
     MAX_VALIDATION_REPLAN_RETRIES,
     PLANNER_WORK_ITEMS_END,
     PLANNER_WORK_ITEMS_START,
@@ -24,7 +27,9 @@ from .runtime import (
     _ACTIVE_PIPELINE_STAGE,
     _ACTIVE_PIPELINE_STATE,
     _LIVE_TOOL_LOG_STATE,
+    build_host_worker_assignment_executor,
     build_stage_prompt,
+    expand_architecture_slots,
     expand_architecture_names,
 )
 from .shared_state import (
@@ -748,6 +753,281 @@ def render_pipeline_todo_board(state: Dict[str, Any]) -> str:
     )
 
 
+def _plan_host_worker_assignments(
+    planned_work_items: List[Dict[str, Any]],
+    architecture: List[Tuple[str, int]],
+) -> List[Dict[str, Any]]:
+    slots = expand_architecture_slots(architecture)
+    if not slots:
+        return []
+
+    slot_loads = {slot["slot_name"]: 0 for slot in slots}
+    assignments: List[Dict[str, Any]] = []
+    for index, work_item in enumerate(planned_work_items, start=1):
+        recommended = {
+            str(role).strip()
+            for role in (work_item.get("recommended_roles") or [])
+            if str(role).strip()
+        }
+        candidate_slots = [
+            slot
+            for slot in slots
+            if slot["archetype_name"] in recommended or slot["slot_name"] in recommended
+        ] or list(slots)
+        chosen_slot = min(
+            candidate_slots,
+            key=lambda slot: (
+                slot_loads.get(slot["slot_name"], 0),
+                0 if (slot["archetype_name"] in recommended or slot["slot_name"] in recommended) else 1,
+                slot["slot_name"],
+            ),
+        )
+        slot_loads[chosen_slot["slot_name"]] = slot_loads.get(chosen_slot["slot_name"], 0) + 1
+        assignments.append(
+            {
+                "index": index,
+                "work_item": work_item,
+                "slot_name": chosen_slot["slot_name"],
+                "archetype_name": chosen_slot["archetype_name"],
+            }
+        )
+    return assignments
+
+
+def _build_host_worker_prompt(
+    *,
+    slot_name: str,
+    archetype_name: str,
+    work_item: Dict[str, Any],
+    user_text: str,
+    prior_stage_outputs: Dict[str, str],
+    shared_state: Optional[Dict[str, Any]],
+) -> str:
+    narrowed_shared = dict(shared_state or {})
+    narrowed_shared["planned_work_items"] = []
+    trimmed_prior_outputs: Dict[str, str] = {}
+    preflight_output = str(prior_stage_outputs.get("preflight") or "").strip()
+    if preflight_output:
+        trimmed_prior_outputs["preflight"] = preflight_output
+    base_prompt = build_stage_prompt(
+        stage_name=f"workers.{slot_name}",
+        stage_kind="workers",
+        user_text=user_text,
+        prior_stage_outputs=trimmed_prior_outputs,
+        architecture=[(archetype_name, 1)],
+        shared_state=narrowed_shared,
+    )
+
+    work_item_id = str(work_item.get("id") or "").strip() or "work_item"
+    objective = str(work_item.get("objective") or "").strip() or "No objective provided."
+    evidence_targets = work_item.get("evidence_targets") or []
+    evidence_lines = "\n".join(f"- {target}" for target in evidence_targets) if evidence_targets else "- none specified"
+
+    return (
+        f"{base_prompt}\n\n"
+        "Assigned work item to execute now:\n"
+        f"- work_item_id: {work_item_id}\n"
+        f"- assigned_role: {archetype_name}\n"
+        f"- assigned_slot: {slot_name}\n"
+        f"- objective: {objective}\n"
+        "- Execute this one work item only. Do not broaden into unrelated work items.\n"
+        "- If you notice a dependency on another work item, note it briefly but continue focusing on the assigned objective.\n"
+        "- Return an evidence-backed result for this work item.\n"
+        "Evidence targets for this assignment:\n"
+        f"{evidence_lines}"
+    ).strip()
+
+
+def _run_host_worker_assignment(
+    runtime: MultiAgentRuntime,
+    state: Dict[str, Any],
+    user_text: str,
+    prior_stage_outputs: Dict[str, str],
+    assignment: Dict[str, Any],
+    *,
+    stage_model: str,
+) -> Dict[str, Any]:
+    slot_name = str(assignment["slot_name"])
+    archetype_name = str(assignment["archetype_name"])
+    work_item = dict(assignment["work_item"])
+    work_item_id = str(work_item.get("id") or f"work_item_{assignment['index']}")
+    role_key = f"host_worker::{slot_name}::{work_item_id}"
+    prompt = _build_host_worker_prompt(
+        slot_name=slot_name,
+        archetype_name=archetype_name,
+        work_item=work_item,
+        user_text=user_text,
+        prior_stage_outputs=prior_stage_outputs,
+        shared_state=state.get("shared_state"),
+    )
+
+    append_status(
+        state,
+        f"Worker assignment started: {work_item_id} -> {slot_name} ({archetype_name})",
+    )
+    worker_t0 = time.perf_counter()
+    old_history = get_role_history(state, role_key)
+
+    live_tool_log_token = _LIVE_TOOL_LOG_STATE.set(state)
+    active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
+    active_stage_token = _ACTIVE_PIPELINE_STAGE.set("workers")
+    try:
+        agent, deps = build_host_worker_assignment_executor(
+            runtime,
+            stage_name="workers",
+            slot_name=slot_name,
+            archetype_name=archetype_name,
+            stage_model=stage_model,
+        )
+        deps.ask_user = _make_parent_input_callback(state, f"workers/{slot_name}/{work_item_id}")
+        result = agent.run_sync(
+            prompt,
+            message_history=old_history if old_history else None,
+            deps=deps,
+        )
+        new_history = result.all_messages()
+        output_text = str(result.output)
+        duration_sec = time.perf_counter() - worker_t0
+        return {
+            "index": int(assignment["index"]),
+            "work_item_id": work_item_id,
+            "slot_name": slot_name,
+            "archetype_name": archetype_name,
+            "role_key": role_key,
+            "history": new_history,
+            "output_text": output_text,
+            "duration_sec": duration_sec,
+            "status": "ok",
+        }
+    except Exception as e:
+        duration_sec = time.perf_counter() - worker_t0
+        return {
+            "index": int(assignment["index"]),
+            "work_item_id": work_item_id,
+            "slot_name": slot_name,
+            "archetype_name": archetype_name,
+            "role_key": role_key,
+            "history": [],
+            "output_text": "",
+            "duration_sec": duration_sec,
+            "status": "failed",
+            "error": f"{type(e).__name__}: {e}",
+        }
+    finally:
+        _ACTIVE_PIPELINE_STAGE.reset(active_stage_token)
+        _ACTIVE_PIPELINE_STATE.reset(active_state_token)
+        _LIVE_TOOL_LOG_STATE.reset(live_tool_log_token)
+
+
+def _merge_host_worker_results(results: List[Dict[str, Any]], concurrency_limit: int) -> str:
+    ok_count = sum(1 for item in results if item.get("status") == "ok")
+    failed_count = sum(1 for item in results if item.get("status") != "ok")
+    sections: List[str] = [
+        "Host-managed worker execution summary",
+        f"- concurrency_limit: {concurrency_limit}",
+        f"- completed_assignments: {ok_count}",
+        f"- failed_assignments: {failed_count}",
+    ]
+    for item in results:
+        work_item_id = str(item.get("work_item_id") or "work_item")
+        slot_name = str(item.get("slot_name") or "worker")
+        archetype_name = str(item.get("archetype_name") or "worker")
+        status = str(item.get("status") or "unknown")
+        duration = float(item.get("duration_sec") or 0.0)
+        sections.extend(
+            [
+                "",
+                f"## {work_item_id}",
+                f"- assigned_role: {archetype_name}",
+                f"- assigned_slot: {slot_name}",
+                f"- status: {status}",
+                f"- duration_sec: {duration:.1f}",
+            ]
+        )
+        if status == "ok":
+            sections.append(str(item.get("output_text") or "").strip())
+        else:
+            sections.append(f"Worker error: {item.get('error')}")
+    return "\n".join(section for section in sections if section is not None).strip()
+
+
+def _run_host_parallel_worker_stage(
+    runtime: MultiAgentRuntime,
+    stage: Any,
+    user_text: str,
+    prior_stage_outputs: Dict[str, str],
+    state: Dict[str, Any],
+) -> str:
+    planned_work_items = list(((state.get("shared_state") or {}).get("planned_work_items") or []))
+    assignments = _plan_host_worker_assignments(planned_work_items, stage.architecture)
+    if not assignments:
+        raise RuntimeError("No host-manageable worker assignments were produced from planned work items.")
+
+    concurrency_limit = max(1, min(MAX_PARALLEL_WORKERS, len(assignments)))
+    append_status(
+        state,
+        (
+            f"Worker stage using host-managed parallel execution "
+            f"({len(assignments)} assignments, max_parallel={concurrency_limit})"
+        ),
+    )
+
+    results_by_index: Dict[int, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=concurrency_limit, thread_name_prefix="host-worker") as executor:
+        future_map = {
+            executor.submit(
+                _run_host_worker_assignment,
+                runtime,
+                state,
+                user_text,
+                prior_stage_outputs,
+                assignment,
+                stage_model=str(stage.model or ""),
+            ): assignment
+            for assignment in assignments
+        }
+        for future in as_completed(future_map):
+            assignment = future_map[future]
+            result = future.result()
+            results_by_index[int(result["index"])] = result
+            history = list(result.get("history") or [])
+            set_role_history(state, str(result.get("role_key") or ""), history)
+            append_tool_log_delta(state, "workers", [], history)
+            update_validated_sample_path_from_messages(
+                state,
+                history,
+                f"tool_return:workers:{result.get('slot_name')}",
+            )
+            if result.get("status") == "ok":
+                update_validated_sample_path(
+                    state,
+                    str(result.get("output_text") or ""),
+                    f"stage:workers:{result.get('slot_name')}",
+                    explicit_only=True,
+                )
+                append_status(
+                    state,
+                    (
+                        f"Worker assignment finished: {result.get('work_item_id')} -> "
+                        f"{result.get('slot_name')} in {float(result.get('duration_sec') or 0.0):.1f}s"
+                    ),
+                )
+            else:
+                append_status(
+                    state,
+                    (
+                        f"Worker assignment failed: {result.get('work_item_id')} -> "
+                        f"{result.get('slot_name')} after {float(result.get('duration_sec') or 0.0):.1f}s "
+                        f"({result.get('error')})"
+                    ),
+                )
+
+    ordered_results = [results_by_index[idx] for idx in sorted(results_by_index)]
+    if not any(item.get("status") == "ok" for item in ordered_results):
+        raise RuntimeError("All host-managed worker assignments failed.")
+    return _merge_host_worker_results(ordered_results, concurrency_limit)
+
+
 def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> str:
     append_status(
         state,
@@ -792,6 +1072,8 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["validation_last_decision"] = ""
     shared["validation_replan_feedback"] = ""
     shared["validation_history"] = []
+    shared["host_parallel_worker_execution"] = HOST_PARALLEL_WORKER_EXECUTION
+    shared["max_parallel_workers"] = MAX_PARALLEL_WORKERS
     state["pending_parent_input"] = _empty_parent_input()
     _seed_pipeline_stage_progress(
         state,
@@ -842,11 +1124,25 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
         active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage.name)
         try:
-            result = stage.agent.run_sync(
-                stage_prompt,
-                message_history=old_history if old_history else None,
-                deps=stage.deps,
-            )
+            if (
+                stage.stage_kind == "workers"
+                and HOST_PARALLEL_WORKER_EXECUTION
+                and (state.get("shared_state") or {}).get("planned_work_items")
+            ):
+                stage_output = _run_host_parallel_worker_stage(
+                    runtime,
+                    stage,
+                    user_text,
+                    prior_stage_outputs,
+                    state,
+                )
+                result = None
+            else:
+                result = stage.agent.run_sync(
+                    stage_prompt,
+                    message_history=old_history if old_history else None,
+                    deps=stage.deps,
+                )
         except Exception as e:
             _set_pipeline_stage_status(
                 state,
@@ -866,16 +1162,16 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
             _ACTIVE_PIPELINE_STATE.reset(active_state_token)
             _LIVE_TOOL_LOG_STATE.reset(live_tool_log_token)
 
-        new_history = result.all_messages()
-        set_role_history(state, role_key, new_history)
-        append_tool_log_delta(state, stage.name, old_history, new_history)
-        update_validated_sample_path_from_messages(
-            state,
-            new_history[len(old_history) if old_history else 0:],
-            f"tool_return:{stage.name}",
-        )
-
-        stage_output = str(result.output)
+        if result is not None:
+            new_history = result.all_messages()
+            set_role_history(state, role_key, new_history)
+            append_tool_log_delta(state, stage.name, old_history, new_history)
+            update_validated_sample_path_from_messages(
+                state,
+                new_history[len(old_history) if old_history else 0:],
+                f"tool_return:{stage.name}",
+            )
+            stage_output = str(result.output)
         if stage.stage_kind == "planner":
             update_planned_work_items_from_planner_output(state, stage_output)
         if stage.stage_kind != "reporter":

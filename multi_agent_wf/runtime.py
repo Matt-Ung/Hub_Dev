@@ -39,6 +39,7 @@ from .config import (
     PIPELINE_STAGE_MANAGER_PROMPTS,
     PIPELINE_STAGE_OUTPUT_CONTRACTS,
     REPO_ROOT,
+    SERIAL_MCP_SERVER_MARKERS,
     SHELL_EXECUTION_MODE_LABELS,
     TOOL_RESULT_CACHE_SERVER_MARKERS,
     VALIDATOR_REVIEW_LEVEL_LABELS,
@@ -146,6 +147,11 @@ def _server_allows_result_cache(server_id: str) -> bool:
     return bool(sid) and any(marker in sid for marker in TOOL_RESULT_CACHE_SERVER_MARKERS)
 
 
+def _server_requires_serial_calls(server_id: str) -> bool:
+    sid = (server_id or "").lower()
+    return bool(sid) and any(marker in sid for marker in SERIAL_MCP_SERVER_MARKERS)
+
+
 def _tool_result_cache_key(server_id: str, tool_name: str, tool_args: Dict[str, Any]) -> str:
     payload = {
         "server_id": server_id,
@@ -214,15 +220,26 @@ def _append_tool_cache_note(
 
 def _make_cached_tool_call_processor(server_id: str):
     cacheable = _server_allows_result_cache(server_id)
+    requires_serial_calls = _server_requires_serial_calls(server_id)
 
     async def _processor(ctx: Any, direct_call: Any, tool_name: str, tool_args: Dict[str, Any]) -> Any:
+        async def _direct_call_once() -> Any:
+            if not requires_serial_calls:
+                return await direct_call(tool_name, tool_args)
+            lock = _SERIAL_MCP_CALL_LOCKS.setdefault(server_id, Lock())
+            await asyncio.to_thread(lock.acquire)
+            try:
+                return await direct_call(tool_name, tool_args)
+            finally:
+                lock.release()
+
         if not cacheable:
-            return await direct_call(tool_name, tool_args)
+            return await _direct_call_once()
 
         state = _ACTIVE_PIPELINE_STATE.get()
         stage_name = _ACTIVE_PIPELINE_STAGE.get() or "pipeline"
         if state is None:
-            return await direct_call(tool_name, tool_args)
+            return await _direct_call_once()
 
         cache = state.setdefault("tool_result_cache", {})
         cache_key = _tool_result_cache_key(server_id, tool_name, tool_args)
@@ -236,7 +253,7 @@ def _make_cached_tool_call_processor(server_id: str):
         with _TOOL_RESULT_CACHE_INFLIGHT_LOCK:
             task = _TOOL_RESULT_CACHE_INFLIGHT.get(cache_key)
             if task is None:
-                task = asyncio.create_task(direct_call(tool_name, tool_args))
+                task = asyncio.create_task(_direct_call_once())
                 _TOOL_RESULT_CACHE_INFLIGHT[cache_key] = task
                 owner = True
 
@@ -308,6 +325,8 @@ def build_subagent_architecture(
     architecture: List[Tuple[str, int]],
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
+    *,
+    stage_model: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     subagents: List[Dict[str, Any]] = []
 
@@ -320,6 +339,7 @@ def build_subagent_architecture(
             raise RuntimeError(f"Deep-agent archetype quantity must be >= 1 for {archetype_name!r}")
 
         spec = AGENT_ARCHETYPE_SPECS[archetype_name]
+        resolved_model = str(spec.get("model") or stage_model or OPENAI_MODEL_ID)
         toolsets = _toolsets_for_domain(spec["tool_domain"], static_tools, dynamic_tools)
         if spec["tool_domain"] != "none" and not toolsets:
             raise RuntimeError(
@@ -343,6 +363,7 @@ def build_subagent_architecture(
                     "name": instance_name,
                     "description": spec["description"],
                     "instructions": instructions,
+                    "model": resolved_model,
                     "toolsets": toolsets,
                     "preferred_mode": spec["preferred_mode"],
                     "typical_complexity": spec["typical_complexity"],
@@ -381,13 +402,20 @@ def build_stage_manager_instructions(stage_name: str, stage_kind: str, architect
             "- If this stage discovers or confirms the real sample path, include a line exactly like:\n"
             f"  {PATH_HANDOFF_LINE_PREFIX} <exact existing path>\n"
         )
+    if stage_kind == "workers":
+        delegation_mode_lines = (
+            "- Independent work items may be delegated in async parallel batches when they do not share prerequisites or state.\n"
+            "- Keep parallel fan-out bounded and join results before final worker-stage synthesis.\n"
+        )
+    else:
+        delegation_mode_lines = "- Prefer normal synchronous delegation for stage work unless there is a strong reason to launch background tasks.\n"
     return (
         f"{base}\n\n"
         "Current stage configuration:\n"
         f"- stage_name: {stage_name}\n"
         f"- stage_kind: {stage_kind}\n"
         f"- delegated roles: {delegated_roles}\n"
-        "- Prefer normal synchronous delegation for stage work unless there is a strong reason to launch background tasks.\n"
+        f"{delegation_mode_lines}"
         "- Do not use async task-management tools (`check_task`, `wait_tasks`, `list_active_tasks`, `answer_subagent`) unless you"
         " first launched a background task with `task(..., mode=\"async\")` in this same stage.\n"
         "- `answer_subagent` is only for replying to a subagent question after `check_task` shows that exact returned task ID is"
@@ -580,6 +608,7 @@ def build_stage_prompt(
 class PipelineStageRuntime:
     name: str
     stage_kind: str
+    model: str
     architecture: List[Tuple[str, int]]
     subagent_names: List[str]
     agent: Agent
@@ -593,6 +622,10 @@ class MultiAgentRuntime:
     static_tool_ids: List[str]
     dynamic_tool_ids: List[str]
     sandbox_tool_ids: List[str]
+    static_tools: List[MCPServerStdio]
+    dynamic_tools: List[MCPServerStdio]
+    skill_directories: List[str]
+    deep_backend: Any
 
 
 _RUNTIME: Optional[MultiAgentRuntime] = None
@@ -606,6 +639,7 @@ _ACTIVE_PIPELINE_STAGE: ContextVar[Optional[str]] = ContextVar(
 )
 _TOOL_RESULT_CACHE_INFLIGHT_LOCK = Lock()
 _TOOL_RESULT_CACHE_INFLIGHT: Dict[str, asyncio.Task[Any]] = {}
+_SERIAL_MCP_CALL_LOCKS: Dict[str, Lock] = {}
 _AUTOMATION_TRIGGER_SERVER: ThreadingHTTPServer | None = None
 _AUTOMATION_TRIGGER_LOCK = Lock()
 _AUTOMATION_TRIGGER_PENDING = False
@@ -771,6 +805,96 @@ def _build_deep_backend() -> Any:
     return deep_backend
 
 
+def expand_architecture_slots(architecture: List[Tuple[str, int]]) -> List[Dict[str, str]]:
+    slots: List[Dict[str, str]] = []
+    for archetype_name, quantity in architecture:
+        if quantity < 1:
+            continue
+        if quantity == 1:
+            slots.append({"slot_name": archetype_name, "archetype_name": archetype_name})
+            continue
+        for idx in range(quantity):
+            slots.append(
+                {
+                    "slot_name": f"{archetype_name}_{idx + 1}",
+                    "archetype_name": archetype_name,
+                }
+            )
+    return slots
+
+
+def build_host_worker_assignment_executor(
+    runtime: MultiAgentRuntime,
+    *,
+    stage_name: str,
+    slot_name: str,
+    archetype_name: str,
+    stage_model: Optional[str] = None,
+) -> Tuple[Agent, Any]:
+    if archetype_name not in AGENT_ARCHETYPE_SPECS:
+        raise RuntimeError(f"Unknown deep-agent archetype: {archetype_name!r}")
+    if archetype_name not in AGENT_ARCHETYPE_PROMPTS:
+        raise RuntimeError(f"Missing prompt definition for deep-agent archetype: {archetype_name!r}")
+
+    spec = AGENT_ARCHETYPE_SPECS[archetype_name]
+    resolved_model = str(spec.get("model") or stage_model or OPENAI_MODEL_ID)
+    toolsets = _toolsets_for_domain(spec["tool_domain"], runtime.static_tools, runtime.dynamic_tools)
+    if spec["tool_domain"] != "none" and not toolsets:
+        raise RuntimeError(
+            f"Host-parallel worker requested {archetype_name!r}, but no {spec['tool_domain']} MCP toolsets are configured."
+        )
+
+    instructions = AGENT_ARCHETYPE_PROMPTS[archetype_name].rstrip()
+    instructions += (
+        "\n\nExecution note:\n"
+        "- You are a host-scheduled worker executing one assigned work item.\n"
+        "- Focus on the assigned work item only. Do not broaden into unrelated plan items.\n"
+        "- Parallel peer workers may be running on other independent work items at the same time.\n"
+        "- Reuse shared context and existing canonical sample metadata instead of re-deriving it unless conflicting evidence appears.\n"
+        "- Return a strong evidence bundle for this one work item.\n"
+    )
+    if slot_name != archetype_name:
+        instructions += (
+            "\nCollaboration note:\n"
+            f"- You are `{slot_name}` for the `{archetype_name}` role.\n"
+            "- Work independently on your assigned item and do not assume peer workers saw the same evidence.\n"
+        )
+
+    memory_root = Path(DEEP_MEMORY_DIR).expanduser()
+    if runtime.deep_backend is not None:
+        memory_dir = str(memory_root / "workers" / slot_name)
+        if memory_dir.startswith("/"):
+            memory_dir = memory_dir.lstrip("/")
+    else:
+        if not memory_root.is_absolute():
+            memory_root = REPO_ROOT / memory_root
+        memory_dir = str((memory_root / "workers" / slot_name).resolve())
+
+    agent = create_deep_agent(
+        model=resolved_model,
+        instructions=instructions,
+        include_todo=False,
+        include_filesystem=False,
+        include_subagents=False,
+        include_general_purpose_subagent=False,
+        include_plan=False,
+        include_skills=bool(runtime.skill_directories),
+        skill_directories=runtime.skill_directories or None,
+        include_memory=DEEP_ENABLE_MEMORY,
+        memory_dir=memory_dir,
+        include_history_archive=False,
+        context_manager=True,
+        context_manager_max_tokens=DEEP_CONTEXT_MAX_TOKENS,
+        history_processors=_build_history_processors(),
+        retries=DEEP_AGENT_RETRIES,
+        cost_tracking=False,
+        toolsets=toolsets,
+        event_stream_handler=make_live_tool_event_handler(stage_name, slot_name),
+    )
+    deps = create_default_deps(backend=runtime.deep_backend) if runtime.deep_backend is not None else create_default_deps()
+    return agent, deps
+
+
 def build_stage_runtime(
     stage_definition: Dict[str, Any],
     static_tools: List[MCPServerStdio],
@@ -781,8 +905,15 @@ def build_stage_runtime(
     stage_name = str(stage_definition["name"])
     stage_kind = str(stage_definition["stage_kind"])
     architecture = list(stage_definition.get("architecture") or [])
+    stage_model = str(stage_definition.get("model") or OPENAI_MODEL_ID)
     subagents = (
-        build_subagent_architecture(stage_name, architecture, static_tools, dynamic_tools)
+        build_subagent_architecture(
+            stage_name,
+            architecture,
+            static_tools,
+            dynamic_tools,
+            stage_model=stage_model,
+        )
         if architecture
         else []
     )
@@ -800,7 +931,7 @@ def build_stage_runtime(
 
     try:
         stage_agent = create_deep_agent(
-            model=OPENAI_MODEL_ID,
+            model=stage_model,
             instructions=build_stage_manager_instructions(stage_name, stage_kind, architecture),
             subagents=subagents or None,
             include_todo=True,
@@ -824,6 +955,7 @@ def build_stage_runtime(
         return PipelineStageRuntime(
             name=stage_name,
             stage_kind=stage_kind,
+            model=stage_model,
             architecture=architecture,
             subagent_names=expand_architecture_names(architecture),
             agent=stage_agent,
@@ -838,13 +970,14 @@ def build_stage_runtime(
 def build_deep_runtime_components(
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
-) -> List[PipelineStageRuntime]:
+) -> Tuple[List[PipelineStageRuntime], List[str], Any]:
     skill_directories = _build_skill_directories()
     deep_backend = _build_deep_backend()
-    return [
+    stages = [
         build_stage_runtime(stage_definition, static_tools, dynamic_tools, skill_directories, deep_backend)
         for stage_definition in DEEP_AGENT_PIPELINE
     ]
+    return stages, skill_directories, deep_backend
 
 
 def get_runtime_sync() -> MultiAgentRuntime:
@@ -859,7 +992,7 @@ def get_runtime_sync() -> MultiAgentRuntime:
     print("Static tools:", [s.id for s in static_tools])
     print("Dynamic tools:", [s.id for s in dynamic_tools])
 
-    stages = build_deep_runtime_components(static_tools, dynamic_tools)
+    stages, skill_directories, deep_backend = build_deep_runtime_components(static_tools, dynamic_tools)
     print("Deep-agent mode: required")
     print(
         "Deep config:",
@@ -887,5 +1020,9 @@ def get_runtime_sync() -> MultiAgentRuntime:
         static_tool_ids=[s.id or "" for s in static_tools],
         dynamic_tool_ids=[s.id or "" for s in dynamic_tools],
         sandbox_tool_ids=_sandbox_tool_ids(dynamic_tools),
+        static_tools=static_tools,
+        dynamic_tools=dynamic_tools,
+        skill_directories=skill_directories,
+        deep_backend=deep_backend,
     )
     return _RUNTIME

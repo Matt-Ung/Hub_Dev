@@ -4,25 +4,29 @@
       "name": "preflight",
       "stage_kind": "preflight",
       "architecture": [["preflight_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
     },
     {
       "name": "planner",
       "stage_kind": "planner",
       "architecture": [],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "workers",
       "stage_kind": "workers",
       "architecture": [],
-      "use_worker_architecture": true
+      "use_worker_architecture": true,
+      "model": "openai:gpt-4o-mini"
     },
     {
       "name": "reporter",
       "stage_kind": "reporter",
       "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
     }
   ],
   "preflight_planner_workers_validators_reporter": [
@@ -30,31 +34,36 @@
       "name": "preflight",
       "stage_kind": "preflight",
       "architecture": [["preflight_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
     },
     {
       "name": "planner",
       "stage_kind": "planner",
       "architecture": [],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "workers",
       "stage_kind": "workers",
       "architecture": [],
-      "use_worker_architecture": true
+      "use_worker_architecture": true,
+      "model": "openai:gpt-4o-mini"
     },
     {
       "name": "validators",
       "stage_kind": "validators",
       "architecture": [["evidence_validator", 2]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "reporter",
       "stage_kind": "reporter",
       "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
     }
   ],
   "preflight_planner_workers_dual_validators_reporter": [
@@ -62,31 +71,36 @@
       "name": "preflight",
       "stage_kind": "preflight",
       "architecture": [["preflight_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
     },
     {
       "name": "planner",
       "stage_kind": "planner",
       "architecture": [],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "workers",
       "stage_kind": "workers",
       "architecture": [],
-      "use_worker_architecture": true
+      "use_worker_architecture": true,
+      "model": "openai:gpt-4o-mini"
     },
     {
       "name": "validators",
       "stage_kind": "validators",
       "architecture": [["evidence_validator", 1], ["triage_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "reporter",
       "stage_kind": "reporter",
       "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
     }
   ],
   "planner_workers_reporter": [
@@ -94,19 +108,22 @@
       "name": "planner",
       "stage_kind": "planner",
       "architecture": [],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "workers",
       "stage_kind": "workers",
       "architecture": [],
-      "use_worker_architecture": true
+      "use_worker_architecture": true,
+      "model": "openai:gpt-4o-mini"
     },
     {
       "name": "reporter",
       "stage_kind": "reporter",
       "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
     }
   ],
   "planner_workers_validators_reporter": [
@@ -114,25 +131,29 @@
       "name": "planner",
       "stage_kind": "planner",
       "architecture": [],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "workers",
       "stage_kind": "workers",
       "architecture": [],
-      "use_worker_architecture": true
+      "use_worker_architecture": true,
+      "model": "openai:gpt-4o-mini"
     },
     {
       "name": "validators",
       "stage_kind": "validators",
       "architecture": [["evidence_validator", 2]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "reporter",
       "stage_kind": "reporter",
       "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
     }
   ],
   "planner_workers_dual_validators_reporter": [
@@ -140,25 +161,29 @@
       "name": "planner",
       "stage_kind": "planner",
       "architecture": [],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "workers",
       "stage_kind": "workers",
       "architecture": [],
-      "use_worker_architecture": true
+      "use_worker_architecture": true,
+      "model": "openai:gpt-4o-mini"
     },
     {
       "name": "validators",
       "stage_kind": "validators",
       "architecture": [["evidence_validator", 1], ["triage_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-5-mini"
     },
     {
       "name": "reporter",
       "stage_kind": "reporter",
       "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
     }
   ]
 }

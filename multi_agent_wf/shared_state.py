@@ -46,6 +46,7 @@ _LIVE_TOOL_LOG_STATE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     "live_tool_log_state",
     default=None,
 )
+_STATE_MUTATION_LOCK = Lock()
 _PARENT_INPUT_LOCK = Lock()
 _PARENT_INPUT_REQUESTS: Dict[str, Dict[str, Any]] = {}
 
@@ -179,33 +180,34 @@ def _append_tool_log_entries(
     if not entries:
         return
 
-    seen = state.setdefault("_tool_log_seen_keys", {})
-    sections = state.setdefault("tool_log_sections", {})
-    rendered_entries: List[str] = []
+    with _STATE_MUTATION_LOCK:
+        seen = state.setdefault("_tool_log_seen_keys", {})
+        sections = state.setdefault("tool_log_sections", {})
+        rendered_entries: List[str] = []
 
-    for entry in entries:
-        dedupe_key = _tool_log_dedupe_key(entry)
-        if seen.get(dedupe_key):
-            continue
-        seen[dedupe_key] = True
-        rendered_entries.append(json.dumps(_json_safe(entry), indent=2, ensure_ascii=False))
+        for entry in entries:
+            dedupe_key = _tool_log_dedupe_key(entry)
+            if seen.get(dedupe_key):
+                continue
+            seen[dedupe_key] = True
+            rendered_entries.append(json.dumps(_json_safe(entry), indent=2, ensure_ascii=False))
 
-    if not rendered_entries:
-        return
+        if not rendered_entries:
+            return
 
-    addition = "\n\n".join(rendered_entries)
+        addition = "\n\n".join(rendered_entries)
 
-    prev = str(state.get("tool_log") or "").strip()
-    merged = f"{prev}\n\n{addition}".strip() if prev else addition
-    if len(merged) > MAX_TOOL_LOG_CHARS:
-        merged = merged[-MAX_TOOL_LOG_CHARS:]
-    state["tool_log"] = merged
+        prev = str(state.get("tool_log") or "").strip()
+        merged = f"{prev}\n\n{addition}".strip() if prev else addition
+        if len(merged) > MAX_TOOL_LOG_CHARS:
+            merged = merged[-MAX_TOOL_LOG_CHARS:]
+        state["tool_log"] = merged
 
-    prev_section = str(sections.get(stage_name) or "").strip()
-    merged_section = f"{prev_section}\n\n{addition}".strip() if prev_section else addition
-    if len(merged_section) > MAX_TOOL_LOG_CHARS:
-        merged_section = merged_section[-MAX_TOOL_LOG_CHARS:]
-    sections[stage_name] = merged_section
+        prev_section = str(sections.get(stage_name) or "").strip()
+        merged_section = f"{prev_section}\n\n{addition}".strip() if prev_section else addition
+        if len(merged_section) > MAX_TOOL_LOG_CHARS:
+            merged_section = merged_section[-MAX_TOOL_LOG_CHARS:]
+        sections[stage_name] = merged_section
     _store_ui_snapshot(state=state)
 
 
@@ -330,11 +332,12 @@ def _shorten(text: str, max_chars: int = 120) -> str:
 
 def append_status(state: Dict[str, Any], message: str) -> None:
     line = f"[{_status_ts()}] {message}"
-    lines = (state.get("status_log") or "").splitlines()
-    lines.append(line)
-    if len(lines) > MAX_STATUS_LOG_LINES:
-        lines = lines[-MAX_STATUS_LOG_LINES:]
-    state["status_log"] = "\n".join(lines)
+    with _STATE_MUTATION_LOCK:
+        lines = (state.get("status_log") or "").splitlines()
+        lines.append(line)
+        if len(lines) > MAX_STATUS_LOG_LINES:
+            lines = lines[-MAX_STATUS_LOG_LINES:]
+        state["status_log"] = "\n".join(lines)
     _store_ui_snapshot(state=state)
     if STATUS_LOG_STDOUT:
         print(line, flush=True)

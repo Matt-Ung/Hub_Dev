@@ -79,13 +79,19 @@ def _normalize_pipeline_stage(raw_stage: Any, label: str) -> Dict[str, Any]:
 
     architecture = _normalize_architecture(raw_stage.get("architecture", []), f"{label}.architecture")
     use_worker_architecture = bool(raw_stage.get("use_worker_architecture", False))
+    model = raw_stage.get("model")
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        raise RuntimeError(f"{label}.model must be a non-empty string when provided")
 
-    return {
+    normalized = {
         "name": name,
         "stage_kind": stage_kind,
         "architecture": architecture,
         "use_worker_architecture": use_worker_architecture,
     }
+    if isinstance(model, str) and model.strip():
+        normalized["model"] = model.strip()
+    return normalized
 
 
 def _load_pipeline_presets(config_dir: Path) -> Dict[str, List[Dict[str, Any]]]:
@@ -113,6 +119,11 @@ def _load_agent_archetype_specs(config_dir: Path) -> Dict[str, Dict[str, str]]:
             if not isinstance(raw_field, str) or not raw_field.strip():
                 raise RuntimeError(f"agent_archetype_specs.json::{name}.{key} must be a non-empty string")
             normalized[key] = raw_field
+        raw_model = entry.get("model")
+        if raw_model is not None:
+            if not isinstance(raw_model, str) or not raw_model.strip():
+                raise RuntimeError(f"agent_archetype_specs.json::{name}.model must be a non-empty string")
+            normalized["model"] = raw_model.strip()
         specs[name] = normalized
     return specs
 
