@@ -100,6 +100,8 @@ mvnw.cmd
 # =========================
 # Project-specific generated/vendor content
 # =========================
+
+.deep_backend/
 In_Progress/*
 MCPServers/capa-rules
 MCPServers/capa-sigs

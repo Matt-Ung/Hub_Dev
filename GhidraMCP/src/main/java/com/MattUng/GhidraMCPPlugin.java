@@ -119,7 +119,7 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             AUTO_WORKFLOW_URL_OPTION_NAME,
             DEFAULT_AUTO_WORKFLOW_URL,
             null,
-            "HTTP endpoint exposed by Multi-Agent-WF.py for automated Ghidra load triggers."
+            "HTTP endpoint exposed by multi_agent_wf/main.py for automated Ghidra load triggers."
         );
 
         try {
