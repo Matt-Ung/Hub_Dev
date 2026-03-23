@@ -1,7 +1,9 @@
 package com.MattUng;
 
-import ghidra.framework.plugintool.Plugin;
+import ghidra.app.plugin.ProgramPlugin;
 import ghidra.framework.plugintool.PluginTool;
+import ghidra.app.plugin.core.analysis.AnalysisWorker;
+import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.GlobalNamespace;
 import ghidra.program.model.listing.*;
@@ -51,10 +53,13 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import javax.swing.SwingUtilities;
+import java.io.InputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -67,12 +72,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
     shortDescription = "HTTP server plugin",
     description = "Starts an embedded HTTP server to expose program data. Port configurable via Tool Options."
 )
-public class GhidraMCPPlugin extends Plugin {
+public class GhidraMCPPlugin extends ProgramPlugin {
 
     private HttpServer server;
     private static final String OPTION_CATEGORY_NAME = "GhidraMCP HTTP Server";
     private static final String PORT_OPTION_NAME = "Server Port";
     private static final int DEFAULT_PORT = 8080;
+    private static final String AUTOMATION_OPTION_CATEGORY_NAME = "GhidraMCP Automation";
+    private static final String AUTO_WORKFLOW_ENABLED_OPTION_NAME =
+        "Trigger Multi-Agent workflow after auto-analysis";
+    private static final String AUTO_WORKFLOW_URL_OPTION_NAME = "Multi-Agent trigger URL";
+    private static final String DEFAULT_AUTO_WORKFLOW_URL = "http://127.0.0.1:7861/automation/ghidra-load";
+    private final Set<String> autoWorkflowTriggeredKeys = Collections.synchronizedSet(new HashSet<>());
+
+    private static final class GraphRootSelection {
+        final List<Function> roots;
+        final String strategy;
+        final String error;
+
+        GraphRootSelection(List<Function> roots, String strategy, String error) {
+            this.roots = roots;
+            this.strategy = strategy;
+            this.error = error;
+        }
+    }
 
     public GhidraMCPPlugin(PluginTool tool) {
         super(tool);
@@ -85,6 +108,20 @@ public class GhidraMCPPlugin extends Plugin {
             "The network port number the embedded HTTP server will listen on. " +
             "Requires Ghidra restart or plugin reload to take effect after changing.");
 
+        Options automationOptions = tool.getOptions(AUTOMATION_OPTION_CATEGORY_NAME);
+        automationOptions.registerOption(
+            AUTO_WORKFLOW_ENABLED_OPTION_NAME,
+            false,
+            null,
+            "If enabled, queue a trigger to the local Multi-Agent-WF automation endpoint after the active program's auto-analysis settles."
+        );
+        automationOptions.registerOption(
+            AUTO_WORKFLOW_URL_OPTION_NAME,
+            DEFAULT_AUTO_WORKFLOW_URL,
+            null,
+            "HTTP endpoint exposed by multi_agent_wf/main.py for automated Ghidra load triggers."
+        );
+
         try {
             startServer();
         }
@@ -92,6 +129,187 @@ public class GhidraMCPPlugin extends Plugin {
             Msg.error(this, "Failed to start HTTP server", e);
         }
         Msg.info(this, "GhidraMCPPlugin loaded!");
+    }
+
+    @Override
+    protected void programActivated(Program program) {
+        super.programActivated(program);
+        maybeQueueAutoWorkflowTrigger(program);
+    }
+
+    @Override
+    protected void programClosed(Program program) {
+        super.programClosed(program);
+        autoWorkflowTriggeredKeys.remove(getProgramAutomationKey(program));
+    }
+
+    private void maybeQueueAutoWorkflowTrigger(Program program) {
+        if (program == null || !isAutoWorkflowEnabled()) {
+            return;
+        }
+
+        String key = getProgramAutomationKey(program);
+        if (!autoWorkflowTriggeredKeys.add(key)) {
+            return;
+        }
+
+        Thread worker = new Thread(() -> waitForAutoAnalysisAndTrigger(program, key),
+            "GhidraMCP-AutoWorkflow-" + Integer.toHexString(System.identityHashCode(program)));
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private boolean isAutoWorkflowEnabled() {
+        Options automationOptions = tool.getOptions(AUTOMATION_OPTION_CATEGORY_NAME);
+        return automationOptions.getBoolean(AUTO_WORKFLOW_ENABLED_OPTION_NAME, false);
+    }
+
+    private String getAutoWorkflowUrl() {
+        Options automationOptions = tool.getOptions(AUTOMATION_OPTION_CATEGORY_NAME);
+        return trimToNull(automationOptions.getString(AUTO_WORKFLOW_URL_OPTION_NAME, DEFAULT_AUTO_WORKFLOW_URL));
+    }
+
+    private String getProgramAutomationKey(Program program) {
+        if (program == null) {
+            return "";
+        }
+
+        String domainPath = "";
+        try {
+            if (program.getDomainFile() != null) {
+                domainPath = safe(program.getDomainFile().getPathname());
+            }
+        } catch (Exception ignored) {}
+
+        String executablePath = "";
+        try {
+            executablePath = safe(program.getExecutablePath());
+        } catch (Exception ignored) {}
+
+        String sha256 = "";
+        try {
+            sha256 = safe(program.getExecutableSHA256());
+        } catch (Exception ignored) {}
+
+        String base = !domainPath.isEmpty() ? domainPath : (!executablePath.isEmpty() ? executablePath : safe(program.getName()));
+        if (base.isEmpty()) {
+            base = Integer.toHexString(System.identityHashCode(program));
+        }
+        return base + "|" + sha256;
+    }
+
+    private void waitForAutoAnalysisAndTrigger(Program program, String key) {
+        try {
+            AutoAnalysisManager manager = AutoAnalysisManager.getAnalysisManager(program);
+            boolean scheduled = manager.scheduleWorker(new AnalysisWorker() {
+                @Override
+                public String getWorkerName() {
+                    return "WFTrigger";
+                }
+
+                @Override
+                public boolean analysisWorkerCallback(Program analyzedProgram, Object workerContext, TaskMonitor monitor)
+                        throws Exception {
+                    postAutoWorkflowTrigger(analyzedProgram, key);
+                    return true;
+                }
+            }, null, true, TaskMonitor.DUMMY);
+
+            if (!scheduled) {
+                autoWorkflowTriggeredKeys.remove(key);
+                Msg.warn(this, "Auto workflow trigger was not scheduled for program " + safe(program.getName()));
+            }
+        } catch (Exception e) {
+            autoWorkflowTriggeredKeys.remove(key);
+            Msg.error(this, "Failed to queue auto workflow trigger for " + safe(program.getName()), e);
+        }
+    }
+
+    private void postAutoWorkflowTrigger(Program program, String key) {
+        String targetUrl = getAutoWorkflowUrl();
+        if (program == null || targetUrl == null) {
+            autoWorkflowTriggeredKeys.remove(key);
+            return;
+        }
+
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(targetUrl);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setDoOutput(true);
+            connection.setConnectTimeout(1500);
+            connection.setReadTimeout(5000);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+
+            byte[] body = buildAutoWorkflowPayload(program).getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(body.length);
+            try (OutputStream os = connection.getOutputStream()) {
+                os.write(body);
+            }
+
+            int status = connection.getResponseCode();
+            String response = readHttpResponseBody(connection);
+            if (status >= 200 && status < 300) {
+                Msg.info(this, "Auto-triggered Multi-Agent workflow for " + safe(program.getName()));
+                return;
+            }
+            if (status == 409) {
+                autoWorkflowTriggeredKeys.remove(key);
+                Msg.info(this, "Multi-Agent workflow is already running; skipped auto-trigger for " + safe(program.getName()));
+                return;
+            }
+            autoWorkflowTriggeredKeys.remove(key);
+            Msg.warn(
+                this,
+                "Multi-Agent workflow trigger failed for " + safe(program.getName()) +
+                " with HTTP " + status + (response.isEmpty() ? "" : (": " + response))
+            );
+        } catch (IOException e) {
+            autoWorkflowTriggeredKeys.remove(key);
+            Msg.info(
+                this,
+                "Multi-Agent-WF trigger endpoint not reachable at " + targetUrl +
+                "; skipping auto-trigger for " + safe(program.getName())
+            );
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private String buildAutoWorkflowPayload(Program program) {
+        String domainPath = "";
+        try {
+            if (program.getDomainFile() != null) {
+                domainPath = safe(program.getDomainFile().getPathname());
+            }
+        } catch (Exception ignored) {}
+
+        return "{"
+            + "\"source\":\"ghidra_auto_analysis\","
+            + "\"program_name\":" + jsonStr(safe(program.getName())) + ","
+            + "\"ghidra_project_path\":" + jsonStr(domainPath) + ","
+            + "\"executable_path\":" + jsonStr(safe(program.getExecutablePath())) + ","
+            + "\"executable_md5\":" + jsonStr(safe(program.getExecutableMD5())) + ","
+            + "\"executable_sha256\":" + jsonStr(safe(program.getExecutableSHA256()))
+            + "}";
+    }
+
+    private String readHttpResponseBody(HttpURLConnection connection) throws IOException {
+        InputStream stream = null;
+        try {
+            stream = connection.getResponseCode() >= 400 ? connection.getErrorStream() : connection.getInputStream();
+        } catch (IOException ignored) {
+            stream = connection.getErrorStream();
+        }
+        if (stream == null) {
+            return "";
+        }
+        try (InputStream in = stream) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
+        }
     }
 
     private void startServer() throws IOException {
@@ -344,7 +562,7 @@ public class GhidraMCPPlugin extends Plugin {
         });
 
         server.createContext("/program_info", exchange -> {
-            sendResponse(exchange, getProgramInfo());
+            sendJsonResponse(exchange, getProgramInfoJson());
         });
         
         server.createContext("/callgraph_json", exchange -> {
@@ -353,11 +571,20 @@ public class GhidraMCPPlugin extends Plugin {
             int maxNodes = parseIntOrDefault(qparams.get("maxNodes"), 2000);
 
             Program program = getCurrentProgram();
-            String json = CallGraphBuilder.build(program, maxDepth, maxNodes);
+            GraphRootSelection rootSelection = selectCallGraphRoots(program, qparams);
+            if (rootSelection.error != null) {
+                sendJsonResponse(exchange, jsonError(rootSelection.error));
+                return;
+            }
 
-            // sendResponse currently works fine even if Content-Type is text/plain;
-            // your client can still JSON-parse it.
-            sendResponse(exchange, json);
+            String json = CallGraphBuilder.build(
+                program,
+                rootSelection.roots,
+                rootSelection.strategy,
+                maxDepth,
+                maxNodes
+            );
+            sendJsonResponse(exchange, json);
         });
 
 
@@ -512,16 +739,14 @@ public class GhidraMCPPlugin extends Plugin {
         return (s == null) ? "" : s;
     }
 
-    private String getProgramInfo() {
+    private String getProgramInfoJson() {
         Program program = getCurrentProgram();
-        if (program == null) return "No program loaded\n";
+        if (program == null) {
+            return "{\"loaded\":false,\"error\":" + jsonStr("No program loaded") + "}";
+        }
 
-        StringBuilder info = new StringBuilder();
-        info.append("Program Information:\n");
-        info.append("---------------------\n");
-
-        // Identity
-        info.append("Name: ").append(safe(program.getName())).append("\n");
+        ProgramLocation location = getCurrentLocationObject();
+        Function currentFunction = getCurrentFunctionObject(program, location);
 
         String domainPath = "";
         try {
@@ -529,22 +754,13 @@ public class GhidraMCPPlugin extends Plugin {
                 domainPath = safe(program.getDomainFile().getPathname());
             }
         } catch (Exception ignored) {}
-        info.append("Ghidra Project Path: ").append(domainPath).append("\n");
 
-        // Original executable metadata (may be empty depending on import/workflow)
-        info.append("Executable Path: ").append(safe(program.getExecutablePath())).append("\n");
-        info.append("Executable MD5: ").append(safe(program.getExecutableMD5())).append("\n");
-        info.append("Executable SHA256: ").append(safe(program.getExecutableSHA256())).append("\n");
-
-        // Architecture / decompilation context
         String languageId = "";
         try {
             if (program.getLanguageID() != null) {
-                // Prefer the stable ID string
                 languageId = program.getLanguageID().getIdAsString();
             }
         } catch (Exception ignored) {}
-        info.append("Language: ").append(safe(languageId)).append("\n");
 
         String compilerId = "";
         try {
@@ -552,13 +768,11 @@ public class GhidraMCPPlugin extends Plugin {
                 compilerId = program.getCompilerSpec().getCompilerSpecID().getIdAsString();
             }
         } catch (Exception ignored) {}
-        info.append("Compiler: ").append(safe(compilerId)).append("\n");
 
         boolean bigEndian = false;
         try {
             bigEndian = program.getLanguage().isBigEndian();
         } catch (Exception ignored) {}
-        info.append("Endianness: ").append(bigEndian ? "big" : "little").append("\n");
 
         String imageBase = "";
         try {
@@ -566,9 +780,142 @@ public class GhidraMCPPlugin extends Plugin {
                 imageBase = program.getImageBase().toString();
             }
         } catch (Exception ignored) {}
-        info.append("Image Base: ").append(safe(imageBase)).append("\n");
 
-        return info.toString();
+        StringBuilder sb = new StringBuilder(2048);
+        sb.append("{");
+        sb.append("\"loaded\":true,");
+        sb.append("\"program\":{");
+        sb.append("\"name\":").append(jsonStr(safe(program.getName()))).append(",");
+        sb.append("\"ghidraProjectPath\":").append(jsonStr(domainPath)).append(",");
+        sb.append("\"executablePath\":").append(jsonStr(safe(program.getExecutablePath()))).append(",");
+        sb.append("\"executableMD5\":").append(jsonStr(safe(program.getExecutableMD5()))).append(",");
+        sb.append("\"executableSHA256\":").append(jsonStr(safe(program.getExecutableSHA256()))).append(",");
+        sb.append("\"language\":").append(jsonStr(safe(languageId))).append(",");
+        sb.append("\"compiler\":").append(jsonStr(safe(compilerId))).append(",");
+        sb.append("\"endianness\":").append(jsonStr(bigEndian ? "big" : "little")).append(",");
+        sb.append("\"imageBase\":").append(jsonStr(safe(imageBase))).append(",");
+        sb.append("\"pointerSize\":").append(program.getDefaultPointerSize());
+        sb.append("},");
+        sb.append("\"counts\":{");
+        sb.append("\"functions\":").append(countFunctions(program)).append(",");
+        sb.append("\"imports\":").append(countImports(program)).append(",");
+        sb.append("\"exports\":").append(countExports(program)).append(",");
+        sb.append("\"segments\":").append(program.getMemory().getBlocks().length);
+        sb.append("},");
+        sb.append("\"currentLocation\":");
+        if (location == null || location.getAddress() == null) {
+            sb.append("null");
+        } else {
+            sb.append("{");
+            sb.append("\"address\":").append(jsonStr(location.getAddress().toString())).append(",");
+            sb.append("\"function\":");
+            if (currentFunction == null) {
+                sb.append("null");
+            } else {
+                sb.append("{");
+                sb.append("\"name\":").append(jsonStr(safe(currentFunction.getName()))).append(",");
+                sb.append("\"entry\":").append(jsonStr(currentFunction.getEntryPoint().toString())).append(",");
+                sb.append("\"signature\":").append(jsonStr(safe(currentFunction.getSignature().toString()))).append(",");
+                sb.append("\"namespace\":").append(jsonStr(getNamespaceName(currentFunction.getParentNamespace())));
+                sb.append("}");
+            }
+            sb.append("}");
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+
+    private String getNamespaceName(Namespace namespace) {
+        return (namespace == null) ? "Global" : safe(namespace.getName());
+    }
+
+    private int countFunctions(Program program) {
+        int count = 0;
+        for (Function ignored : program.getFunctionManager().getFunctions(true)) {
+            count++;
+        }
+        return count;
+    }
+
+    private int countImports(Program program) {
+        int count = 0;
+        for (Symbol ignored : program.getSymbolTable().getExternalSymbols()) {
+            count++;
+        }
+        return count;
+    }
+
+    private int countExports(Program program) {
+        int count = 0;
+        SymbolIterator it = program.getSymbolTable().getAllSymbols(true);
+        while (it.hasNext()) {
+            Symbol symbol = it.next();
+            if (symbol.isExternalEntryPoint()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private GraphRootSelection selectCallGraphRoots(Program program, Map<String, String> qparams) {
+        if (program == null) {
+            return new GraphRootSelection(Collections.emptyList(), "unavailable", null);
+        }
+
+        String rootAddress = trimToNull(qparams.get("rootAddress"));
+        if (rootAddress != null) {
+            try {
+                Address addr = program.getAddressFactory().getAddress(rootAddress);
+                Function func = getFunctionForAddress(program, addr);
+                if (func == null) {
+                    return new GraphRootSelection(
+                        Collections.emptyList(),
+                        "explicit_address",
+                        "No function found at or containing rootAddress " + rootAddress
+                    );
+                }
+                return new GraphRootSelection(Collections.singletonList(func), "explicit_address", null);
+            } catch (Exception e) {
+                return new GraphRootSelection(
+                    Collections.emptyList(),
+                    "explicit_address",
+                    "Invalid rootAddress " + rootAddress + ": " + e.getMessage()
+                );
+            }
+        }
+
+        String rootName = trimToNull(qparams.get("rootName"));
+        if (rootName != null) {
+            LinkedHashMap<String, Function> matches = new LinkedHashMap<>();
+            for (Function func : program.getFunctionManager().getFunctions(true)) {
+                if (rootName.equals(func.getName())) {
+                    matches.put(func.getEntryPoint().toString(), func);
+                }
+            }
+            if (matches.isEmpty()) {
+                return new GraphRootSelection(
+                    Collections.emptyList(),
+                    "explicit_name",
+                    "No function found with rootName " + rootName
+                );
+            }
+            return new GraphRootSelection(new ArrayList<>(matches.values()), "explicit_name", null);
+        }
+
+        Function currentFunction = getCurrentFunctionObject();
+        if (currentFunction != null) {
+            return new GraphRootSelection(Collections.singletonList(currentFunction), "current_function", null);
+        }
+
+        return new GraphRootSelection(Collections.emptyList(), "heuristic", null);
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     // ----------------------------------------------------------------------------------
@@ -821,7 +1168,7 @@ public class GhidraMCPPlugin extends Plugin {
         CodeViewerService service = tool.getService(CodeViewerService.class);
         if (service == null) return "Code viewer service not available";
 
-        ProgramLocation location = service.getCurrentLocation();
+        ProgramLocation location = getCurrentLocationObject();
         return (location != null) ? location.getAddress().toString() : "No current location";
     }
 
@@ -832,19 +1179,35 @@ public class GhidraMCPPlugin extends Plugin {
         CodeViewerService service = tool.getService(CodeViewerService.class);
         if (service == null) return "Code viewer service not available";
 
-        ProgramLocation location = service.getCurrentLocation();
+        ProgramLocation location = getCurrentLocationObject();
         if (location == null) return "No current location";
 
         Program program = getCurrentProgram();
         if (program == null) return "No program loaded";
 
-        Function func = program.getFunctionManager().getFunctionContaining(location.getAddress());
+        Function func = getCurrentFunctionObject(program, location);
         if (func == null) return "No function at current location: " + location.getAddress();
 
         return String.format("Function: %s at %s\nSignature: %s",
             func.getName(),
             func.getEntryPoint(),
             func.getSignature());
+    }
+
+    private ProgramLocation getCurrentLocationObject() {
+        CodeViewerService service = tool.getService(CodeViewerService.class);
+        return (service != null) ? service.getCurrentLocation() : null;
+    }
+
+    private Function getCurrentFunctionObject() {
+        return getCurrentFunctionObject(getCurrentProgram(), getCurrentLocationObject());
+    }
+
+    private Function getCurrentFunctionObject(Program program, ProgramLocation location) {
+        if (program == null || location == null || location.getAddress() == null) {
+            return null;
+        }
+        return program.getFunctionManager().getFunctionContaining(location.getAddress());
     }
 
     /**
@@ -1736,6 +2099,34 @@ private void sendJsonResponse(HttpExchange exchange, String json) throws IOExcep
     } finally {
         os.close();
     }
+}
+
+private String jsonError(String message) {
+    return "{\"error\":" + jsonStr(message) + "}";
+}
+
+private String jsonStr(String s) {
+    if (s == null) return "\"\"";
+    StringBuilder out = new StringBuilder(s.length() + 16);
+    out.append('"');
+    for (int i = 0; i < s.length(); i++) {
+        char c = s.charAt(i);
+        switch (c) {
+            case '\\': out.append("\\\\"); break;
+            case '"':  out.append("\\\""); break;
+            case '\n': out.append("\\n"); break;
+            case '\r': out.append("\\r"); break;
+            case '\t': out.append("\\t"); break;
+            default:
+                if (c < 0x20) {
+                    out.append(String.format("\\u%04x", (int) c));
+                } else {
+                    out.append(c);
+                }
+        }
+    }
+    out.append('"');
+    return out.toString();
 }
 
 

@@ -23,5 +23,30 @@
     "transport": "stdio",
     "command": "python",
     "args": ["capaMCP.py", "--transport", "stdio"]
+  },
+  "binwalkmcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["binwalkMCP.py", "--transport", "stdio"]
+  },
+  "yaramcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["yaraMCP.py", "--transport", "stdio"]
+  },
+  "gitleaksmcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["gitleaksMCP.py", "--transport", "stdio"]
+  },
+  "searchsploitmcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["searchsploitMCP.py", "--transport", "stdio"]
+  },
+  "trivymcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["trivyMCP.py", "--transport", "stdio"]
   }
 }

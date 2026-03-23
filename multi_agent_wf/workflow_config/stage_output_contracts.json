@@ -1,0 +1,40 @@
+{
+  "preflight": [
+    "Produce a concise preflight note that resolves the sample path if possible, captures only the minimum program context needed for planning, and highlights a few high-value pivots.",
+    "Do not perform deep analysis, full obfuscation assessment, or final purpose conclusions.",
+    "Limit the handoff to path resolution, basic metadata, and a few worker pivots; do not include broad xref walks or large call-graph summaries."
+  ],
+  "planner": [
+    "Produce a compact execution plan with prioritized work items, suggested worker-role assignments, and concrete evidence targets.",
+    "Include exactly one machine-readable JSON block delimited by `{{PLANNER_WORK_ITEMS_START}}` and `{{PLANNER_WORK_ITEMS_END}}`.",
+    "The JSON payload must be an array of objects with keys: `id`, `objective`, `recommended_roles`, and `evidence_targets`.",
+    "Every work item in the block must be executable with the currently available roles and tool capabilities for this run.",
+    "Do not include sample-execution tasks unless shared context explicitly indicates sandboxed execution support is available."
+  ],
+  "workers": [
+    "Produce a structured worker evidence bundle grouped by specialist or topic.",
+    "Start with a compact sample-verification section when possible: `Validated sample path`, plus any obtainable hashes or key metadata.",
+    "If shared context already provides trusted hashes or image-base metadata from Ghidra or preflight, cite those values directly instead of recomputing them unless the task explicitly requires independent verification.",
+    "For each major claim, include: the claim, the supporting artifacts, why those artifacts support it, and any inference or limits.",
+    "For code-behavior claims, artifacts should usually include function name/address, one short Ghidra excerpt, and corroborating xref/import/string/rule evidence.",
+    "Representative artifacts are usually sufficient; exhaustive appendices are optional unless the task or review profile explicitly requires exact proof depth.",
+    "For capa/FLOSS evidence, include the relevant matches, strings, offsets, function addresses, and short raw excerpts that support the claim. Full raw tool output should normally be omitted from the main worker bundle.",
+    "If dynamic validation is proposed, include a concrete sandbox procedure with exact steps, monitoring points, and rollback/safety controls; otherwise mark it as a recommendation rather than completed validation.",
+    "If sandbox support is unavailable, explicitly mark runnable dynamic scripts and runtime logs as unavailable or out of scope."
+  ],
+  "validators": [
+    "Produce a review-only validation decision based on planner work items, worker outputs, and cited evidence already present.",
+    "Base the decision primarily on whether the original user request was adequately answered, not on perfect completion of every planner work item.",
+    "If some work items were impossible, unsupported, unsafe, or unnecessary, identify them as out of scope rather than treating them as automatic failure conditions.",
+    "Prefer narrowing or caveating claims over rejecting the whole run when representative evidence supports the core answer but some low-level corroboration is missing.",
+    "Do not request full raw capa/FLOSS output by default. Prefer the smallest additional artifact set needed to resolve a disputed major claim.",
+    "Include exactly one machine-readable JSON block delimited by `{{VALIDATION_DECISION_START}}` and `{{VALIDATION_DECISION_END}}`.",
+    "The JSON object must include: `decision`, `signoff_count`, `required_signoffs`, `accepted_findings`, `rejected_findings`, `rejection_reasons`, `planner_fixes`, and `summary`.",
+    "When relevant, include `out_of_scope_work_items` to explain which planner items should not block acceptance."
+  ],
+  "reporter": [
+    "Produce the final concise technical report using validated findings only, plus a short unknowns section.",
+    "Do not perform fresh analysis or new tool-driven discovery in this stage.",
+    "Center the report on user-authored logic, meaningful control-flow pivots, concrete capabilities, and supported obfuscation mechanisms rather than scaffolding."
+  ]
+}

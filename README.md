@@ -28,43 +28,21 @@ Fine grained or run cmds and figure out flags
 - Build debugger/anti-analysis parser (timing checks, `IsDebuggerPresent`, `INT 3`, PEB `BeingDebugged`)
 - Set up multi-agent structure + improve prompting
 
-Test binaries: RE Challenges, packing, golang, string takss
-
-Start making different agents 
-Program do, make yara signature unique,
-
-Pydantic agent- deep
-
-Subagent from text, How it creates sub agents, 
-- Skills, tool
-- context windows Quadratic
-
-Test Performance 
-yara rules
-UPX, string obfuscation
-
-Start testing with labs: OS Lab
-
-Figure out: 
-Change agent config, 
-config -> task:
-
-Correct functions identify
-Decompilation agent 
-Start thinking of agent configs & instructions
-Remove start-up code, decompile whole program
-
-toplogies & prompts
-What doesnj't/does work.
-
-How does it decide which tool?
-
-Screnshots logs: Experiment documetnation
-Skills? System prompting what works better, what context is necessary
-
 TESTING:
 Query: Can you perform analysis on the program in ghidra as a whole? Try to get an understanding of the control flow of the program and what it is doing and provide a brief report with analysis. Use tools capa and floss to deduce forms of obfuscation.
 Task: Using all the information gathered and provide an explanation of obfuscation techniques and the program purpose
+
+Excercises to do: experimental data
+
+UPX packed:
+Experiments:
+binwalk? 
+yara, generate yara sigs and testing
+different tools in conjunction,
+declaring structs, patching, deobfuscation int 3
+Hook into auto-analyze
+suggest, ask for approval when loaded,
+Start generating setup guide as well
 
 
 ### Final Analysis Report on `winapi_behavior_test.exe`
@@ -120,3 +98,37 @@ Output: [18:02:21] Chat turn finished in 409.4s (mode=classic)
 - Close out tool development
 - Begin testing on tool effectiveness
 - Begin drafting thesis write-up
+
+Test binaries: RE Challenges, packing, golang, string takss
+
+Start making different agents 
+Program do, make yara signature unique,
+
+Pydantic agent- deep
+
+Subagent from text, How it creates sub agents, 
+- Skills, tool
+- context windows Quadratic
+
+Test Performance 
+yara rules
+UPX, string obfuscation
+
+Start testing with labs: OS Lab
+
+Figure out: 
+Change agent config, 
+config -> task:
+
+Correct functions identify
+Decompilation agent 
+Start thinking of agent configs & instructions
+Remove start-up code, decompile whole program
+
+toplogies & prompts
+What doesnj't/does work.
+
+How does it decide which tool?
+
+Screnshots logs: Experiment documetnation
+Skills? System prompting what works better, what context is necessary

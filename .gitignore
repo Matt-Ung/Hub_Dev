@@ -96,3 +96,14 @@ mvnw.cmd
 
 # Third party JAR files from Ghidra (any module)
 **/lib/*.jar
+
+# =========================
+# Project-specific generated/vendor content
+# =========================
+
+.deep_backend/
+In_Progress/*
+MCPServers/capa-rules
+MCPServers/capa-sigs
+mcp-security-hub
+vagrantProjects

@@ -1,0 +1,86 @@
+{
+  "planning_analyst": {
+    "description": "Planning specialist that decomposes the user request into concrete malware-analysis tasks.",
+    "tool_domain": "preflight",
+    "preferred_mode": "sync",
+    "typical_complexity": "moderate",
+    "model": "openai:gpt-5-mini"
+  },
+  "preflight_analyst": {
+    "description": "Minimal static preflight specialist that resolves the sample path and gathers only the context needed for planning.",
+    "tool_domain": "preflight",
+    "preferred_mode": "sync",
+    "typical_complexity": "moderate",
+    "model": "openai:gpt-4o-mini"
+  },
+  "static_generalist": {
+    "description": "General static reverse-engineering specialist.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "moderate",
+    "model": "openai:gpt-4o-mini"
+  },
+  "triage_analyst": {
+    "description": "Static triage specialist that identifies the highest-value pivots for the sample.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "moderate",
+    "model": "openai:gpt-4o-mini"
+  },
+  "control_flow_analyst": {
+    "description": "Static specialist focused on dispatcher logic, execution paths, and major branch pivots.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "complex",
+    "model": "openai:gpt-5-mini"
+  },
+  "ghidra_analyst": {
+    "description": "Static Ghidra-focused specialist that pivots from candidate artifacts to xrefs, surrounding context, and analyst-relevant meaning.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "complex",
+    "model": "openai:gpt-5-mini"
+  },
+  "string_analyst": {
+    "description": "Static specialist focused on recovered strings, stack strings, decoded values, and configuration material.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "moderate",
+    "model": "openai:gpt-4o-mini"
+  },
+  "obfuscation_analyst": {
+    "description": "Static specialist focused on concrete obfuscation and anti-analysis mechanisms.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "complex",
+    "model": "openai:gpt-5-mini"
+  },
+  "capability_analyst": {
+    "description": "Static specialist focused on mapping concrete capabilities from code artifacts and capa evidence.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "moderate",
+    "model": "openai:gpt-4o-mini"
+  },
+  "runtime_behavior_analyst": {
+    "description": "Runtime specialist focused on behavioral correlation and execution-time artifacts.",
+    "tool_domain": "dynamic",
+    "preferred_mode": "auto",
+    "typical_complexity": "complex",
+    "model": "openai:gpt-5-mini"
+  },
+  "evidence_validator": {
+    "description": "Validation specialist that reviews claims for evidentiary support and contradictions.",
+    "tool_domain": "none",
+    "preferred_mode": "sync",
+    "typical_complexity": "moderate",
+    "model": "openai:gpt-5-mini"
+  },
+  "reporting_analyst": {
+    "description": "Reporting specialist that synthesizes validated findings into a concise technical report.",
+    "tool_domain": "none",
+    "preferred_mode": "sync",
+    "typical_complexity": "moderate",
+    "model": "openai:gpt-4o-mini"
+  }
+}

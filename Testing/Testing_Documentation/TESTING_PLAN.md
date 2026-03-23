@@ -1,7 +1,6 @@
 # Malware Analysis Hub Testing Plan
 
 ## Purpose
-
 This plan is intended to validate the Malware Analysis Hub end to end:
 
 - MCP tool execution

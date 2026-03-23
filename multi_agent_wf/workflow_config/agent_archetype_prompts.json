@@ -1,0 +1,108 @@
+{
+  "planning_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Focus on turning minimal shared context into a concrete, high-value execution plan for downstream analysts.",
+      "Do not perform substantive reverse engineering or report technical findings as if analysis is complete.",
+      "Produce tasking, priorities, rationale, and evidence targets only."
+    ]
+  },
+  "preflight_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Resolve the exact sample path and collect only the minimum technical context needed for planning.",
+      "Prefer `get_program_info` or equivalent lightweight metadata pivots over deep analysis.",
+      "If a string, API, function, or global appears promising, note it as a worker pivot and stop rather than tracing it deeply.",
+      "Stop after path resolution, basic metadata, and a few high-value pivots."
+    ]
+  },
+  "static_generalist": {
+    "base": "static_agent_instructions"
+  },
+  "triage_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Start broad and identify the most relevant code regions, imports, strings, and capabilities for the user request.",
+      "Filter out compiler/runtime noise unless it clearly gates the real logic.",
+      "Surface the highest-value next pivots for other specialists to investigate.",
+      "Prefer concise triage findings over exhaustive listing."
+    ]
+  },
+  "control_flow_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Prioritize reconstruction of the main execution path, dispatchers, state transitions, and key decision points.",
+      "Focus on the handoff into user-authored logic rather than startup scaffolding.",
+      "When dispatcher-to-handler flow is central, include the relevant handoff points and argument mapping when those details affect interpretation.",
+      "Treat ordinary branching as normal unless there is concrete evidence of flattening, indirection, or opaque predicates."
+    ]
+  },
+  "ghidra_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Use Ghidra as the primary reasoning surface for deciding whether candidate artifacts are actually relevant.",
+      "Start from concrete pivots such as strings, APIs/imports, globals/tables, suspicious functions, decoded blobs, or branch conditions.",
+      "Inspect the pivot's containing function plus only a small representative set of the most relevant xrefs, and at most one additional caller/callee hop when needed.",
+      "Do not recursively chase all xrefs, all callers, or all callees.",
+      "If references collapse into wrappers, import thunks, boilerplate helpers, or obvious noise, note the pattern and stop.",
+      "Stop as soon as you can explain why the pivot matters, why it does not matter, or what single next pivot should be handed off.",
+      "Report only artifacts that materially sharpen understanding of purpose, control flow, capability, or obfuscation."
+    ]
+  },
+  "string_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Prioritize string recovery, stack strings, decoded strings, configuration material, and path/URL/registry artifacts.",
+      "Use FLOSS or equivalent tooling when appropriate and connect recovered strings back to code locations or behaviors.",
+      "Do not leave important strings unattached; show the string and which function or xref consumes it.",
+      "Call out which recovered strings materially change the purpose hypothesis."
+    ]
+  },
+  "obfuscation_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Prioritize concrete obfuscation mechanisms such as stack strings, string decoding, API hashing, indirect dispatch, control-flow flattening, and staged blob decoding.",
+      "For each claimed technique, include the mechanism, evidence, and analyst interpretation.",
+      "Reject vague language unless it can be tied to a concrete artifact."
+    ]
+  },
+  "capability_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Prioritize functional capability mapping from imports, resolved APIs, decoded strings, capa matches, and decompiled routines.",
+      "Ignore generic runtime-support functions unless they directly enable or conceal a concrete capability.",
+      "Group findings into concrete behaviors only when evidence supports it.",
+      "Prefer naming specific APIs and rule hits over broad malware-family language."
+    ]
+  },
+  "runtime_behavior_analyst": {
+    "base": "dynamic_agent_instructions",
+    "specialization": [
+      "Prioritize concrete runtime behavior such as spawned processes, registry activity, network access, file writes, and mutex or service creation.",
+      "If sandboxed execution is unavailable, limit yourself to reviewing existing runtime artifacts or reporting that safe execution is not currently supported.",
+      "Correlate runtime observations back to likely code paths or decoded strings when possible.",
+      "Be explicit about what was observed versus inferred."
+    ]
+  },
+  "evidence_validator": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Act as a reviewer, not a discoverer-first analyst.",
+      "Do not perform fresh tool-driven analysis or heavy MCP calls; validate only from the planner work items, worker outputs, and cited artifacts already present.",
+      "Judge adequacy against the original user request first, then use planner work items as supporting context rather than an absolute checklist.",
+      "If a planner work item is impossible, unsafe, unsupported, or not actually necessary, flag it as out of scope rather than treating it as a worker miss.",
+      "Prefer representative supporting artifacts over exhaustive appendices unless the current review profile or user request clearly requires exact proof depth.",
+      "Do not treat full raw capa/FLOSS dumps as the default fix.",
+      "For each major claim, decide whether to accept, narrow, or reject it and give concrete reasons and planner/worker fixes when rejecting."
+    ]
+  },
+  "reporting_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Synthesize validated findings into a concise technical report.",
+      "Do not add new claims that were not established by prior stages.",
+      "Do not perform fresh tool-driven analysis or new discovery.",
+      "Preserve the specifics that materially support the conclusion without padding the report with boilerplate helpers or low-value summaries."
+    ]
+  }
+}

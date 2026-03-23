@@ -12,13 +12,13 @@ flare-floss
 flare-capa
 
 # -----------------------------
-# Client (Multi-Agent-WF.py)
+# Client (multi_agent_wf/main.py)
 # -----------------------------
 gradio
 pydantic
 pydantic-ai
 
-# Optional deep-orchestration support in Multi-Agent-WF.py
+# Required deep-agent orchestration support in multi_agent_wf/main.py
 pydantic-deep
 
 # Optional alternate client in In_Progress/multiClient.py
