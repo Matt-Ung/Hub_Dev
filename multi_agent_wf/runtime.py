@@ -249,13 +249,23 @@ def _make_cached_tool_call_processor(server_id: str):
             _append_tool_cache_note(state, stage_name, "tool_cache_hit", server_id, tool_name, tool_args)
             return cached.get("result")
 
+        current_loop = asyncio.get_running_loop()
         owner = False
+        task: asyncio.Task[Any]
         with _TOOL_RESULT_CACHE_INFLIGHT_LOCK:
-            task = _TOOL_RESULT_CACHE_INFLIGHT.get(cache_key)
-            if task is None:
+            inflight_record = _TOOL_RESULT_CACHE_INFLIGHT.get(cache_key)
+            if inflight_record is None:
                 task = asyncio.create_task(_direct_call_once())
-                _TOOL_RESULT_CACHE_INFLIGHT[cache_key] = task
+                _TOOL_RESULT_CACHE_INFLIGHT[cache_key] = (task, current_loop)
                 owner = True
+            else:
+                task, owner_loop = inflight_record
+                if owner_loop is current_loop:
+                    owner = False
+                else:
+                    task = asyncio.create_task(_direct_call_once())
+                    _TOOL_RESULT_CACHE_INFLIGHT[cache_key] = (task, current_loop)
+                    owner = True
 
         if not owner:
             _append_tool_cache_note(state, stage_name, "tool_cache_wait", server_id, tool_name, tool_args)
@@ -267,7 +277,8 @@ def _make_cached_tool_call_processor(server_id: str):
             raise
         finally:
             with _TOOL_RESULT_CACHE_INFLIGHT_LOCK:
-                if _TOOL_RESULT_CACHE_INFLIGHT.get(cache_key) is task:
+                inflight_record = _TOOL_RESULT_CACHE_INFLIGHT.get(cache_key)
+                if inflight_record is not None and inflight_record[0] is task:
                     _TOOL_RESULT_CACHE_INFLIGHT.pop(cache_key, None)
 
         if _is_cacheable_tool_result(result):
@@ -287,6 +298,29 @@ def _make_cached_tool_call_processor(server_id: str):
         return result
 
     return _processor
+
+
+def _clone_mcp_server(server: MCPServerStdio) -> MCPServerStdio:
+    return MCPServerStdio(
+        server.command,
+        args=list(server.args),
+        env=dict(server.env) if server.env else None,
+        cwd=server.cwd,
+        tool_prefix=server.tool_prefix,
+        log_level=server.log_level,
+        log_handler=server.log_handler,
+        timeout=server.timeout,
+        read_timeout=server.read_timeout,
+        process_tool_call=_make_cached_tool_call_processor(server.id or ""),
+        allow_sampling=server.allow_sampling,
+        sampling_model=server.sampling_model,
+        max_retries=server.max_retries,
+        elicitation_callback=server.elicitation_callback,
+        cache_tools=server.cache_tools,
+        cache_resources=server.cache_resources,
+        id=server.id,
+        client_info=server.client_info,
+    )
 
 def _toolsets_for_domain(
     tool_domain: str,
@@ -638,7 +672,7 @@ _ACTIVE_PIPELINE_STAGE: ContextVar[Optional[str]] = ContextVar(
     default=None,
 )
 _TOOL_RESULT_CACHE_INFLIGHT_LOCK = Lock()
-_TOOL_RESULT_CACHE_INFLIGHT: Dict[str, asyncio.Task[Any]] = {}
+_TOOL_RESULT_CACHE_INFLIGHT: Dict[str, Tuple[asyncio.Task[Any], Any]] = {}
 _SERIAL_MCP_CALL_LOCKS: Dict[str, Lock] = {}
 _AUTOMATION_TRIGGER_SERVER: ThreadingHTTPServer | None = None
 _AUTOMATION_TRIGGER_LOCK = Lock()
@@ -838,7 +872,10 @@ def build_host_worker_assignment_executor(
 
     spec = AGENT_ARCHETYPE_SPECS[archetype_name]
     resolved_model = str(spec.get("model") or stage_model or OPENAI_MODEL_ID)
-    toolsets = _toolsets_for_domain(spec["tool_domain"], runtime.static_tools, runtime.dynamic_tools)
+    toolsets = [
+        _clone_mcp_server(tool)
+        for tool in _toolsets_for_domain(spec["tool_domain"], runtime.static_tools, runtime.dynamic_tools)
+    ]
     if spec["tool_domain"] != "none" and not toolsets:
         raise RuntimeError(
             f"Host-parallel worker requested {archetype_name!r}, but no {spec['tool_domain']} MCP toolsets are configured."
