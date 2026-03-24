@@ -508,6 +508,8 @@ def _wait_for_parent_input_response(
 
 def _make_parent_input_callback(state: Dict[str, Any], source: str):
     async def _callback(question: str, options: List[Dict[str, str]]) -> str:
+        if bool(state.get("cancel_requested")):
+            return "Error: Pipeline canceled by user"
         if not bool(state.get("allow_parent_input")):
             return "Error: Parent input is disabled for this run"
         normalized_options: List[Dict[str, str]] = []
@@ -815,6 +817,8 @@ _UI_SNAPSHOT: Dict[str, Any] = {
         "_tool_log_seen_keys": {},
         "tool_result_cache": {},
         "status_log": "",
+        "active_run_id": "",
+        "cancel_requested": False,
         "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
         "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
@@ -839,6 +843,8 @@ def _snapshot_state_default() -> Dict[str, Any]:
         "_tool_log_seen_keys": {},
         "tool_result_cache": {},
         "status_log": "",
+        "active_run_id": "",
+        "cancel_requested": False,
         "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
         "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
@@ -857,8 +863,19 @@ def _store_ui_snapshot(
     clear_visible: Optional[bool] = None,
     todo_visible: Optional[bool] = None,
     tool_log_visible: Optional[bool] = None,
+    force: bool = False,
 ) -> None:
     with _UI_SNAPSHOT_LOCK:
+        current_state = _UI_SNAPSHOT.get("state") or {}
+        current_run_id = str((current_state or {}).get("active_run_id") or "").strip()
+        incoming_run_id = str((state or {}).get("active_run_id") or "").strip()
+        if (
+            not force
+            and current_run_id
+            and incoming_run_id
+            and current_run_id != incoming_run_id
+        ):
+            return
         if chat_history is not None:
             _UI_SNAPSHOT["chat_history"] = chat_history
         if state is not None:

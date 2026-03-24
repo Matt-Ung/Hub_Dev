@@ -1063,3 +1063,33 @@ def get_runtime_sync() -> MultiAgentRuntime:
         deep_backend=deep_backend,
     )
     return _RUNTIME
+
+
+async def _shutdown_runtime_async() -> None:
+    global _RUNTIME
+    runtime = _RUNTIME
+    if runtime is None:
+        return
+
+    seen: set[int] = set()
+    for server in list(runtime.static_tools) + list(runtime.dynamic_tools):
+        key = id(server)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            running_attr = getattr(server, "is_running", False)
+            running = running_attr() if callable(running_attr) else bool(running_attr)
+            if running:
+                await server.__aexit__(None, None, None)
+        except Exception as e:
+            print(f"[runtime shutdown] warning: failed to close MCP server {getattr(server, 'id', 'unknown')}: {e}")
+
+    _RUNTIME = None
+
+
+def shutdown_runtime_sync() -> None:
+    try:
+        asyncio.run(_shutdown_runtime_async())
+    except RuntimeError as e:
+        print(f"[runtime shutdown] warning: cleanup skipped ({e})")

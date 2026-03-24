@@ -12,13 +12,15 @@ else:
 
 def main() -> None:
     app_settings = bootstrap_from_env()
-
     if __package__ in {None, ""}:
-        from multi_agent_wf.frontend import WorkflowUI
+        from multi_agent_wf.frontend import WorkflowUI, shutdown_workflow_services
     else:
-        from .frontend import WorkflowUI
-
-    WorkflowUI(app_settings=app_settings).launch()
+        from .frontend import WorkflowUI, shutdown_workflow_services
+    ui = WorkflowUI(app_settings=app_settings)
+    try:
+        ui.launch()
+    finally:
+        shutdown_workflow_services()
 
 
 if __name__ == "__main__":

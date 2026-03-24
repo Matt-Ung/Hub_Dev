@@ -47,6 +47,16 @@ from .shared_state import (
     update_validated_sample_path_from_messages,
 )
 
+
+class PipelineCancelled(RuntimeError):
+    pass
+
+
+def _check_cancel_requested(state: Dict[str, Any], *, location: str = "") -> None:
+    if bool((state or {}).get("cancel_requested")):
+        detail = f" ({location})" if location else ""
+        raise PipelineCancelled(f"Pipeline canceled by user{detail}")
+
 def _stage_progress_from_pipeline_definition() -> List[Dict[str, Any]]:
     progress: List[Dict[str, Any]] = []
     for raw_stage in DEEP_AGENT_PIPELINE:
@@ -721,18 +731,32 @@ def render_pipeline_todo_board(state: Dict[str, Any]) -> str:
         subagents = ", ".join(item.get("subagents") or []) or "none"
         subagents_html = html.escape(subagents)
         error_html = ""
-        if status == "failed" and item.get("error"):
+        if item.get("error"):
+            error_tone = "#a61b29" if status == "failed" else "#8a3b12"
             error_html = (
-                f"<div style='margin-top: 4px; color: #a61b29;'>"
+                f"<div style='margin-top: 4px; color: {error_tone};'>"
                 f"{html.escape(str(item.get('error')))}</div>"
             )
+
+        started_attr = "" if started is None else f'{float(started):.6f}'
+        finished_attr = "" if finished is None else f'{float(finished):.6f}'
+        duration_attr = "" if duration is None else f'{float(duration):.6f}'
+        timer_html = (
+            "<span class='wf-stage-timer' "
+            f"data-status='{html.escape(status)}' "
+            f"data-started='{started_attr}' "
+            f"data-finished='{finished_attr}' "
+            f"data-duration='{duration_attr}'>"
+            f"{_format_elapsed(elapsed)}"
+            "</span>"
+        )
 
         rows.append(
             "<div style='border: 1px solid #d5d8dd; border-radius: 10px; padding: 10px 12px; margin-top: 8px;'>"
             f"<div style='display: flex; justify-content: space-between; gap: 12px; align-items: center;'>"
             f"<div style='font-size: 15px;'><span style='font-size: 18px; margin-right: 8px;'>{box}</span>"
             f"<strong>{stage_name}</strong> <span style='color: #5f6368;'>({stage_kind})</span></div>"
-            f"<div style='font-family: monospace; color: {tone};'>{_format_elapsed(elapsed)}</div>"
+            f"<div style='font-family: monospace; color: {tone};'>{timer_html}</div>"
             "</div>"
             f"<div style='margin-top: 4px; color: {tone}; text-transform: uppercase; font-size: 12px; letter-spacing: 0.04em;'>"
             f"{status_label}</div>"
@@ -958,6 +982,7 @@ def _run_host_parallel_worker_stage(
     prior_stage_outputs: Dict[str, str],
     state: Dict[str, Any],
 ) -> str:
+    _check_cancel_requested(state, location="before worker scheduling")
     planned_work_items = list(((state.get("shared_state") or {}).get("planned_work_items") or []))
     assignments = _plan_host_worker_assignments(planned_work_items, stage.architecture)
     if not assignments:
@@ -987,6 +1012,7 @@ def _run_host_parallel_worker_stage(
             for assignment in assignments
         }
         for future in as_completed(future_map):
+            _check_cancel_requested(state, location="during worker stage")
             assignment = future_map[future]
             result = future.result()
             results_by_index[int(result["index"])] = result
@@ -1013,6 +1039,17 @@ def _run_host_parallel_worker_stage(
                     ),
                 )
             else:
+                _set_pipeline_stage_status(
+                    state,
+                    stage.name,
+                    stage_kind=stage.stage_kind,
+                    subagents=list(stage.subagent_names),
+                    status="running",
+                    error=(
+                        f"Latest assignment failure: {result.get('work_item_id')} -> "
+                        f"{result.get('slot_name')} ({result.get('error')})"
+                    ),
+                )
                 append_status(
                     state,
                     (
@@ -1092,6 +1129,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     stage_index = 0
 
     while stage_index < len(runtime.stages):
+        _check_cancel_requested(state, location="before stage start")
         stage = runtime.stages[stage_index]
         stage.deps.ask_user = _make_parent_input_callback(state, stage.name)
         role_key = f"pipeline_{stage.name}"
@@ -1124,6 +1162,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
         active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage.name)
         try:
+            _check_cancel_requested(state, location=f"before executing {stage.name}")
             if (
                 stage.stage_kind == "workers"
                 and HOST_PARALLEL_WORKER_EXECUTION
@@ -1214,6 +1253,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         )
         compact_shared_state(state)
         append_status(state, f"Stage finished: {stage.name} in {time.perf_counter() - stage_t0:.1f}s")
+        _check_cancel_requested(state, location=f"after stage {stage.name}")
 
         if stage.stage_kind == "validators":
             required_signoffs = max(1, len(stage.subagent_names) or len(stage.architecture) or 1)

@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Lock
 from threading import Event, Thread
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 import gradio as gr
 
@@ -27,13 +28,14 @@ from .config import (
     _normalize_validator_review_level,
 )
 from .pipeline import (
+    PipelineCancelled,
     _stage_progress_from_pipeline_definition,
     render_pipeline_todo_board,
     render_planned_work_items_panel,
     render_validation_gate_panel,
     run_deepagent_pipeline,
 )
-from .runtime import get_runtime_sync
+from .runtime import get_runtime_sync, shutdown_runtime_sync
 from .shared_state import (
     _empty_parent_input,
     _get_ui_snapshot,
@@ -62,6 +64,10 @@ def _message_input(value: str = "", interactive: bool = True, visible: bool = Tr
 
 
 def _send_button(interactive: bool = True, visible: bool = True):
+    return gr.update(interactive=interactive, visible=visible)
+
+
+def _cancel_button(interactive: bool = True, visible: bool = True):
     return gr.update(interactive=interactive, visible=visible)
 
 
@@ -184,6 +190,7 @@ def _ui_updates(
     validation_gate_update: Any,
     planned_work_items_update: Any,
     send_update: Any,
+    cancel_update: Any,
     clear_update: Any,
     todo_update: Any,
 ) -> Tuple[Any, ...]:
@@ -202,6 +209,7 @@ def _ui_updates(
         planned_work_items_update,
         *_tool_log_updates(state),
         send_update,
+        cancel_update,
         clear_update,
         todo_update,
     )
@@ -213,6 +221,7 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
     active = bool(snapshot.get("run_active"))
     composer_visible = bool(snapshot.get("composer_visible", True)) and not active
     send_visible = bool(snapshot.get("send_visible", True)) and not active
+    cancel_visible = active
     clear_visible = bool(snapshot.get("clear_visible", True)) and not active
     todo_visible = bool(snapshot.get("todo_visible", False)) or active
     parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
@@ -255,6 +264,10 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
             interactive=send_visible,
             visible=send_visible,
         ),
+        _cancel_button(
+            interactive=cancel_visible,
+            visible=cancel_visible,
+        ),
         _send_button(
             interactive=clear_visible,
             visible=clear_visible,
@@ -284,6 +297,7 @@ def poll_active_ui_snapshot():
             gr.skip(),
             gr.skip(),
             *_tool_log_skip_updates(),
+            gr.skip(),
             gr.skip(),
             gr.skip(),
             gr.skip(),
@@ -323,6 +337,7 @@ def chat_turn(
             _validation_gate_board(state),
             _planned_work_items_board(state),
             _send_button(interactive=True, visible=True),
+            _cancel_button(interactive=False, visible=False),
             _send_button(interactive=True, visible=True),
             _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
         )
@@ -340,7 +355,12 @@ def chat_turn(
     state.setdefault("_tool_log_seen_keys", {})
     state.setdefault("tool_result_cache", {})
     state.setdefault("status_log", "")
+    state.setdefault("active_run_id", "")
+    state.setdefault("cancel_requested", False)
     state.setdefault("shared_state", _new_shared_state())
+    run_id = uuid4().hex
+    state["active_run_id"] = run_id
+    state["cancel_requested"] = False
     state["allow_parent_input"] = bool(allow_parent_input_value)
     state["shell_execution_mode"] = _normalize_shell_execution_mode(shell_execution_mode_value)
     state["validator_review_level"] = _normalize_validator_review_level(validator_review_level_value)
@@ -372,6 +392,7 @@ def chat_turn(
         send_visible=False,
         clear_visible=False,
         todo_visible=True,
+        force=True,
     )
     parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
         _parent_input_component_updates(
@@ -394,6 +415,7 @@ def chat_turn(
         _validation_gate_board(state),
         _planned_work_items_board(state),
         _send_button(interactive=False, visible=False),
+        _cancel_button(interactive=True, visible=True),
         _send_button(interactive=False, visible=False),
         _todo_board(state, visible=True),
     )
@@ -410,6 +432,10 @@ def chat_turn(
             assistant_text, mode = _run_deep_pipeline()
             append_status(state, f"Chat turn finished in {time.perf_counter() - turn_t0:.1f}s (mode={mode})")
             result_box["assistant_text"] = _sanitize_user_facing_output(assistant_text)
+            return
+        except PipelineCancelled:
+            append_status(state, f"Chat turn canceled after {time.perf_counter() - turn_t0:.1f}s")
+            result_box["assistant_text"] = "[pipeline canceled by user]"
             return
         except Exception as e:
             err = str(e)
@@ -434,17 +460,18 @@ def chat_turn(
             append_status(state, f"Chat turn failed ({type(e).__name__}) in {time.perf_counter() - turn_t0:.1f}s")
             result_box["assistant_text"] = f"[multi-agent pipeline error] {type(e).__name__}: {e}"
         finally:
-            if chat_box["history"]:
-                chat_box["history"][-1] = {"role": "assistant", "content": result_box["assistant_text"]}
-            _store_ui_snapshot(
-                chat_history=chat_box["history"],
-                state=state,
-                run_active=False,
-                composer_visible=True,
-                send_visible=True,
-                clear_visible=True,
-                todo_visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress")),
-            )
+            if str(state.get("active_run_id") or "") == run_id:
+                if chat_box["history"]:
+                    chat_box["history"][-1] = {"role": "assistant", "content": result_box["assistant_text"]}
+                _store_ui_snapshot(
+                    chat_history=chat_box["history"],
+                    state=state,
+                    run_active=False,
+                    composer_visible=True,
+                    send_visible=True,
+                    clear_visible=True,
+                    todo_visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress")),
+                )
             done.set()
 
     worker = Thread(target=_runner, daemon=True)
@@ -456,6 +483,8 @@ def chat_turn(
     last_validation_html = render_validation_gate_panel(state)
     last_parent_input_sig = _parent_input_signature(state)
     while not done.wait(0.35):
+        if str(state.get("active_run_id") or "") != run_id:
+            return
         tool_now = state.get("tool_log", "")
         todo_now = render_pipeline_todo_board(state)
         planned_now = render_planned_work_items_panel(state)
@@ -480,9 +509,9 @@ def chat_turn(
                 run_active=True,
                 composer_visible=False,
                 send_visible=False,
-                    clear_visible=False,
-                    todo_visible=True,
-                )
+                clear_visible=False,
+                todo_visible=True,
+            )
             parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
                 _parent_input_component_updates(
                     state,
@@ -504,11 +533,14 @@ def chat_turn(
                 gr.update(value=validation_now, visible=True),
                 gr.update(value=planned_now, visible=True),
                 _send_button(interactive=False, visible=False),
+                _cancel_button(interactive=True, visible=True),
                 _send_button(interactive=False, visible=False),
                 gr.update(value=todo_now, visible=True),
             )
 
     worker.join(timeout=0.1)
+    if str(state.get("active_run_id") or "") != run_id:
+        return
 
     # Update UI chat
     chat_history = chat_box["history"]
@@ -534,6 +566,7 @@ def chat_turn(
         _validation_gate_board(state),
         _planned_work_items_board(state),
         _send_button(interactive=True, visible=True),
+        _cancel_button(interactive=False, visible=False),
         _send_button(interactive=True, visible=True),
         _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
     )
@@ -642,6 +675,77 @@ def decline_parent_input(state: Dict[str, Any]):
     )
 
 
+def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
+    chat_history = chat_history or []
+    state = state or _snapshot_state_default()
+    active_run_id = str(state.get("active_run_id") or "").strip()
+    if not active_run_id:
+        return _restore_snapshot_outputs(_get_ui_snapshot())
+
+    state["cancel_requested"] = True
+    state["active_run_id"] = f"canceled:{active_run_id}"
+    _resolve_parent_input_request(state, response="Pipeline canceled by user", declined=False)
+    append_status(state, "Cancellation requested by user")
+
+    fresh_shared_state = _new_shared_state()
+    fresh_state = {
+        "role_histories": {},
+        "tool_log": "",
+        "tool_log_sections": {},
+        "_tool_log_seen_keys": {},
+        "tool_result_cache": dict(state.get("tool_result_cache") or {}),
+        "status_log": "",
+        "active_run_id": f"idle:{uuid4().hex}",
+        "cancel_requested": False,
+        "allow_parent_input": bool(state.get("allow_parent_input", DEFAULT_ALLOW_PARENT_INPUT)),
+        "shell_execution_mode": _normalize_shell_execution_mode(
+            state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)
+        ),
+        "validator_review_level": _normalize_validator_review_level(
+            state.get("validator_review_level", DEFAULT_VALIDATOR_REVIEW_LEVEL)
+        ),
+        "pending_parent_input": _empty_parent_input(),
+        "shared_state": fresh_shared_state,
+    }
+    detached_note = "[pipeline cancel requested] The current run was detached. You can submit a new query."
+    fresh_history = list(chat_history) + [{"role": "assistant", "content": detached_note}]
+    _store_ui_snapshot(
+        chat_history=fresh_history,
+        state=fresh_state,
+        run_active=False,
+        composer_visible=True,
+        send_visible=True,
+        clear_visible=True,
+        todo_visible=False,
+        force=True,
+    )
+    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
+        _parent_input_component_updates(
+            fresh_state,
+            interactive=True,
+            reset_response=True,
+        )
+    )
+    return _ui_updates(
+        _message_input(value="", interactive=True, visible=True),
+        fresh_history,
+        fresh_state,
+        _allow_parent_input_checkbox(fresh_state, interactive=True, visible=True),
+        _shell_execution_mode_dropdown(fresh_state, interactive=True, visible=True),
+        _validator_review_level_dropdown(fresh_state, interactive=True, visible=True),
+        parent_prompt_update,
+        parent_response_update,
+        parent_submit_update,
+        parent_decline_update,
+        _validation_gate_board(fresh_state),
+        _planned_work_items_board(fresh_state),
+        _send_button(interactive=True, visible=True),
+        _cancel_button(interactive=False, visible=False),
+        _send_button(interactive=True, visible=True),
+        _todo_board({"shared_state": fresh_shared_state}, visible=False),
+    )
+
+
 def reset():
     fresh_shared_state = _new_shared_state()
     fresh_state = {
@@ -651,6 +755,8 @@ def reset():
         "_tool_log_seen_keys": {},
         "tool_result_cache": {},
         "status_log": "",
+        "active_run_id": "",
+        "cancel_requested": False,
         "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
         "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
@@ -687,6 +793,7 @@ def reset():
         _validation_gate_board(fresh_state),
         _planned_work_items_board(fresh_state),
         _send_button(interactive=True, visible=True),
+        _cancel_button(interactive=False, visible=False),
         _send_button(interactive=True, visible=True),
         _todo_board({"shared_state": fresh_shared_state}, visible=False),
     )
@@ -869,6 +976,27 @@ def _start_automation_trigger_server() -> None:
     )
 
 
+def _stop_automation_trigger_server() -> None:
+    global _AUTOMATION_TRIGGER_SERVER
+    server = _AUTOMATION_TRIGGER_SERVER
+    if server is None:
+        return
+    _AUTOMATION_TRIGGER_SERVER = None
+    try:
+        server.shutdown()
+    except Exception as e:
+        print(f"[automation] warning: failed to shutdown trigger server cleanly: {e}", flush=True)
+    try:
+        server.server_close()
+    except Exception as e:
+        print(f"[automation] warning: failed to close trigger server socket cleanly: {e}", flush=True)
+
+
+def shutdown_workflow_services() -> None:
+    _stop_automation_trigger_server()
+    shutdown_runtime_sync()
+
+
 class WorkflowUI:
     def __init__(self, app_settings: Optional[Dict[str, Any]] = None) -> None:
         self.app_settings = dict(app_settings or {})
@@ -878,7 +1006,60 @@ class WorkflowUI:
         if self._demo is not None:
             return self._demo
 
-        with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)") as demo:
+        todo_timer_head = """
+<script>
+(() => {
+  if (window.__wfTodoTimerInstalled) return;
+  window.__wfTodoTimerInstalled = true;
+
+  function formatElapsed(totalSeconds) {
+    if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "--:--";
+    const total = Math.max(0, Math.floor(totalSeconds));
+    const hours = Math.floor(total / 3600);
+    const rem = total % 3600;
+    const minutes = Math.floor(rem / 60);
+    const seconds = rem % 60;
+    if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function updateStageTimers() {
+    const nodes = document.querySelectorAll(".wf-stage-timer");
+    const now = Date.now() / 1000;
+    nodes.forEach((node) => {
+      const status = String(node.dataset.status || "");
+      const started = Number.parseFloat(node.dataset.started || "");
+      const finished = Number.parseFloat(node.dataset.finished || "");
+      const duration = Number.parseFloat(node.dataset.duration || "");
+      let value = null;
+
+      if (status === "running" && Number.isFinite(started)) {
+        value = now - started;
+      } else if ((status === "completed" || status === "failed")) {
+        if (Number.isFinite(duration)) {
+          value = duration;
+        } else if (Number.isFinite(started) && Number.isFinite(finished)) {
+          value = finished - started;
+        }
+      }
+
+      if (value !== null) {
+        node.textContent = formatElapsed(value);
+      }
+    });
+  }
+
+  window.setInterval(updateStageTimers, 1000);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", updateStageTimers, { once: true });
+  } else {
+    updateStageTimers();
+  }
+})();
+</script>
+"""
+
+        with gr.Blocks(title="MCP Deep-Agent Tool Bench (PydanticAI)", head=todo_timer_head) as demo:
             gr.Markdown("# MCP Deep-Agent Tool Bench (PydanticAI + MCPServerStdio)")
             gr.Markdown("Deep pipeline -> staged delegated subagents")
 
@@ -893,7 +1074,6 @@ class WorkflowUI:
                 todo_visible=False,
             )
             state = gr.State(initial_state)
-            snapshot_timer = gr.Timer(0.5, active=True, render=False)
 
             with gr.Sidebar(label="Advanced Settings", open=False, position="right"):
                 gr.Markdown("### Advanced Settings")
@@ -936,10 +1116,12 @@ class WorkflowUI:
                     )
                     with gr.Row():
                         send = gr.Button("Send", variant="primary")
+                        cancel = gr.Button("Cancel", visible=False)
                         clear = gr.Button("Reset")
 
                 with gr.Column(scale=2):
-                    planned_work_items_panel = gr.HTML(value=render_planned_work_items_panel(initial_state))
+                    with gr.Accordion("Planned Work Items", open=False):
+                        planned_work_items_panel = gr.HTML(value=render_planned_work_items_panel(initial_state))
                     with gr.Accordion("Validation Gate", open=False):
                         validation_gate_panel = gr.HTML(value=render_validation_gate_panel(initial_state))
                     gr.Markdown("### Tool Log")
@@ -975,15 +1157,16 @@ class WorkflowUI:
                 planned_work_items_panel,
                 *tool_log_boxes,
                 send,
+                cancel,
                 clear,
                 todo_board,
             ]
-            send.click(
+            send_event = send.click(
                 chat_turn,
                 inputs=[user, chat, state, allow_parent_input, shell_execution_mode, validator_review_level],
                 outputs=ui_outputs,
             )
-            user.submit(
+            submit_event = user.submit(
                 chat_turn,
                 inputs=[user, chat, state, allow_parent_input, shell_execution_mode, validator_review_level],
                 outputs=ui_outputs,
@@ -1024,13 +1207,21 @@ class WorkflowUI:
                 outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
                 show_progress="hidden",
             )
+            cancel.click(
+                cancel_run,
+                inputs=[chat, state],
+                outputs=ui_outputs,
+                show_progress="hidden",
+                queue=False,
+                cancels=[send_event, submit_event],
+            )
             clear.click(reset, inputs=None, outputs=ui_outputs)
-            demo.load(restore_last_ui, inputs=None, outputs=ui_outputs)
-            snapshot_timer.tick(
-                poll_active_ui_snapshot,
+            demo.load(
+                restore_last_ui,
                 inputs=None,
                 outputs=ui_outputs,
                 show_progress="hidden",
+                queue=False,
             )
 
         self._demo = demo
