@@ -119,6 +119,21 @@ def resolve_pipeline_definition(
     return resolved
 
 
+def _pipeline_log_slots_from_presets(
+    pipeline_presets: Mapping[str, List[Dict[str, Any]]],
+) -> List[Tuple[str, str]]:
+    ordered: List[Tuple[str, str]] = []
+    seen: set[Tuple[str, str]] = set()
+    for pipeline in pipeline_presets.values():
+        for stage in pipeline:
+            slot = (str(stage["name"]), str(stage["stage_kind"]))
+            if slot in seen:
+                continue
+            seen.add(slot)
+            ordered.append(slot)
+    return ordered
+
+
 def _load_dotenv_if_present(dotenv_path: Optional[str] = None) -> Optional[Path]:
     raw_path = (dotenv_path or os.environ.get("DOTENV_PATH") or "").strip()
     candidates: List[Path] = []
@@ -234,7 +249,13 @@ def _build_runtime_settings(
             f"Available presets: {', '.join(sorted(architecture_presets))}"
         )
 
-    pipeline_name = (env.get("DEEP_AGENT_PIPELINE_NAME") or "preflight_planner_workers_validators_reporter").strip()
+    raw_pipeline_name = (env.get("DEEP_AGENT_PIPELINE_NAME") or "preflight_planner_workers_validators_reporter").strip()
+    auto_select_pipeline = _env_flag_from(env, "DEEP_AGENT_AUTO_SELECT_PIPELINE", False)
+    if raw_pipeline_name.lower() in {"auto", "dynamic"}:
+        auto_select_pipeline = True
+        pipeline_name = "preflight_planner_workers_validators_reporter"
+    else:
+        pipeline_name = raw_pipeline_name
     if pipeline_name not in pipeline_presets:
         raise RuntimeError(
             f"Unknown DEEP_AGENT_PIPELINE_NAME={pipeline_name!r}. "
@@ -280,6 +301,8 @@ def _build_runtime_settings(
         "MAX_STATUS_LOG_LINES": int(env.get("MAX_STATUS_LOG_LINES", "400")),
         "STATUS_LOG_STDOUT": _env_flag_from(env, "STATUS_LOG_STDOUT", True),
         "DEEP_AGENT_RETRIES": int(env.get("DEEP_AGENT_RETRIES", "4")),
+        "DEEP_AGENT_AUTO_SELECT_PIPELINE": auto_select_pipeline,
+        "DEEP_AGENT_PIPELINE_ROUTER_MODEL": env.get("DEEP_AGENT_PIPELINE_ROUTER_MODEL", "openai:gpt-4o-mini"),
         "DEFAULT_ALLOW_PARENT_INPUT": _env_flag_from(env, "DEFAULT_ALLOW_PARENT_INPUT", False),
         "DEFAULT_VALIDATOR_REVIEW_LEVEL": _normalize_validator_review_level(
             env.get("DEFAULT_VALIDATOR_REVIEW_LEVEL", "default")
@@ -322,9 +345,7 @@ def _build_runtime_settings(
         "DEEP_AGENT_ARCHITECTURE": architecture,
         "DEEP_AGENT_PIPELINE_NAME": pipeline_name,
         "DEEP_AGENT_PIPELINE": pipeline,
-        "PIPELINE_LOG_SLOTS": [
-            (str(stage["name"]), str(stage["stage_kind"])) for stage in pipeline
-        ],
+        "PIPELINE_LOG_SLOTS": _pipeline_log_slots_from_presets(pipeline_presets),
         "launch_kwargs": _build_launch_kwargs(env, extra_launch_kwargs),
     }
 

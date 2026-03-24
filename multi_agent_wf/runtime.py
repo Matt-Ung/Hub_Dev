@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import sys
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -20,8 +21,10 @@ from .config import (
     AGENT_ARCHETYPE_SPECS,
     DEEP_AGENT_ARCHITECTURE,
     DEEP_AGENT_ARCHITECTURE_NAME,
-    DEEP_AGENT_PIPELINE,
+    DEEP_AGENT_AUTO_SELECT_PIPELINE,
     DEEP_AGENT_PIPELINE_NAME,
+    DEEP_AGENT_PIPELINE_PRESETS,
+    DEEP_AGENT_PIPELINE_ROUTER_MODEL,
     DEEP_AGENT_RETRIES,
     DEEP_BACKEND_ROOT,
     DEEP_CONTEXT_MAX_TOKENS,
@@ -46,6 +49,7 @@ from .config import (
     _normalize_shell_execution_mode,
     _normalize_validator_review_level,
     _resolve_repo_relative_path,
+    resolve_pipeline_definition,
 )
 from .shared_state import (
     _append_tool_log_entries,
@@ -473,6 +477,7 @@ def build_stage_prompt(
     shared_state: Optional[Dict[str, Any]] = None,
 ) -> str:
     shared = shared_state or {}
+    selected_pipeline_name = str(shared.get("selected_pipeline_name") or "").strip()
     sections = [
         f"Pipeline stage: {stage_name} ({stage_kind})",
         "Original user request:",
@@ -554,6 +559,30 @@ def build_stage_prompt(
         sections.append("- Clarification rule: if a critical ambiguity remains after reading provided context, you may ask at most one concise parent question.")
     else:
         sections.append("- Clarification rule: parent input is disabled for this run; do not rely on follow-up questions.")
+
+    if selected_pipeline_name == "preflight_direct_answer":
+        sections.extend(
+            [
+                "",
+                "Direct-answer mode:",
+                "- This run is for a simple lookup question, not a full analysis handoff.",
+            ]
+        )
+        if stage_kind == "preflight":
+            sections.extend(
+                [
+                    "- Gather only the directly requested fact and the minimum supporting metadata needed to answer accurately.",
+                    "- Do not include high-value pivots, next steps, or extra metadata unless the user explicitly asked for them.",
+                ]
+            )
+        elif stage_kind == "reporter":
+            sections.extend(
+                [
+                    "- Answer only the user's requested fact in 1-3 short sentences.",
+                    "- Do not include section headers, preflight summaries, pivot lists, unrelated hashes, imports, strings, or next steps unless they were explicitly requested.",
+                    "- If one short supporting detail helps disambiguate the answer, include only that detail.",
+                ]
+            )
     if shell_execution_mode == "none":
         sections.append("- Shell rule: do not call `execute`. Shell command execution is disabled for this run.")
     elif shell_execution_mode == "ask":
@@ -652,6 +681,7 @@ class PipelineStageRuntime:
 @dataclass
 class MultiAgentRuntime:
     pipeline_name: str
+    pipeline_definition: List[Dict[str, Any]]
     stages: List[PipelineStageRuntime]
     static_tool_ids: List[str]
     dynamic_tool_ids: List[str]
@@ -662,7 +692,18 @@ class MultiAgentRuntime:
     deep_backend: Any
 
 
-_RUNTIME: Optional[MultiAgentRuntime] = None
+@dataclass
+class RuntimeSharedAssets:
+    toolsets: List[MCPServerStdio]
+    static_tools: List[MCPServerStdio]
+    dynamic_tools: List[MCPServerStdio]
+    skill_directories: List[str]
+    deep_backend: Any
+
+
+_RUNTIME_SHARED_ASSETS: Optional[RuntimeSharedAssets] = None
+_RUNTIME_CACHE: Dict[str, MultiAgentRuntime] = {}
+_PIPELINE_ROUTER_AGENT: Optional[Agent] = None
 _ACTIVE_PIPELINE_STATE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     "active_pipeline_state",
     default=None,
@@ -839,6 +880,143 @@ def _build_deep_backend() -> Any:
     return deep_backend
 
 
+def _first_available_pipeline(*names: str) -> str:
+    for name in names:
+        if name in DEEP_AGENT_PIPELINE_PRESETS:
+            return name
+    return DEEP_AGENT_PIPELINE_NAME
+
+
+def get_pipeline_definition_sync(pipeline_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    selected_name = str(pipeline_name or DEEP_AGENT_PIPELINE_NAME).strip() or DEEP_AGENT_PIPELINE_NAME
+    if selected_name not in DEEP_AGENT_PIPELINE_PRESETS:
+        raise RuntimeError(
+            f"Unknown pipeline preset {selected_name!r}. "
+            f"Available presets: {', '.join(sorted(DEEP_AGENT_PIPELINE_PRESETS))}"
+        )
+    return resolve_pipeline_definition(DEEP_AGENT_PIPELINE_PRESETS[selected_name], DEEP_AGENT_ARCHITECTURE)
+
+
+def _pipeline_router_prompt(default_pipeline_name: str) -> str:
+    available = "\n".join(f"- {name}" for name in sorted(DEEP_AGENT_PIPELINE_PRESETS))
+    return (
+        "Choose exactly one pipeline preset name for this malware-analysis request.\n"
+        "Return only the pipeline preset name. Do not explain.\n\n"
+        "Routing guidance:\n"
+        "- Use `preflight_direct_answer` for simple metadata/path/hash/program-info questions where the user wants a direct answer.\n"
+        "- Use `preflight_only` only if a raw preflight handoff is specifically desired.\n"
+        "- Use `preflight_planner_workers_reporter` for normal analysis or triage questions that do not need strict validation.\n"
+        "- Use `preflight_planner_workers_validators_reporter` for deep, evidence-heavy reverse-engineering or report requests.\n"
+        f"- If unsure, choose `{default_pipeline_name}`.\n\n"
+        f"Available presets:\n{available}"
+    )
+
+
+def _build_pipeline_router_agent() -> Agent:
+    global _PIPELINE_ROUTER_AGENT
+    if _PIPELINE_ROUTER_AGENT is None:
+        _PIPELINE_ROUTER_AGENT = Agent(
+            DEEP_AGENT_PIPELINE_ROUTER_MODEL,
+            output_type=str,
+            instructions=_pipeline_router_prompt(DEEP_AGENT_PIPELINE_NAME),
+            retries=1,
+        )
+    return _PIPELINE_ROUTER_AGENT
+
+
+def _extract_pipeline_name_from_router_output(raw_output: Any) -> str:
+    text = str(raw_output or "").strip()
+    if not text:
+        return ""
+    stripped = text.strip("` \n\r\t")
+    if stripped in DEEP_AGENT_PIPELINE_PRESETS:
+        return stripped
+    for line in stripped.splitlines():
+        candidate = line.strip().strip("`*- ").split()[0].strip("`*,.:")
+        if candidate in DEEP_AGENT_PIPELINE_PRESETS:
+            return candidate
+    for name in sorted(DEEP_AGENT_PIPELINE_PRESETS, key=len, reverse=True):
+        if name in stripped:
+            return name
+    return ""
+
+
+def _select_pipeline_name_by_heuristic(user_text: str) -> str:
+    text = " ".join(str(user_text or "").lower().split())
+    if not text:
+        return DEEP_AGENT_PIPELINE_NAME
+
+    simple_metadata = (
+        bool(
+            re.search(
+                r"\b(name|filename|file name|path|location|sha256|md5|hash|file size|size|timestamp|metadata|program info|executable name)\b",
+                text,
+            )
+        )
+        and not re.search(
+            r"\b(analy[sz]e|analysis|control flow|obfuscat|mitre|att&ck|report|reverse engineer|what does it do|capabilit|behavior|decompile|xref)\b",
+            text,
+        )
+    )
+    if simple_metadata:
+        return _first_available_pipeline(
+            "preflight_direct_answer",
+            "preflight_only",
+            "preflight_planner_workers_reporter",
+        )
+
+    if re.search(r"\b(triage|quick look|quick summary|high level|summary|summarize|overview)\b", text):
+        return _first_available_pipeline(
+            "preflight_planner_workers_reporter",
+            "planner_workers_reporter",
+            "preflight_planner_workers_validators_reporter",
+        )
+
+    if re.search(
+        r"\b(analy[sz]e|analysis|control flow|obfuscat|mitre|att&ck|report|reverse engineer|what does it do|capabilit|behavior|decompile|xref|validator|evidence)\b",
+        text,
+    ):
+        return _first_available_pipeline(
+            "preflight_planner_workers_validators_reporter",
+            "planner_workers_validators_reporter",
+            "preflight_planner_workers_reporter",
+        )
+
+    return ""
+
+
+def select_pipeline_name_for_query_sync(user_text: str, state: Optional[Dict[str, Any]] = None) -> str:
+    default_pipeline_name = DEEP_AGENT_PIPELINE_NAME
+    if not DEEP_AGENT_AUTO_SELECT_PIPELINE:
+        return default_pipeline_name
+
+    heuristic_choice = _select_pipeline_name_by_heuristic(user_text)
+    if heuristic_choice:
+        if isinstance(state, dict):
+            append_status(state, f"Auto-selected pipeline via heuristic: {heuristic_choice}")
+        return heuristic_choice
+
+    try:
+        result = _build_pipeline_router_agent().run_sync(
+            (
+                f"User request:\n{str(user_text or '').strip()}\n\n"
+                "Choose the best pipeline preset name for this request."
+            )
+        )
+        selected = _extract_pipeline_name_from_router_output(result.output)
+        if selected:
+            if isinstance(state, dict):
+                append_status(state, f"Auto-selected pipeline via router: {selected}")
+            return selected
+        if isinstance(state, dict):
+            append_status(state, f"Pipeline router returned an invalid preset; using default {default_pipeline_name}")
+    except Exception as e:
+        if isinstance(state, dict):
+            append_status(state, f"Pipeline router failed ({type(e).__name__}); using default {default_pipeline_name}")
+
+    return default_pipeline_name
+
+
 def expand_architecture_slots(architecture: List[Tuple[str, int]]) -> List[Dict[str, str]]:
     slots: List[Dict[str, str]] = []
     for archetype_name, quantity in architecture:
@@ -1005,6 +1183,7 @@ def build_stage_runtime(
 
 
 def build_deep_runtime_components(
+    pipeline_definition: List[Dict[str, Any]],
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
 ) -> Tuple[List[PipelineStageRuntime], List[str], Any]:
@@ -1012,30 +1191,59 @@ def build_deep_runtime_components(
     deep_backend = _build_deep_backend()
     stages = [
         build_stage_runtime(stage_definition, static_tools, dynamic_tools, skill_directories, deep_backend)
-        for stage_definition in DEEP_AGENT_PIPELINE
+        for stage_definition in pipeline_definition
     ]
     return stages, skill_directories, deep_backend
 
 
-def get_runtime_sync() -> MultiAgentRuntime:
-    global _RUNTIME
-    if _RUNTIME is not None:
-        return _RUNTIME
+def _get_runtime_shared_assets_sync() -> RuntimeSharedAssets:
+    global _RUNTIME_SHARED_ASSETS
+    if _RUNTIME_SHARED_ASSETS is not None:
+        return _RUNTIME_SHARED_ASSETS
 
     toolsets = load_mcp_servers(str(REPO_ROOT / "MCPServers" / "servers.json"))
     static_tools, dynamic_tools = partition_toolsets(toolsets)
+    skill_directories = _build_skill_directories()
+    deep_backend = _build_deep_backend()
 
     print("Loaded MCP servers:", [s.id for s in toolsets])
     print("Static tools:", [s.id for s in static_tools])
     print("Dynamic tools:", [s.id for s in dynamic_tools])
 
-    stages, skill_directories, deep_backend = build_deep_runtime_components(static_tools, dynamic_tools)
+    _RUNTIME_SHARED_ASSETS = RuntimeSharedAssets(
+        toolsets=toolsets,
+        static_tools=static_tools,
+        dynamic_tools=dynamic_tools,
+        skill_directories=skill_directories,
+        deep_backend=deep_backend,
+    )
+    return _RUNTIME_SHARED_ASSETS
+
+
+def get_runtime_sync(pipeline_name: Optional[str] = None) -> MultiAgentRuntime:
+    selected_pipeline_name = str(pipeline_name or DEEP_AGENT_PIPELINE_NAME).strip() or DEEP_AGENT_PIPELINE_NAME
+    cached_runtime = _RUNTIME_CACHE.get(selected_pipeline_name)
+    if cached_runtime is not None:
+        return cached_runtime
+
+    shared_assets = _get_runtime_shared_assets_sync()
+    pipeline_definition = get_pipeline_definition_sync(selected_pipeline_name)
+    stages = [
+        build_stage_runtime(
+            stage_definition,
+            shared_assets.static_tools,
+            shared_assets.dynamic_tools,
+            shared_assets.skill_directories,
+            shared_assets.deep_backend,
+        )
+        for stage_definition in pipeline_definition
+    ]
     print("Deep-agent mode: required")
     print(
         "Deep config:",
         {
-            "pipeline_name": DEEP_AGENT_PIPELINE_NAME,
-            "pipeline": DEEP_AGENT_PIPELINE,
+            "pipeline_name": selected_pipeline_name,
+            "pipeline": pipeline_definition,
             "worker_architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,
             "worker_architecture": DEEP_AGENT_ARCHITECTURE,
             "worker_subagents": expand_architecture_names(DEEP_AGENT_ARCHITECTURE),
@@ -1051,28 +1259,30 @@ def get_runtime_sync() -> MultiAgentRuntime:
         },
     )
 
-    _RUNTIME = MultiAgentRuntime(
-        pipeline_name=DEEP_AGENT_PIPELINE_NAME,
+    runtime = MultiAgentRuntime(
+        pipeline_name=selected_pipeline_name,
+        pipeline_definition=pipeline_definition,
         stages=stages,
-        static_tool_ids=[s.id or "" for s in static_tools],
-        dynamic_tool_ids=[s.id or "" for s in dynamic_tools],
-        sandbox_tool_ids=_sandbox_tool_ids(dynamic_tools),
-        static_tools=static_tools,
-        dynamic_tools=dynamic_tools,
-        skill_directories=skill_directories,
-        deep_backend=deep_backend,
+        static_tool_ids=[s.id or "" for s in shared_assets.static_tools],
+        dynamic_tool_ids=[s.id or "" for s in shared_assets.dynamic_tools],
+        sandbox_tool_ids=_sandbox_tool_ids(shared_assets.dynamic_tools),
+        static_tools=shared_assets.static_tools,
+        dynamic_tools=shared_assets.dynamic_tools,
+        skill_directories=shared_assets.skill_directories,
+        deep_backend=shared_assets.deep_backend,
     )
-    return _RUNTIME
+    _RUNTIME_CACHE[selected_pipeline_name] = runtime
+    return runtime
 
 
 async def _shutdown_runtime_async() -> None:
-    global _RUNTIME
-    runtime = _RUNTIME
-    if runtime is None:
+    global _RUNTIME_SHARED_ASSETS
+    shared_assets = _RUNTIME_SHARED_ASSETS
+    if shared_assets is None:
         return
 
     seen: set[int] = set()
-    for server in list(runtime.static_tools) + list(runtime.dynamic_tools):
+    for server in list(shared_assets.static_tools) + list(shared_assets.dynamic_tools):
         key = id(server)
         if key in seen:
             continue
@@ -1085,7 +1295,8 @@ async def _shutdown_runtime_async() -> None:
         except Exception as e:
             print(f"[runtime shutdown] warning: failed to close MCP server {getattr(server, 'id', 'unknown')}: {e}")
 
-    _RUNTIME = None
+    _RUNTIME_CACHE.clear()
+    _RUNTIME_SHARED_ASSETS = None
 
 
 def shutdown_runtime_sync() -> None:

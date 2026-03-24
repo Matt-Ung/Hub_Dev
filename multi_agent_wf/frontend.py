@@ -17,6 +17,7 @@ from .config import (
     AUTOMATION_TRIGGER_HOST,
     AUTOMATION_TRIGGER_PATH,
     AUTOMATION_TRIGGER_PORT,
+    DEEP_AGENT_AUTO_SELECT_PIPELINE,
     DEFAULT_ALLOW_PARENT_INPUT,
     DEFAULT_SHELL_EXECUTION_MODE,
     DEFAULT_VALIDATOR_REVIEW_LEVEL,
@@ -35,7 +36,12 @@ from .pipeline import (
     render_validation_gate_panel,
     run_deepagent_pipeline,
 )
-from .runtime import get_runtime_sync, shutdown_runtime_sync
+from .runtime import (
+    get_pipeline_definition_sync,
+    get_runtime_sync,
+    select_pipeline_name_for_query_sync,
+    shutdown_runtime_sync,
+)
 from .shared_state import (
     _empty_parent_input,
     _get_ui_snapshot,
@@ -368,7 +374,12 @@ def chat_turn(
     state["tool_log"] = ""
     state["tool_log_sections"] = {}
     state["_tool_log_seen_keys"] = {}
-    state["shared_state"]["pipeline_stage_progress"] = _stage_progress_from_pipeline_definition()
+    selected_pipeline_name = select_pipeline_name_for_query_sync(user_text, state)
+    selected_pipeline_definition = get_pipeline_definition_sync(selected_pipeline_name)
+    state["shared_state"]["selected_pipeline_name"] = selected_pipeline_name
+    state["shared_state"]["pipeline_stage_progress"] = _stage_progress_from_pipeline_definition(
+        selected_pipeline_definition
+    )
     state["shared_state"]["planned_work_items"] = []
     state["shared_state"]["planned_work_items_parse_error"] = ""
     state["shared_state"]["validation_retry_count"] = 0
@@ -377,13 +388,20 @@ def chat_turn(
     state["shared_state"]["validation_history"] = []
 
     append_status(state, f"New query: {_shorten(user_text, max_chars=220)}")
+    append_status(state, f"Pipeline selected for query: {selected_pipeline_name}")
     running_note = "[deep pipeline running... task board is live]"
+    routing_note = ""
+    if DEEP_AGENT_AUTO_SELECT_PIPELINE:
+        routing_note = (
+            "Pipeline auto-selection is enabled.\n"
+            f'The determined best pipeline for the query "{user_text}" is `{selected_pipeline_name}`.'
+        )
 
     # Show user input immediately and begin streaming status/tool log updates.
-    chat_box["history"] = chat_history + [
-        {"role": "user", "content": user_text},
-        {"role": "assistant", "content": running_note},
-    ]
+    chat_box["history"] = chat_history + [{"role": "user", "content": user_text}]
+    if routing_note:
+        chat_box["history"].append({"role": "assistant", "content": routing_note})
+    chat_box["history"].append({"role": "assistant", "content": running_note})
     _store_ui_snapshot(
         chat_history=chat_box["history"],
         state=state,
@@ -421,7 +439,7 @@ def chat_turn(
     )
 
     def _run_deep_pipeline() -> Tuple[str, str]:
-        runtime = get_runtime_sync()
+        runtime = get_runtime_sync(pipeline_name=selected_pipeline_name)
         return run_deepagent_pipeline(runtime, user_text, state), "deep_pipeline"
 
     result_box: Dict[str, str] = {"assistant_text": running_note}
@@ -1097,7 +1115,11 @@ class WorkflowUI:
 
             with gr.Row():
                 with gr.Column(scale=3):
-                    chat = gr.Chatbot(label="Chat", height=330)
+                    chat = gr.Chatbot(
+                        label="Chat",
+                        height=330,
+                        group_consecutive_messages=False,
+                    )
                     todo_board = gr.HTML(visible=False)
                     parent_prompt_panel = gr.HTML(value=render_parent_input_panel(initial_state), visible=False)
                     parent_response = gr.Textbox(

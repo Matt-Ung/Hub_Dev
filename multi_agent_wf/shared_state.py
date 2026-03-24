@@ -36,6 +36,7 @@ from .config import (
     MAX_TOOL_LOG_CHARS,
     MAX_VALIDATION_REPLAN_RETRIES,
     PATH_HANDOFF_LINE_PREFIX,
+    REPO_ROOT,
     SAMPLE_PATH_POSIX_RE,
     SAMPLE_PATH_QUOTED_RE,
     SAMPLE_PATH_WINDOWS_RE,
@@ -49,6 +50,10 @@ _LIVE_TOOL_LOG_STATE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
 _STATE_MUTATION_LOCK = Lock()
 _PARENT_INPUT_LOCK = Lock()
 _PARENT_INPUT_REQUESTS: Dict[str, Dict[str, Any]] = {}
+_SERVER_RUN_TOOL_LOG_LOCK = Lock()
+_SERVER_RUN_TOOL_LOG_DIR: Optional[Path] = None
+_SERVER_RUN_TOOL_LOG_STAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+_SERVER_RUN_TOOL_LOG_ANNOUNCED = False
 
 # ----------------------------
 # Tool log extraction (best-effort)
@@ -172,6 +177,50 @@ def _tool_log_dedupe_key(entry: Dict[str, Any]) -> str:
     return json.dumps(stable, sort_keys=True, ensure_ascii=False, default=str)
 
 
+def _stage_log_filename(stage_name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(stage_name or "").strip()).strip("._")
+    return f"{safe or 'unknown'}.log"
+
+
+def _server_run_tool_log_dir() -> Path:
+    global _SERVER_RUN_TOOL_LOG_DIR, _SERVER_RUN_TOOL_LOG_ANNOUNCED
+    with _SERVER_RUN_TOOL_LOG_LOCK:
+        if _SERVER_RUN_TOOL_LOG_DIR is None:
+            run_dir = (REPO_ROOT / "logs" / f"agentToolBench_{_SERVER_RUN_TOOL_LOG_STAMP}").resolve()
+            run_dir.mkdir(parents=True, exist_ok=True)
+            _SERVER_RUN_TOOL_LOG_DIR = run_dir
+        if not _SERVER_RUN_TOOL_LOG_ANNOUNCED:
+            print(f"[tool log files] writing stage logs to {_SERVER_RUN_TOOL_LOG_DIR}", flush=True)
+            _SERVER_RUN_TOOL_LOG_ANNOUNCED = True
+        return _SERVER_RUN_TOOL_LOG_DIR
+
+
+def _append_tool_log_file_entries(
+    state: Dict[str, Any],
+    stage_name: str,
+    rendered_entries: List[str],
+) -> None:
+    if not rendered_entries:
+        return
+
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    run_id = str(state.get("active_run_id") or "").strip() or "server"
+    log_path = _server_run_tool_log_dir() / _stage_log_filename(stage_name)
+    chunks: List[str] = []
+    for rendered in rendered_entries:
+        chunks.append(f"[{timestamp}] run_id={run_id} stage={stage_name}")
+        chunks.append(rendered)
+        chunks.append("")
+    payload = "\n".join(chunks)
+
+    try:
+        with _SERVER_RUN_TOOL_LOG_LOCK:
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(payload)
+    except Exception as exc:
+        print(f"[tool log files] warning: failed to append {log_path}: {exc}", flush=True)
+
+
 def _append_tool_log_entries(
     state: Dict[str, Any],
     stage_name: str,
@@ -208,6 +257,7 @@ def _append_tool_log_entries(
         if len(merged_section) > MAX_TOOL_LOG_CHARS:
             merged_section = merged_section[-MAX_TOOL_LOG_CHARS:]
         sections[stage_name] = merged_section
+    _append_tool_log_file_entries(state, stage_name, rendered_entries)
     _store_ui_snapshot(state=state)
 
 

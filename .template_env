@@ -3,44 +3,137 @@
 ##   cp .template_env .env
 
 ## Keys
+# Required for all OpenAI model calls.
 OPENAI_API_KEY=""
 
-## UI defaults
+## Recommended to Play Around With
+# false = agents cannot pause a run to ask you for clarification.
+# true  = agents may request one follow-up during a run; better for ambiguous requests, slower for uninterrupted runs.
 DEFAULT_ALLOW_PARENT_INPUT=false
+
+# Shell execution policy for shell-backed MCP tools:
+#   none = never allow shell execution
+#   ask  = prompt you before a shell command runs
+#   full = allow shell commands without asking
 DEFAULT_SHELL_EXECUTION_MODE=none
+
+# Review profiles:
+#   easy         = prioritize relevance and clarity over proof depth
+#   default      = balanced technical review
+#   intermediate = stronger evidence expectations
+#   strict       = closest to professional malware-analysis review
 DEFAULT_VALIDATOR_REVIEW_LEVEL=default
+
+# false = local-only UI, no public Gradio share link.
+# true  = Gradio may expose a public share URL; useful for demos, riskier for normal local work.
 GRADIO_SHARE=false
+
+# false = start the server without auto-opening a browser tab.
+# true  = open the UI automatically in your default browser.
 GRADIO_INBROWSER=false
+
+# Gradio bind address and port for the local UI.
 GRADIO_SERVER_NAME=127.0.0.1
 GRADIO_SERVER_PORT=7860
 
-## Model defaults
-DOTENV_PATH=.env
+# Global fallback model.
+# Stage-level overrides: Hub_Dev/multi_agent_wf/workflow_config/pipeline_presets.json
+# Role-level overrides: Hub_Dev/multi_agent_wf/workflow_config/agent_archetype_specs.json
 OPENAI_MODEL_ID=openai:gpt-5-mini
-# Options come from: Hub_Dev/multi_agent_wf/workflow_config/architecture_presets.json
+
+# Worker breadth preset: controls which specialist roles exist and how many copies of each are available.
+# Options: Hub_Dev/multi_agent_wf/workflow_config/architecture_presets.json
 DEEP_AGENT_ARCHITECTURE_NAME=aws_collaboration
-# Options come from: Hub_Dev/multi_agent_wf/workflow_config/pipeline_presets.json
+
+# Pipeline preset / fallback pipeline when auto-selection is off.
+# Options: Hub_Dev/multi_agent_wf/workflow_config/pipeline_presets.json
 DEEP_AGENT_PIPELINE_NAME=preflight_planner_workers_validators_reporter
-# Stage-level model overrides live in: Hub_Dev/multi_agent_wf/workflow_config/pipeline_presets.json
-# Role-level model overrides live in: Hub_Dev/multi_agent_wf/workflow_config/agent_archetype_specs.json
-DEEP_ENABLE_MEMORY=true
-DEEP_MEMORY_DIR=.deep/memory
-DEEP_PERSIST_BACKEND=true
-DEEP_BACKEND_ROOT=./.deep_backend
-DEEP_ENABLE_SKILLS=true
-DEEP_INCLUDE_BUNDLED_SKILLS=true
-DEEP_SKILL_DIRS=
+
+# false = always use DEEP_AGENT_PIPELINE_NAME as-is.
+# true  = route each query to the most appropriate pipeline; faster for simple questions, more variable between runs.
+# Note: setting DEEP_AGENT_PIPELINE_NAME to auto or dynamic also enables this behavior.
+DEEP_AGENT_AUTO_SELECT_PIPELINE=true
+
+# Lightweight router model used only when auto pipeline selection needs an LLM decision.
+DEEP_AGENT_PIPELINE_ROUTER_MODEL=openai:gpt-4o-mini
+
+# false = keep worker execution mostly serialized behind the stage manager.
+# true  = host can fan out independent worker items in parallel; faster, but higher TPM/cost and more backend contention.
 HOST_PARALLEL_WORKER_EXECUTION=true
+
+# Upper bound when host-side worker parallelism is enabled.
+# Higher values can reduce wall-clock time but may increase token burn and stress MCP backends.
+MAX_PARALLEL_WORKERS=2
+
+# How much recent role conversation history to keep.
+# Higher = more context retention, but more tokens.
+MAX_ROLE_HISTORY_MESSAGES=16
+
+# How many times validators can send work back for replanning.
+# Higher = more chances to recover a run, but longer total runtime.
+MAX_VALIDATION_REPLAN_RETRIES=2
+
+# Model retry count for transient failures / rate limits.
+# Higher = more resilient, but can prolong failing runs.
+DEEP_AGENT_RETRIES=4
+
+# Max context budget supplied to deep agents.
+# Higher = richer context, but more tokens and cost.
+DEEP_CONTEXT_MAX_TOKENS=18000
+
+## Recommend to NOT Change
+# Path the loader checks first for environment defaults.
+DOTENV_PATH=.env
+
+# false = disable persisted deep memory entirely.
+# true  = keep the workflow memory system enabled across runs.
+DEEP_ENABLE_MEMORY=true
+
+# Directory where deep memory artifacts are stored.
+DEEP_MEMORY_DIR=.deep/memory
+
+# false = backend memory/storage is transient to the process.
+# true  = keep backend state on disk across restarts.
+DEEP_PERSIST_BACKEND=true
+
+# Root directory used for persisted backend state.
+DEEP_BACKEND_ROOT=./.deep_backend
+
+# false = disable repo/local skills loading.
+# true  = enable skill discovery and usage during runs.
+DEEP_ENABLE_SKILLS=true
+
+# false = only load repo/local skills.
+# true  = also load bundled pydantic-deep skills.
+DEEP_INCLUDE_BUNDLED_SKILLS=true
+
+# Extra external skill directories. Leave blank unless you intentionally add more skill roots.
+DEEP_SKILL_DIRS=
+
+# false = stop mirroring status lines to stdout.
+# true  = print pipeline status lines in the server console.
 STATUS_LOG_STDOUT=true
+
+# Server ids that should have successful results cached by exact call signature.
+# Change only if you intentionally expand or reduce caching coverage.
 TOOL_RESULT_CACHE_SERVER_MARKERS=capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy
+
+# Server ids that must stay serialized even when worker parallelism is enabled.
+# Keep ghidra here unless you know the backend is safe under concurrency.
 SERIAL_MCP_SERVER_MARKERS=ghidra
 
-## Max/Min vals
-MAX_ROLE_HISTORY_MESSAGES=16
+# false = disable the local automation trigger server used for Ghidra auto-load workflows.
+# true  = keep the local trigger endpoint enabled.
+AUTOMATION_TRIGGER_ENABLED=true
+
+# Local automation trigger bind settings.
+AUTOMATION_TRIGGER_HOST=127.0.0.1
+AUTOMATION_TRIGGER_PORT=7861
+AUTOMATION_TRIGGER_PATH=/automation/ghidra-load
+AUTOMATION_TRIGGER_HEALTH_PATH=/automation/health
+
+# Internal caps that mainly protect UI/state size.
 MAX_TASK_OUTPUTS=32
 MAX_TOOL_LOG_CHARS=120000
 MAX_TOOL_RESULT_CACHE_ENTRIES=64
-MAX_VALIDATION_REPLAN_RETRIES=2
 MAX_STATUS_LOG_LINES=400
-DEEP_AGENT_RETRIES=4
-DEEP_CONTEXT_MAX_TOKENS=18000

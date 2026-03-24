@@ -1,4 +1,20 @@
 {
+  "preflight_direct_answer": [
+    {
+      "name": "preflight",
+      "stage_kind": "preflight",
+      "architecture": [["preflight_analyst", 1]],
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
+    },
+    {
+      "name": "reporter",
+      "stage_kind": "reporter",
+      "architecture": [["reporting_analyst", 1]],
+      "use_worker_architecture": false,
+      "model": "openai:gpt-4o-mini"
+    }
+  ],
   "preflight_planner_workers_reporter": [
     {
       "name": "preflight",

@@ -10,7 +10,6 @@ from pydantic_ai import ModelMessage
 from .config import (
     DEEP_AGENT_ARCHITECTURE,
     DEEP_AGENT_ARCHITECTURE_NAME,
-    DEEP_AGENT_PIPELINE,
     DEFAULT_SHELL_EXECUTION_MODE,
     HOST_PARALLEL_WORKER_EXECUTION,
     MAX_PARALLEL_WORKERS,
@@ -57,9 +56,11 @@ def _check_cancel_requested(state: Dict[str, Any], *, location: str = "") -> Non
         detail = f" ({location})" if location else ""
         raise PipelineCancelled(f"Pipeline canceled by user{detail}")
 
-def _stage_progress_from_pipeline_definition() -> List[Dict[str, Any]]:
+def _stage_progress_from_pipeline_definition(
+    pipeline_definition: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     progress: List[Dict[str, Any]] = []
-    for raw_stage in DEEP_AGENT_PIPELINE:
+    for raw_stage in list(pipeline_definition or []):
         architecture = list(raw_stage.get("architecture") or [])
         if raw_stage.get("use_worker_architecture"):
             architecture = list(DEEP_AGENT_ARCHITECTURE)
@@ -1096,7 +1097,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["deep_architecture"] = list(DEEP_AGENT_ARCHITECTURE)
     shared["deep_subagents"] = expand_architecture_names(DEEP_AGENT_ARCHITECTURE)
     shared["deep_pipeline_name"] = runtime.pipeline_name
-    shared["deep_pipeline"] = list(DEEP_AGENT_PIPELINE)
+    shared["deep_pipeline"] = list(runtime.pipeline_definition)
     shared["available_static_tools"] = list(runtime.static_tool_ids)
     shared["available_dynamic_tools"] = list(runtime.dynamic_tool_ids)
     shared["available_sandbox_tools"] = list(runtime.sandbox_tool_ids)
