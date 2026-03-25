@@ -23,9 +23,14 @@ from pydantic_ai.messages import (
 )
 
 from .config import (
+    DEEP_AGENT_ARCHITECTURE_NAME,
+    DEEP_AGENT_AUTO_SELECT_PIPELINE,
+    DEEP_AGENT_PIPELINE_NAME,
     DEFAULT_ALLOW_PARENT_INPUT,
     DEFAULT_SHELL_EXECUTION_MODE,
     DEFAULT_VALIDATOR_REVIEW_LEVEL,
+    GHIDRA_CHANGE_PROPOSALS_END,
+    GHIDRA_CHANGE_PROPOSALS_START,
     GHIDRA_EXECUTABLE_MD5_RE,
     GHIDRA_EXECUTABLE_PATH_RE,
     GHIDRA_EXECUTABLE_SHA256_RE,
@@ -333,8 +338,14 @@ def append_tool_log_delta(
 
 
 def _sanitize_user_facing_output(text: str) -> str:
+    output = re.sub(
+        rf"{re.escape(GHIDRA_CHANGE_PROPOSALS_START)}[\s\S]*?{re.escape(GHIDRA_CHANGE_PROPOSALS_END)}",
+        "",
+        text or "",
+        flags=re.DOTALL,
+    )
     cleaned: List[str] = []
-    for raw_line in (text or "").splitlines():
+    for raw_line in output.splitlines():
         stripped = raw_line.strip()
         lowered = stripped.lower()
         if lowered.startswith(PATH_HANDOFF_LINE_PREFIX.lower()):
@@ -827,7 +838,12 @@ def _new_shared_state() -> Dict[str, Any]:
         "validated_sample_image_base": "",
         "validated_sample_metadata_source": "",
         "planned_work_items": [],
+        "planned_work_item_status": {},
         "planned_work_items_parse_error": "",
+        "ghidra_change_proposals": [],
+        "ghidra_change_draft_proposals": [],
+        "ghidra_change_queue_finalized": False,
+        "ghidra_change_parse_error": "",
         "pipeline_stage_outputs": [],
         "pipeline_stage_progress": [],
         "available_static_tools": [],
@@ -886,6 +902,7 @@ _UI_SNAPSHOT: Dict[str, Any] = {
 
 
 def _snapshot_state_default() -> Dict[str, Any]:
+    default_pipeline_selector_value = "dynamic" if DEEP_AGENT_AUTO_SELECT_PIPELINE else DEEP_AGENT_PIPELINE_NAME
     return {
         "role_histories": {},
         "tool_log": "",
@@ -898,6 +915,9 @@ def _snapshot_state_default() -> Dict[str, Any]:
         "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
         "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
+        "deep_agent_auto_select_pipeline": DEEP_AGENT_AUTO_SELECT_PIPELINE,
+        "deep_agent_architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,
+        "deep_agent_pipeline_name": default_pipeline_selector_value,
         "pending_parent_input": _empty_parent_input(),
         "shared_state": _new_shared_state(),
     }

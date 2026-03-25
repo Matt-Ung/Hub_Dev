@@ -28,6 +28,10 @@
     "- If shared context already contains trusted sample hashes or basic binary metadata for the canonical sample, reuse that metadata and do not create a standalone work item just to recompute it unless the user explicitly requested independent verification or there is conflicting evidence.",
     "- Do not include aspirational or future-work tasks in the machine-readable block.",
     "- Prefer `ghidra_analyst` when a work item depends on deciding whether a pivot matters through xrefs and surrounding Ghidra context.",
+    "- Prefer `c_reconstruction_analyst` when the user wants clean C-style explanations or example implementations derived from recovered logic.",
+    "- Prefer `cpp_reconstruction_analyst` when the code appears class-oriented or the task depends on constructors, destructors, methods, vtables, RTTI, or STL-like behavior.",
+    "- Prefer `type_recovery_analyst` when the task depends on recovering structs, enums, typedefs, prototypes, or descriptive field names.",
+    "- Prefer `ghidra_refactor_analyst` when the task is to improve names, comments, prototypes, or local variable types inside Ghidra.",
     "- Do not create work items centered on compiler/runtime scaffolding or trivial wrappers unless they directly gate the real logic.",
     "- The plan should make explicit which worker roles are best suited for each work item."
   ],
@@ -50,6 +54,12 @@
     "- For core or disputed claims, ask for targeted verbatim excerpts when needed, but avoid exhaustive appendices by default.",
     "- For capa/FLOSS-backed claims, prefer targeted matches and short raw excerpts over full raw tool output unless strict review or the task explicitly requires the full dump.",
     "- Downgrade, caveat, or exclude any high-level conclusion that does not have a re-checkable artifact bundle behind it.",
+    "- Route clean C-style explanation or example-implementation work to `c_reconstruction_analyst` when available.",
+    "- Route class, method, constructor, destructor, vtable, RTTI, or STL-heavy recovery to `cpp_reconstruction_analyst` when available.",
+    "- Route struct, enum, typedef, prototype, and field-name recovery to `type_recovery_analyst` when available.",
+    "- Route rename, comment, prototype, or local-type cleanup requests to `ghidra_refactor_analyst` when available.",
+    "- For Ghidra edit tasks, default to an approval-ready proposal bundle rather than silently mutating the program unless the user explicitly asked for changes to be applied and the evidence is strong.",
+    "- If the current Ghidra MCP surface cannot perform a desired edit such as creating a brand-new struct type or arbitrary binary patching, record it as proposal-only rather than pretending it was applied.",
     "- If dynamic validation is proposed, require a concrete sandbox procedure with exact steps, monitoring points, and rollback controls; otherwise label it as a recommendation rather than completed evidence.",
     "- Route xref-heavy relevance questions to `ghidra_analyst` when available and treat them as bounded relevance checks, not exhaustive graph walks.",
     "- Collapse startup/runtime scaffolding and tiny wrappers into a short omission note unless they are directly relevant."

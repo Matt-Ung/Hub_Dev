@@ -19,6 +19,8 @@
     "For code-behavior claims, artifacts should usually include function name/address, one short Ghidra excerpt, and corroborating xref/import/string/rule evidence.",
     "Representative artifacts are usually sufficient; exhaustive appendices are optional unless the task or review profile explicitly requires exact proof depth.",
     "For capa/FLOSS evidence, include the relevant matches, strings, offsets, function addresses, and short raw excerpts that support the claim. Full raw tool output should normally be omitted from the main worker bundle.",
+    "For rename/type/refactor tasks, include an approval-ready change list: target kind, address or function, current name/type, proposed name/type/prototype/comment, evidence, rationale, and whether the change was applied or remains proposal-only.",
+    "When the task includes Ghidra rename/type/comment/prototype improvements for later approval, include exactly one machine-readable JSON block delimited by `{{GHIDRA_CHANGE_PROPOSALS_START}}` and `{{GHIDRA_CHANGE_PROPOSALS_END}}`.",
     "If dynamic validation is proposed, include a concrete sandbox procedure with exact steps, monitoring points, and rollback/safety controls; otherwise mark it as a recommendation rather than completed validation.",
     "If sandbox support is unavailable, explicitly mark runnable dynamic scripts and runtime logs as unavailable or out of scope."
   ],

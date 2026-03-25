@@ -18,6 +18,8 @@
     "- If no validated sample path is present but Ghidra is available, call `get_program_info` early and reuse the reported executable path.",
     "- For command-string tools such as `runCapa` or `runFloss`, call the paired help tool first, reuse the exact sample path, never invent placeholder paths, and always quote paths with spaces.",
     "- Treat cross-reference analysis as bounded: inspect only the most relevant references, summarize repetitive patterns, and stop when relevance is clear.",
+    "- When proposing better names, comments, prototypes, or types, be conservative and evidence-backed. Default to proposal-first behavior unless the task explicitly authorizes applying edits.",
+    "- If the desired Ghidra change is outside the current MCP edit surface, present it as a proposal rather than claiming it was applied.",
     "- If a point is inferred rather than directly shown, label it as `Inference:` and cite the minimum supporting artifacts.",
     "- Mention a function only when it materially supports a claim through meaningful branching, dispatch, decoding, API use, data transformation, or analyst-relevant side effects.",
     "- Return concise technical findings suitable for review."

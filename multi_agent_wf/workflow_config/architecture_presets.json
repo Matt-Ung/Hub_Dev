@@ -1,44 +1,110 @@
 {
-  "minimal": [
-    ["static_generalist", 1]
-  ],
-  "balanced": [
-    ["triage_analyst", 1],
-    ["ghidra_analyst", 1],
-    ["control_flow_analyst", 1],
-    ["obfuscation_analyst", 1],
-    ["string_analyst", 1]
-  ],
-  "aws_collaboration": [
-    ["triage_analyst", 1],
-    ["ghidra_analyst", 1],
-    ["control_flow_analyst", 1],
-    ["string_analyst", 1],
-    ["obfuscation_analyst", 1],
-    ["capability_analyst", 1]
-  ],
-  "runtime_enriched": [
-    ["triage_analyst", 1],
-    ["ghidra_analyst", 1],
-    ["control_flow_analyst", 1],
-    ["string_analyst", 1],
-    ["obfuscation_analyst", 1],
-    ["capability_analyst", 1],
-    ["runtime_behavior_analyst", 1]
-  ],
-  "static_swarm": [
-    ["triage_analyst", 1],
-    ["ghidra_analyst", 1],
-    ["control_flow_analyst", 2],
-    ["obfuscation_analyst", 1],
-    ["string_analyst", 1],
-    ["capability_analyst", 1]
-  ],
-  "ghidra_focused": [
-    ["triage_analyst", 1],
-    ["ghidra_analyst", 2],
-    ["control_flow_analyst", 1],
-    ["string_analyst", 1],
-    ["obfuscation_analyst", 1]
-  ]
+  "minimal": {
+    "description": [
+      "Use for the cheapest, fastest broad pass when you want one general-purpose analyst rather than specialist coverage.",
+      "Best for light triage, simple questions, or when latency matters more than depth."
+    ],
+    "slots": [
+      ["static_generalist", 1]
+    ]
+  },
+  "balanced": {
+    "description": [
+      "Use for normal static-analysis requests that benefit from a few core specialists without a large swarm.",
+      "Best default when you want Ghidra, control-flow, strings, and obfuscation coverage with moderate cost."
+    ],
+    "slots": [
+      ["triage_analyst", 1],
+      ["ghidra_analyst", 1],
+      ["control_flow_analyst", 1],
+      ["obfuscation_analyst", 1],
+      ["string_analyst", 1]
+    ]
+  },
+  "aws_collaboration": {
+    "description": [
+      "Use for broader static-analysis coverage when capability mapping should be included in addition to the core specialists.",
+      "Best for normal multi-angle investigation where no special editing or reconstruction focus is needed."
+    ],
+    "slots": [
+      ["triage_analyst", 1],
+      ["ghidra_analyst", 1],
+      ["control_flow_analyst", 1],
+      ["string_analyst", 1],
+      ["obfuscation_analyst", 1],
+      ["capability_analyst", 1]
+    ]
+  },
+  "runtime_enriched": {
+    "description": [
+      "Use when runtime-behavior interpretation matters and safe dynamic tooling is available or relevant.",
+      "Best for cases where static reasoning should be complemented by a runtime-focused specialist."
+    ],
+    "slots": [
+      ["triage_analyst", 1],
+      ["ghidra_analyst", 1],
+      ["control_flow_analyst", 1],
+      ["string_analyst", 1],
+      ["obfuscation_analyst", 1],
+      ["capability_analyst", 1],
+      ["runtime_behavior_analyst", 1]
+    ]
+  },
+  "static_swarm": {
+    "description": [
+      "Use for deeper static-analysis coverage when you want more parallel control-flow attention and higher breadth.",
+      "Best for tougher binaries where extra static specialist overlap is worth the additional cost and contention risk."
+    ],
+    "slots": [
+      ["triage_analyst", 1],
+      ["ghidra_analyst", 1],
+      ["control_flow_analyst", 2],
+      ["obfuscation_analyst", 1],
+      ["string_analyst", 1],
+      ["capability_analyst", 1]
+    ]
+  },
+  "ghidra_focused": {
+    "description": [
+      "Use when the work is heavily Ghidra-centric and depends on xrefs, function relationships, and type recovery more than broad capability triage.",
+      "Best for control-flow reconstruction, function relevance decisions, and deeper static reversing inside Ghidra."
+    ],
+    "slots": [
+      ["triage_analyst", 1],
+      ["ghidra_analyst", 2],
+      ["control_flow_analyst", 1],
+      ["type_recovery_analyst", 1],
+      ["string_analyst", 1],
+      ["obfuscation_analyst", 1]
+    ]
+  },
+  "code_reconstruction": {
+    "description": [
+      "Use when the goal is to explain or reconstruct functionality in C/C++ terms rather than just triage malware behavior.",
+      "Best for example implementations, pseudocode cleanup, type recovery, and source-like reconstruction."
+    ],
+    "slots": [
+      ["triage_analyst", 1],
+      ["ghidra_analyst", 1],
+      ["control_flow_analyst", 1],
+      ["c_reconstruction_analyst", 1],
+      ["cpp_reconstruction_analyst", 1],
+      ["type_recovery_analyst", 1]
+    ]
+  },
+  "ghidra_editing": {
+    "description": [
+      "Use when the user wants rename, retype, comment, refactor, or approval-ready Ghidra edit proposals.",
+      "Best for identifying a real main/dispatcher, improving function or variable names, refining prototypes, and preparing change-queue proposals for approval."
+    ],
+    "slots": [
+      ["triage_analyst", 1],
+      ["ghidra_analyst", 1],
+      ["control_flow_analyst", 1],
+      ["c_reconstruction_analyst", 1],
+      ["cpp_reconstruction_analyst", 1],
+      ["type_recovery_analyst", 1],
+      ["ghidra_refactor_analyst", 1]
+    ]
+  }
 }

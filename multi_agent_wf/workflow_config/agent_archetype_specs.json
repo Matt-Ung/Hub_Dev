@@ -41,6 +41,34 @@
     "typical_complexity": "complex",
     "model": "openai:gpt-5-mini"
   },
+  "c_reconstruction_analyst": {
+    "description": "Static specialist focused on recovering clear, idiomatic C-style logic, function signatures, and parameter or return semantics from decompiled code.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "complex",
+    "model": "openai:gpt-5-mini"
+  },
+  "cpp_reconstruction_analyst": {
+    "description": "Static specialist focused on recovering C++ class structure, methods, constructors or destructors, vtables, RTTI, namespaces, and STL-style semantics.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "complex",
+    "model": "openai:gpt-5-mini"
+  },
+  "type_recovery_analyst": {
+    "description": "Static specialist focused on structs, enums, typedefs, prototypes, field naming, and data-layout recovery.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "complex",
+    "model": "openai:gpt-5-mini"
+  },
+  "ghidra_refactor_analyst": {
+    "description": "Static Ghidra edit specialist focused on conservative rename, comment, prototype, and local-type improvement proposals, with bounded application only when explicitly authorized.",
+    "tool_domain": "static",
+    "preferred_mode": "sync",
+    "typical_complexity": "complex",
+    "model": "openai:gpt-5-mini"
+  },
   "string_analyst": {
     "description": "Static specialist focused on recovered strings, stack strings, decoded values, and configuration material.",
     "tool_domain": "static",

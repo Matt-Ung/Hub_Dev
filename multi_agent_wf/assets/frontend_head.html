@@ -1,0 +1,113 @@
+<style>
+  #advanced-settings-panel .wrap,
+  #advanced-settings-panel label,
+  #advanced-settings-panel .prose,
+  #advanced-settings-panel .prose p {
+    word-break: break-word;
+  }
+
+  #advanced-settings-panel button span {
+    white-space: normal !important;
+  }
+
+  @keyframes wfQueueWarningPulse {
+    0%, 100% {
+      background: #fff7cc;
+      border-color: #f0c14b;
+      box-shadow: 0 0 0 0 rgba(240, 193, 75, 0.0);
+    }
+    50% {
+      background: #fff2a6;
+      border-color: #d9a11e;
+      box-shadow: 0 0 0 4px rgba(240, 193, 75, 0.18);
+    }
+  }
+
+  #ghidra-change-queue-accordion.wf-ghidra-queue-alert button[aria-expanded="false"],
+  #ghidra-change-queue-accordion.wf-ghidra-queue-alert summary,
+  #ghidra-change-queue-accordion.wf-ghidra-queue-alert [role="button"][aria-expanded="false"] {
+    animation: wfQueueWarningPulse 1.2s ease-in-out infinite;
+    color: #6b4a00 !important;
+    font-weight: 600;
+  }
+</style>
+<script>
+(() => {
+  if (window.__wfTodoTimerInstalled) return;
+  window.__wfTodoTimerInstalled = true;
+
+  function formatElapsed(totalSeconds) {
+    if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "--:--";
+    const total = Math.max(0, Math.floor(totalSeconds));
+    const hours = Math.floor(total / 3600);
+    const rem = total % 3600;
+    const minutes = Math.floor(rem / 60);
+    const seconds = rem % 60;
+    if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function updateStageTimers() {
+    const nodes = document.querySelectorAll(".wf-stage-timer");
+    const now = Date.now() / 1000;
+    nodes.forEach((node) => {
+      const status = String(node.dataset.status || "");
+      const started = Number.parseFloat(node.dataset.started || "");
+      const finished = Number.parseFloat(node.dataset.finished || "");
+      const duration = Number.parseFloat(node.dataset.duration || "");
+      let value = null;
+
+      if (status === "running" && Number.isFinite(started)) {
+        value = now - started;
+      } else if ((status === "completed" || status === "failed")) {
+        if (Number.isFinite(duration)) {
+          value = duration;
+        } else if (Number.isFinite(started) && Number.isFinite(finished)) {
+          value = finished - started;
+        }
+      }
+
+      if (value !== null) {
+        node.textContent = formatElapsed(value);
+      }
+    });
+  }
+
+  function isAccordionExpanded(accordion) {
+    if (!accordion) return true;
+    const toggle = accordion.querySelector('button[aria-expanded], [role="button"][aria-expanded], summary[aria-expanded]');
+    if (toggle) {
+      return String(toggle.getAttribute("aria-expanded")) === "true";
+    }
+    const details = accordion.matches("details") ? accordion : accordion.querySelector("details");
+    if (details) {
+      return details.hasAttribute("open");
+    }
+    return true;
+  }
+
+  function updateGhidraQueueAlert() {
+    const accordion = document.getElementById("ghidra-change-queue-accordion");
+    const panel = document.getElementById("ghidra-change-queue-panel");
+    if (!accordion || !panel) return;
+
+    const pendingNode = panel.querySelector("[data-ghidra-pending-count]");
+    const pendingCount = Number.parseInt((pendingNode && pendingNode.dataset.ghidraPendingCount) || "0", 10);
+    const shouldAlert = Number.isFinite(pendingCount) && pendingCount > 0 && !isAccordionExpanded(accordion);
+
+    accordion.classList.toggle("wf-ghidra-queue-alert", shouldAlert);
+  }
+
+  function refreshUiAffordances() {
+    updateStageTimers();
+    updateGhidraQueueAlert();
+  }
+
+  window.setInterval(refreshUiAffordances, 1000);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", refreshUiAffordances, { once: true });
+  } else {
+    refreshUiAffordances();
+  }
+})();
+</script>

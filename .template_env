@@ -43,16 +43,13 @@ OPENAI_MODEL_ID=openai:gpt-5-mini
 
 # Worker breadth preset: controls which specialist roles exist and how many copies of each are available.
 # Options: Hub_Dev/multi_agent_wf/workflow_config/architecture_presets.json
+# Special option: dynamic = let the agent choose the best architecture for each query.
 DEEP_AGENT_ARCHITECTURE_NAME=aws_collaboration
 
 # Pipeline preset / fallback pipeline when auto-selection is off.
 # Options: Hub_Dev/multi_agent_wf/workflow_config/pipeline_presets.json
+# Special option: dynamic = let the agent choose the best pipeline for each query.
 DEEP_AGENT_PIPELINE_NAME=preflight_planner_workers_validators_reporter
-
-# false = always use DEEP_AGENT_PIPELINE_NAME as-is.
-# true  = route each query to the most appropriate pipeline; faster for simple questions, more variable between runs.
-# Note: setting DEEP_AGENT_PIPELINE_NAME to auto or dynamic also enables this behavior.
-DEEP_AGENT_AUTO_SELECT_PIPELINE=true
 
 # Lightweight router model used only when auto pipeline selection needs an LLM decision.
 DEEP_AGENT_PIPELINE_ROUTER_MODEL=openai:gpt-4o-mini

@@ -8,16 +8,18 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic_ai import ModelMessage
 
 from .config import (
-    DEEP_AGENT_ARCHITECTURE,
-    DEEP_AGENT_ARCHITECTURE_NAME,
     DEFAULT_SHELL_EXECUTION_MODE,
     HOST_PARALLEL_WORKER_EXECUTION,
+    GHIDRA_CHANGE_PROPOSALS_END,
+    GHIDRA_CHANGE_PROPOSALS_START,
     MAX_PARALLEL_WORKERS,
     MAX_VALIDATION_REPLAN_RETRIES,
     PLANNER_WORK_ITEMS_END,
     PLANNER_WORK_ITEMS_START,
     VALIDATION_DECISION_END,
     VALIDATION_DECISION_START,
+    get_stage_kind_metadata,
+    stage_kind_flag,
     _normalize_shell_execution_mode,
     _normalize_validator_review_level,
 )
@@ -30,6 +32,7 @@ from .runtime import (
     build_stage_prompt,
     expand_architecture_slots,
     expand_architecture_names,
+    prepare_ghidra_change_operation,
 )
 from .shared_state import (
     _empty_parent_input,
@@ -62,8 +65,6 @@ def _stage_progress_from_pipeline_definition(
     progress: List[Dict[str, Any]] = []
     for raw_stage in list(pipeline_definition or []):
         architecture = list(raw_stage.get("architecture") or [])
-        if raw_stage.get("use_worker_architecture"):
-            architecture = list(DEEP_AGENT_ARCHITECTURE)
         progress.append(
             {
                 "stage_name": str(raw_stage["name"]),
@@ -248,11 +249,394 @@ def update_planned_work_items_from_planner_output(state: Dict[str, Any], planner
     shared = state.setdefault("shared_state", _new_shared_state())
     items, error = extract_planned_work_items(planner_output)
     shared["planned_work_items"] = items
+    shared["planned_work_item_status"] = {
+        str(item.get("id") or ""): {
+            "status": "planned",
+            "slot_name": "",
+            "started_at_epoch": None,
+            "finished_at_epoch": None,
+            "duration_sec": None,
+            "error": "",
+        }
+        for item in items
+        if str(item.get("id") or "").strip()
+    }
     shared["planned_work_items_parse_error"] = error
     if items:
         append_status(state, f"Planner work items parsed: {len(items)}")
     elif error:
         append_status(state, f"Planner work-item parse warning: {error}")
+    _store_ui_snapshot(state=state)
+
+
+def _set_planned_work_item_status(
+    state: Dict[str, Any],
+    work_item_id: str,
+    status: str,
+    *,
+    slot_name: str = "",
+    error: str = "",
+    started_at_epoch: Optional[float] = None,
+    finished_at_epoch: Optional[float] = None,
+    duration_sec: Optional[float] = None,
+) -> None:
+    normalized_id = str(work_item_id or "").strip()
+    if not normalized_id:
+        return
+    shared = state.setdefault("shared_state", _new_shared_state())
+    status_map = shared.setdefault("planned_work_item_status", {})
+    entry = dict(status_map.get(normalized_id) or {})
+    entry["status"] = str(status or "planned").strip() or "planned"
+    if slot_name:
+        entry["slot_name"] = slot_name
+    elif "slot_name" not in entry:
+        entry["slot_name"] = ""
+    if error or "error" in entry:
+        entry["error"] = str(error or "").strip()
+    if started_at_epoch is not None:
+        entry["started_at_epoch"] = started_at_epoch
+    elif "started_at_epoch" not in entry:
+        entry["started_at_epoch"] = None
+    if finished_at_epoch is not None:
+        entry["finished_at_epoch"] = finished_at_epoch
+    elif "finished_at_epoch" not in entry:
+        entry["finished_at_epoch"] = None
+    if duration_sec is not None:
+        entry["duration_sec"] = float(duration_sec)
+    elif "duration_sec" not in entry:
+        entry["duration_sec"] = None
+    status_map[normalized_id] = entry
+    _store_ui_snapshot(state=state)
+
+
+def _planned_work_item_badge(status: str) -> Tuple[str, str]:
+    normalized = str(status or "").strip().lower()
+    if normalized == "blocked":
+        return "#a61b29", "blocked"
+    if normalized == "completed":
+        return "#1b6e3a", "completed"
+    if normalized == "in_execution":
+        return "#0b57d0", "in execution"
+    if normalized == "validated":
+        return "#1b6e3a", "validated"
+    if normalized == "under_review":
+        return "#0b57d0", "under review"
+    if normalized == "reporting":
+        return "#0b57d0", "reporting"
+    if normalized == "drafting":
+        return "#0b57d0", "drafting"
+    if normalized == "preflight":
+        return "#0b57d0", "preflight"
+    if normalized == "context_ready":
+        return "#5f6368", "context ready"
+    return "#5f6368", "planned"
+
+
+def _display_planned_work_item_status(
+    progress: List[Dict[str, Any]],
+    item_state: Optional[Dict[str, Any]],
+) -> Tuple[str, str]:
+    item_status = str((item_state or {}).get("status") or "").strip().lower()
+    report_status = _first_progress_status_by_flag(progress, "finalizes_report")
+    validation_status = _first_progress_status_by_flag(progress, "runs_validation_gate")
+    worker_status = _first_progress_status_by_flag(progress, "supports_parallel_assignments")
+
+    if item_status == "blocked":
+        return _planned_work_item_badge("blocked")
+
+    if report_status == "completed":
+        return _planned_work_item_badge("completed")
+    if report_status == "running" and item_status == "completed":
+        return _planned_work_item_badge("reporting")
+    if validation_status == "completed" and item_status == "completed":
+        return _planned_work_item_badge("validated")
+    if validation_status == "running" and item_status == "completed":
+        return _planned_work_item_badge("under_review")
+    if worker_status == "completed":
+        return _planned_work_item_badge("completed")
+    if worker_status == "running":
+        if item_status in {"completed", "in_execution", "blocked"}:
+            return _planned_work_item_badge(item_status)
+        return _planned_work_item_badge("planned")
+
+    _, tone, label = _planner_work_item_rollup(progress)
+    return tone, label
+
+
+def extract_ghidra_change_proposals(text: str) -> Tuple[List[Dict[str, Any]], str, bool]:
+    payloads: List[str] = []
+    marker_re = re.compile(
+        rf"{re.escape(GHIDRA_CHANGE_PROPOSALS_START)}\s*(.*?)\s*{re.escape(GHIDRA_CHANGE_PROPOSALS_END)}",
+        flags=re.DOTALL,
+    )
+    for match in marker_re.finditer(text or ""):
+        payloads.append(match.group(1))
+
+    if not payloads:
+        return [], "", False
+
+    normalized: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for block_index, payload in enumerate(payloads, start=1):
+        payload = _strip_optional_json_fence(payload)
+        try:
+            parsed = json.loads(payload)
+        except Exception as e:
+            return [], f"ghidra change JSON parse failed: {type(e).__name__}: {e}", True
+
+        if isinstance(parsed, dict):
+            parsed = parsed.get("changes") or parsed.get("proposals") or []
+        if not isinstance(parsed, list):
+            return [], "ghidra change block must decode to a JSON array", True
+
+        for idx, raw_item in enumerate(parsed, start=1):
+            if not isinstance(raw_item, dict):
+                continue
+            proposal_id = " ".join(str(raw_item.get("id") or f"C{block_index}_{idx}").split()) or f"C{block_index}_{idx}"
+            while proposal_id in seen_ids:
+                proposal_id = f"{proposal_id}_{idx}"
+            seen_ids.add(proposal_id)
+
+            action = " ".join(str(raw_item.get("action") or "").split()).lower()
+            target_kind = " ".join(str(raw_item.get("target_kind") or "").split()).lower()
+            evidence = _normalize_string_list(raw_item.get("evidence") or raw_item.get("evidence_targets"))
+            proposal = {
+                "id": proposal_id,
+                "action": action,
+                "target_kind": target_kind,
+                "function_address": " ".join(str(raw_item.get("function_address") or "").split()),
+                "function_name": " ".join(str(raw_item.get("function_name") or "").split()),
+                "address": " ".join(str(raw_item.get("address") or "").split()),
+                "current_name": " ".join(str(raw_item.get("current_name") or raw_item.get("old_name") or "").split()),
+                "proposed_name": " ".join(str(raw_item.get("proposed_name") or raw_item.get("new_name") or "").split()),
+                "variable_name": " ".join(str(raw_item.get("variable_name") or "").split()),
+                "current_type": " ".join(str(raw_item.get("current_type") or "").split()),
+                "proposed_type": " ".join(str(raw_item.get("proposed_type") or raw_item.get("new_type") or "").split()),
+                "prototype": str(raw_item.get("prototype") or raw_item.get("proposed_prototype") or "").strip(),
+                "comment": str(raw_item.get("comment") or raw_item.get("proposed_comment") or "").strip(),
+                "summary": " ".join(str(raw_item.get("summary") or raw_item.get("objective") or "").split()),
+                "rationale": " ".join(str(raw_item.get("rationale") or raw_item.get("reason") or "").split()),
+                "evidence": evidence,
+                "status": "pending",
+                "source_stage": " ".join(str(raw_item.get("source_stage") or "").split()),
+                "raw": raw_item,
+            }
+            normalized.append(proposal)
+
+    if not normalized:
+        return [], "", True
+    return normalized, "", True
+
+
+def _normalized_proposal_field(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _proposal_semantic_signature(proposal: Dict[str, Any]) -> str:
+    target_locator = (
+        _normalized_proposal_field(proposal.get("function_address"))
+        or _normalized_proposal_field(proposal.get("address"))
+        or _normalized_proposal_field(proposal.get("function_name"))
+    )
+    current_state = (
+        _normalized_proposal_field(proposal.get("current_name"))
+        or _normalized_proposal_field(proposal.get("variable_name"))
+        or _normalized_proposal_field(proposal.get("current_type"))
+    )
+    desired_state = (
+        _normalized_proposal_field(proposal.get("proposed_name"))
+        or _normalized_proposal_field(proposal.get("proposed_type"))
+        or _normalized_proposal_field(proposal.get("prototype"))
+        or _normalized_proposal_field(proposal.get("comment"))
+    )
+    return "|".join(
+        [
+            _normalized_proposal_field(proposal.get("action")),
+            _normalized_proposal_field(proposal.get("target_kind")),
+            target_locator,
+            current_state,
+            desired_state,
+        ]
+    )
+
+
+def _proposal_conflict_signature(proposal: Dict[str, Any]) -> str:
+    action = _normalized_proposal_field(proposal.get("action"))
+    target_kind = _normalized_proposal_field(proposal.get("target_kind"))
+    action_family = action
+    if action in {"rename_function_by_address", "rename_function"}:
+        action_family = "rename_function"
+    target_locator = (
+        _normalized_proposal_field(proposal.get("function_address"))
+        or _normalized_proposal_field(proposal.get("address"))
+        or _normalized_proposal_field(proposal.get("function_name"))
+    )
+    subtarget = ""
+    if action in {"rename_variable", "set_local_variable_type"}:
+        subtarget = _normalized_proposal_field(proposal.get("variable_name"))
+    return "|".join([action_family, target_kind, target_locator, subtarget])
+
+
+def _merge_unique_string_lists(*values: Any) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in _normalize_string_list(value):
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def _merge_ghidra_proposal_records(
+    existing: Dict[str, Any],
+    incoming: Dict[str, Any],
+    *,
+    stage_kind: str,
+) -> Dict[str, Any]:
+    stage_meta = get_stage_kind_metadata(stage_kind)
+    merged = dict(existing)
+    for key in (
+        "action",
+        "target_kind",
+        "function_address",
+        "function_name",
+        "address",
+        "current_name",
+        "proposed_name",
+        "variable_name",
+        "current_type",
+        "proposed_type",
+        "prototype",
+        "comment",
+        "summary",
+        "rationale",
+        "can_apply",
+        "apply_reason",
+        "apply_tool_name",
+        "apply_tool_args",
+        "result_text",
+        "error",
+    ):
+        incoming_value = incoming.get(key)
+        if incoming_value in (None, "", {}, []):
+            continue
+        if key in {"summary", "rationale"} and len(str(incoming_value)) < len(str(merged.get(key) or "")):
+            continue
+        merged[key] = incoming_value
+
+    merged["evidence"] = _merge_unique_string_lists(existing.get("evidence"), incoming.get("evidence"))
+    merged["source_stages"] = _merge_unique_string_lists(existing.get("source_stages"), incoming.get("source_stage"))
+    merged["dedupe_alias_ids"] = _merge_unique_string_lists(
+        existing.get("dedupe_alias_ids"),
+        [alias for alias in [incoming.get("id"), existing.get("id")] if alias and alias != existing.get("id")],
+    )
+    merged["source_stage"] = str(
+        incoming.get("source_stage")
+        or existing.get("source_stage")
+        or (stage_kind if stage_meta["finalizes_report"] else "")
+    )
+    merged["signature"] = str(incoming.get("signature") or existing.get("signature") or "")
+    merged["conflict_signature"] = str(
+        incoming.get("conflict_signature") or existing.get("conflict_signature") or ""
+    )
+    merged.setdefault("status", str(existing.get("status") or "pending"))
+    return merged
+
+
+def update_ghidra_change_proposals_from_stage_output(
+    state: Dict[str, Any],
+    stage_output: str,
+    *,
+    stage_name: str,
+    stage_kind: str,
+) -> None:
+    stage_meta = get_stage_kind_metadata(stage_kind)
+    proposals, error, found_block = extract_ghidra_change_proposals(stage_output)
+    if not found_block and not error and not stage_meta["finalizes_report"]:
+        return
+
+    shared = state.setdefault("shared_state", _new_shared_state())
+    shared["ghidra_change_parse_error"] = error
+    if error:
+        append_status(state, f"Ghidra change parse warning from {stage_name}: {error}")
+        _store_ui_snapshot(state=state)
+        return
+
+    existing = {
+        str(item.get("id") or ""): dict(item)
+        for item in (shared.get("ghidra_change_draft_proposals") or shared.get("ghidra_change_proposals") or [])
+        if isinstance(item, dict)
+    }
+    for item in existing.values():
+        if "signature" not in item:
+            item["signature"] = _proposal_semantic_signature(item)
+        if "conflict_signature" not in item:
+            item["conflict_signature"] = _proposal_conflict_signature(item)
+    existing_by_signature = {
+        str((item.get("signature") or _proposal_semantic_signature(item) or "")): item_id
+        for item_id, item in existing.items()
+        if str((item.get("signature") or _proposal_semantic_signature(item) or ""))
+    }
+    existing_by_conflict = {
+        str((item.get("conflict_signature") or _proposal_conflict_signature(item) or "")): item_id
+        for item_id, item in existing.items()
+        if str((item.get("conflict_signature") or _proposal_conflict_signature(item) or ""))
+        and str(item.get("status") or "pending") == "pending"
+    }
+    for proposal in proposals:
+        proposal_id = str(proposal.get("id") or "")
+        prepared = prepare_ghidra_change_operation(proposal)
+        proposal_signature = _proposal_semantic_signature(proposal)
+        proposal_conflict_signature = _proposal_conflict_signature(proposal)
+        resolved_id = proposal_id or ""
+        if resolved_id not in existing and proposal_signature in existing_by_signature:
+            resolved_id = existing_by_signature[proposal_signature]
+        elif (
+            resolved_id not in existing
+            and proposal_conflict_signature
+            and proposal_conflict_signature in existing_by_conflict
+        ):
+            resolved_id = existing_by_conflict[proposal_conflict_signature]
+        merged = dict(existing.get(resolved_id) or {})
+        merged.update(proposal)
+        merged["source_stage"] = stage_name
+        merged["signature"] = proposal_signature
+        merged["conflict_signature"] = proposal_conflict_signature
+        merged["can_apply"] = bool(prepared.get("can_apply"))
+        merged["apply_reason"] = str(prepared.get("reason") or "")
+        merged["apply_tool_name"] = str(prepared.get("tool_name") or "")
+        merged["apply_tool_args"] = dict(prepared.get("tool_args") or {})
+        merged["summary"] = str(merged.get("summary") or prepared.get("summary") or proposal_id)
+        merged.setdefault("result_text", "")
+        merged.setdefault("error", "")
+        merged.setdefault("status", "pending")
+        merged["source_stages"] = _merge_unique_string_lists(merged.get("source_stages"), stage_name)
+        merged["dedupe_alias_ids"] = _merge_unique_string_lists(
+            merged.get("dedupe_alias_ids"),
+            [proposal_id] if proposal_id and proposal_id != resolved_id else [],
+        )
+        if resolved_id and resolved_id in existing:
+            merged = _merge_ghidra_proposal_records(existing[resolved_id], merged, stage_kind=stage_kind)
+            existing.pop(resolved_id, None)
+        existing[proposal_id or resolved_id or f"proposal_{len(existing) + 1}"] = merged
+        if proposal_signature:
+            existing_by_signature[proposal_signature] = proposal_id or resolved_id or f"proposal_{len(existing)}"
+        if proposal_conflict_signature:
+            existing_by_conflict[proposal_conflict_signature] = proposal_id or resolved_id or f"proposal_{len(existing)}"
+
+    merged_proposals = list(existing.values())
+    shared["ghidra_change_draft_proposals"] = merged_proposals
+    if stage_meta["finalizes_report"]:
+        shared["ghidra_change_proposals"] = merged_proposals
+        shared["ghidra_change_queue_finalized"] = True
+        append_status(state, f"Ghidra change queue finalized after {stage_name}: {len(merged_proposals)} proposal(s)")
+    else:
+        shared["ghidra_change_queue_finalized"] = False
+        shared["ghidra_change_proposals"] = []
+        append_status(state, f"Ghidra change draft proposals parsed from {stage_name}: {len(proposals)}")
     _store_ui_snapshot(state=state)
 
 
@@ -466,29 +850,55 @@ def _clear_stage_role_histories(state: Dict[str, Any], stage_names: List[str]) -
         histories.pop(f"pipeline_{stage_name}", None)
 
 
+def _first_progress_status_by_flag(progress: List[Dict[str, Any]], flag: str) -> str:
+    for item in progress:
+        stage_kind = str(item.get("stage_kind") or "").strip()
+        if stage_kind and stage_kind_flag(stage_kind, flag):
+            return str(item.get("status") or "")
+    return ""
+
+
+def _first_progress_entry_by_flag(progress: List[Dict[str, Any]], flag: str) -> Dict[str, Any]:
+    return next(
+        (
+            item
+            for item in progress
+            if stage_kind_flag(str(item.get("stage_kind") or "").strip(), flag)
+        ),
+        {},
+    )
+
+
 def _planner_work_item_rollup(progress: List[Dict[str, Any]]) -> Tuple[str, str, str]:
-    statuses = {str(item.get("stage_name") or ""): str(item.get("status") or "pending") for item in progress}
-    if any(status == "failed" for status in statuses.values()):
+    if any(str(item.get("status") or "pending") == "failed" for item in progress):
         return "☒", "#a61b29", "blocked"
-    if statuses.get("reporter") == "completed":
+    report_status = _first_progress_status_by_flag(progress, "finalizes_report")
+    validation_status = _first_progress_status_by_flag(progress, "runs_validation_gate")
+    worker_status = _first_progress_status_by_flag(progress, "supports_parallel_assignments")
+    planner_status = _first_progress_status_by_flag(progress, "parses_planner_work_items")
+    preflight_status = next(
+        (str(item.get("status") or "") for item in progress if str(item.get("stage_kind") or "").strip() == "preflight"),
+        "",
+    )
+    if report_status == "completed":
         return "☑", "#1b6e3a", "completed"
-    if statuses.get("reporter") == "running":
+    if report_status == "running":
         return "☑", "#0b57d0", "reporting"
-    if statuses.get("validators") == "completed":
+    if validation_status == "completed":
         return "☑", "#1b6e3a", "validated"
-    if statuses.get("validators") == "running":
+    if validation_status == "running":
         return "☑", "#0b57d0", "under review"
-    if statuses.get("workers") == "completed":
+    if worker_status == "completed":
         return "☑", "#1b6e3a", "executed"
-    if statuses.get("workers") == "running":
+    if worker_status == "running":
         return "☐", "#0b57d0", "in execution"
-    if statuses.get("planner") == "completed":
+    if planner_status == "completed":
         return "☐", "#5f6368", "planned"
-    if statuses.get("planner") == "running":
+    if planner_status == "running":
         return "☐", "#0b57d0", "drafting"
-    if statuses.get("preflight") == "completed":
+    if preflight_status == "completed":
         return "☐", "#5f6368", "context ready"
-    if statuses.get("preflight") == "running":
+    if preflight_status == "running":
         return "☐", "#0b57d0", "preflight"
     return "☐", "#5f6368", "pending"
 
@@ -496,15 +906,14 @@ def _planner_work_item_rollup(progress: List[Dict[str, Any]]) -> Tuple[str, str,
 def render_planned_work_items_panel(state: Dict[str, Any]) -> str:
     shared = (state or {}).get("shared_state") or {}
     items = shared.get("planned_work_items") or []
+    item_status_map = shared.get("planned_work_item_status") or {}
     parse_error = str(shared.get("planned_work_items_parse_error") or "").strip()
     progress = shared.get("pipeline_stage_progress") or []
-    planner_status = ""
-    preflight_status = ""
-    for item in progress:
-        if str(item.get("stage_name") or "") == "planner":
-            planner_status = str(item.get("status") or "")
-        elif str(item.get("stage_name") or "") == "preflight":
-            preflight_status = str(item.get("status") or "")
+    planner_status = _first_progress_status_by_flag(progress, "parses_planner_work_items")
+    preflight_status = next(
+        (str(item.get("status") or "") for item in progress if str(item.get("stage_kind") or "").strip() == "preflight"),
+        "",
+    )
     if not items and not parse_error:
         waiting_message = "Planner work items will appear after the planning stage completes."
         if preflight_status == "running":
@@ -521,11 +930,12 @@ def render_planned_work_items_panel(state: Dict[str, Any]) -> str:
             "</div>"
         )
 
-    _, tone, status_label = _planner_work_item_rollup(progress)
     rows: List[str] = []
     for item in items:
         item_id = html.escape(str(item.get("id") or ""))
         objective = html.escape(str(item.get("objective") or ""))
+        raw_item_id = str(item.get("id") or "")
+        tone, status_label = _display_planned_work_item_status(progress, item_status_map.get(raw_item_id))
         roles = ", ".join(item.get("recommended_roles") or []) or "unspecified"
         targets = item.get("evidence_targets") or []
         targets_html = "".join(
@@ -569,9 +979,9 @@ def render_planned_work_items_panel(state: Dict[str, Any]) -> str:
 def render_validation_gate_panel(state: Dict[str, Any]) -> str:
     shared = (state or {}).get("shared_state") or {}
     progress = shared.get("pipeline_stage_progress") or []
-    validator_entry = next((item for item in progress if str(item.get("stage_kind") or "") == "validators"), None) or {}
-    planner_entry = next((item for item in progress if str(item.get("stage_kind") or "") == "planner"), None) or {}
-    worker_entry = next((item for item in progress if str(item.get("stage_kind") or "") == "workers"), None) or {}
+    validator_entry = _first_progress_entry_by_flag(progress, "runs_validation_gate")
+    planner_entry = _first_progress_entry_by_flag(progress, "parses_planner_work_items")
+    worker_entry = _first_progress_entry_by_flag(progress, "supports_parallel_assignments")
 
     validation_history = shared.get("validation_history") or []
     retry_count = int(shared.get("validation_retry_count") or 0)
@@ -590,12 +1000,16 @@ def render_validation_gate_panel(state: Dict[str, Any]) -> str:
     headline = "Awaiting validation"
     detail = "Validator gate has not run yet."
 
-    if validator_status == "running":
+    if not validator_entry:
+        headline = "No validation stage"
+        detail = "This pipeline reports directly without a validator gate."
+
+    if validator_entry and validator_status == "running":
         tone = "#0b57d0"
         badge_bg = "#e8f0fe"
         headline = "Validation in progress"
         detail = "Validators are reviewing worker evidence."
-    elif last_decision == "accept":
+    elif validator_entry and last_decision == "accept":
         tone = "#1b6e3a"
         badge_bg = "#e6f4ea"
         headline = "Validation accepted"
@@ -603,7 +1017,7 @@ def render_validation_gate_panel(state: Dict[str, Any]) -> str:
             detail = f"Validator signoff: {signoff_count}/{required_signoffs}"
         else:
             detail = "Validated findings are cleared for reporting."
-    elif last_decision == "reject":
+    elif validator_entry and last_decision == "reject":
         if retry_count < max_retries and planner_status in {"running", "pending"}:
             tone = "#b06000"
             badge_bg = "#fef7e0"
@@ -679,6 +1093,158 @@ def render_validation_gate_panel(state: Dict[str, Any]) -> str:
         f"<div style='margin-top: 8px; color: #202124;'>{html.escape(detail)}</div>"
         f"<div style='margin-top: 6px; color: #5f6368; font-size: 12px;'>{html.escape(' | '.join(summary_lines))}</div>"
         + feedback_html
+        + history_html
+        + "</div>"
+    )
+
+
+def get_pending_ghidra_change_proposal(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    shared = (state or {}).get("shared_state") or {}
+    if not bool(shared.get("ghidra_change_queue_finalized")):
+        return None
+    for proposal in shared.get("ghidra_change_proposals") or []:
+        if str(proposal.get("status") or "pending") == "pending":
+            return proposal
+    return None
+
+
+def get_pending_ghidra_change_count(state: Dict[str, Any]) -> int:
+    shared = (state or {}).get("shared_state") or {}
+    if not bool(shared.get("ghidra_change_queue_finalized")):
+        return 0
+    return sum(
+        1
+        for proposal in (shared.get("ghidra_change_proposals") or [])
+        if str(proposal.get("status") or "pending") == "pending"
+    )
+
+
+def render_ghidra_change_queue_panel(state: Dict[str, Any]) -> str:
+    shared = (state or {}).get("shared_state") or {}
+    proposals = list(shared.get("ghidra_change_proposals") or [])
+    draft_proposals = list(shared.get("ghidra_change_draft_proposals") or [])
+    queue_finalized = bool(shared.get("ghidra_change_queue_finalized"))
+    parse_error = str(shared.get("ghidra_change_parse_error") or "").strip()
+    pending = get_pending_ghidra_change_proposal(state)
+    pending_count = sum(1 for item in proposals if str(item.get("status") or "pending") == "pending")
+
+    if not proposals and not parse_error:
+        waiting_detail = "No pending Ghidra rename/type/comment proposals for this run yet."
+        waiting_badge = "approval-required edits appear here after proposal parsing"
+        if draft_proposals and not queue_finalized:
+            waiting_detail = (
+                "Draft Ghidra change proposals have been collected from earlier stages. "
+                "The visible approval queue will populate after the reporter finalizes the run."
+            )
+            waiting_badge = "waiting for reporter finalization"
+        return (
+            "<div data-ghidra-pending-count='0' style='padding: 12px; border: 1px solid #d5d8dd; border-radius: 10px; background: #fbfbfc; margin-bottom: 12px;'>"
+            "<div style='display: flex; justify-content: space-between; gap: 12px; align-items: baseline;'>"
+            "<strong>Ghidra Change Queue</strong>"
+            f"<span style='color: #5f6368; font-size: 12px;'>{html.escape(waiting_badge)}</span>"
+            "</div>"
+            f"<div style='margin-top: 8px; color: #5f6368;'>{html.escape(waiting_detail)}</div>"
+            "</div>"
+        )
+
+    error_html = ""
+    if parse_error:
+        error_html = (
+            "<div style='margin-top: 8px; padding: 8px 10px; border: 1px solid #f3c3c7; border-radius: 8px; "
+            "background: #fff5f5; color: #a61b29;'>"
+            f"{html.escape(parse_error)}</div>"
+        )
+
+    pending_html = ""
+    if pending:
+        evidence = pending.get("evidence") or []
+        evidence_html = "".join(
+            f"<div style='margin-top: 2px; color: #5f6368;'>- {html.escape(str(item))}</div>"
+            for item in evidence[:5]
+        ) or "<div style='margin-top: 2px; color: #5f6368;'>- none supplied</div>"
+        current_name = str(pending.get("current_name") or pending.get("variable_name") or pending.get("current_type") or "").strip()
+        proposed_name = str(pending.get("proposed_name") or pending.get("proposed_type") or pending.get("prototype") or "").strip()
+        summary = html.escape(str(pending.get("summary") or pending.get("id") or "proposal"))
+        rationale = html.escape(str(pending.get("rationale") or ""))
+        apply_text = "yes" if bool(pending.get("can_apply")) else "proposal only"
+        apply_reason = html.escape(str(pending.get("apply_reason") or ""))
+        field_line = ""
+        if current_name or proposed_name:
+            field_line = (
+                "<div style='margin-top: 4px; color: #202124;'>"
+                f"<strong>current:</strong> {html.escape(current_name or 'n/a')}<br>"
+                f"<strong>proposed:</strong> {html.escape(proposed_name or 'n/a')}"
+                "</div>"
+            )
+        pending_html = (
+            "<div style='margin-top: 10px; padding: 10px 12px; border: 1px solid #d5d8dd; border-radius: 10px; background: #ffffff;'>"
+            f"<div style='font-size: 14px; color: #202124;'><strong>Next pending:</strong> {summary}</div>"
+            f"<div style='margin-top: 4px; color: #5f6368;'>id: {html.escape(str(pending.get('id') or ''))} | "
+            f"action: {html.escape(str(pending.get('action') or 'unknown'))} | "
+            f"target: {html.escape(str(pending.get('target_kind') or 'unknown'))}</div>"
+            f"{field_line}"
+            f"<div style='margin-top: 4px; color: #5f6368;'><strong>auto-apply support:</strong> {html.escape(apply_text)}"
+            + (f" ({apply_reason})" if apply_reason else "")
+            + "</div>"
+            + (f"<div style='margin-top: 4px; color: #202124;'><strong>rationale:</strong> {rationale}</div>" if rationale else "")
+            + "<div style='margin-top: 6px; color: #202124; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;'>evidence</div>"
+            + evidence_html
+            + "</div>"
+        )
+
+    history_rows: List[str] = []
+    for proposal in proposals[-8:]:
+        status = str(proposal.get("status") or "pending")
+        if status == "pending":
+            continue
+        tone = "#5f6368"
+        if status == "applied":
+            tone = "#1b6e3a"
+        elif status in {"failed", "rejected"}:
+            tone = "#a61b29"
+        elif status == "approved_proposal_only":
+            tone = "#8a3b12"
+        history_rows.append(
+            "<div style='margin-top: 6px; padding-top: 6px; border-top: 1px solid #e0e3e7;'>"
+            f"<div style='font-size: 12px; color: {tone};'><strong>{html.escape(str(proposal.get('id') or ''))}</strong> - "
+            f"{html.escape(status)}</div>"
+            f"<div style='margin-top: 2px; color: #202124; font-size: 12px;'>{html.escape(str(proposal.get('summary') or ''))}</div>"
+            + (
+                f"<div style='margin-top: 2px; color: #5f6368; font-size: 12px;'>{html.escape(str(proposal.get('result_text') or proposal.get('error') or ''))}</div>"
+                if str(proposal.get("result_text") or proposal.get("error") or "").strip()
+                else ""
+            )
+            + "</div>"
+        )
+
+    history_html = ""
+    if history_rows:
+        history_html = (
+            "<div style='margin-top: 10px;'>"
+            "<div style='font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #5f6368;'>"
+            "Recent approvals / rejections</div>"
+            + "".join(history_rows)
+            + "</div>"
+        )
+
+    queue_notice_html = ""
+    if pending_count:
+        queue_notice_html = (
+            "<div style='margin-top: 10px; padding: 8px 10px; border: 1px solid #f4c98b; border-radius: 8px; "
+            "background: #fff7e6; color: #8a3b12;'>"
+            "Pending changes need attention. Read-only follow-up queries are allowed, but new edit-generating queries are gated until you approve or reject this queue."
+            "</div>"
+        )
+
+    return (
+        f"<div data-ghidra-pending-count='{pending_count}' style='padding: 12px; border: 1px solid #d5d8dd; border-radius: 10px; background: #fbfbfc; margin-bottom: 12px;'>"
+        "<div style='display: flex; justify-content: space-between; gap: 12px; align-items: baseline;'>"
+        "<strong>Ghidra Change Queue</strong>"
+        f"<span style='color: #5f6368; font-size: 12px;'>pending approvals: {pending_count}</span>"
+        "</div>"
+        + error_html
+        + queue_notice_html
+        + pending_html
         + history_html
         + "</div>"
     )
@@ -821,6 +1387,8 @@ def _plan_host_worker_assignments(
 
 def _build_host_worker_prompt(
     *,
+    stage_name: str,
+    stage_kind: str,
     slot_name: str,
     archetype_name: str,
     work_item: Dict[str, Any],
@@ -835,8 +1403,8 @@ def _build_host_worker_prompt(
     if preflight_output:
         trimmed_prior_outputs["preflight"] = preflight_output
     base_prompt = build_stage_prompt(
-        stage_name=f"workers.{slot_name}",
-        stage_kind="workers",
+        stage_name=f"{stage_name}.{slot_name}",
+        stage_kind=stage_kind,
         user_text=user_text,
         prior_stage_outputs=trimmed_prior_outputs,
         architecture=[(archetype_name, 1)],
@@ -865,6 +1433,8 @@ def _build_host_worker_prompt(
 
 def _run_host_worker_assignment(
     runtime: MultiAgentRuntime,
+    stage_name: str,
+    stage_kind: str,
     state: Dict[str, Any],
     user_text: str,
     prior_stage_outputs: Dict[str, str],
@@ -878,6 +1448,8 @@ def _run_host_worker_assignment(
     work_item_id = str(work_item.get("id") or f"work_item_{assignment['index']}")
     role_key = f"host_worker::{slot_name}::{work_item_id}"
     prompt = _build_host_worker_prompt(
+        stage_name=stage_name,
+        stage_kind=stage_kind,
         slot_name=slot_name,
         archetype_name=archetype_name,
         work_item=work_item,
@@ -891,20 +1463,30 @@ def _run_host_worker_assignment(
         f"Worker assignment started: {work_item_id} -> {slot_name} ({archetype_name})",
     )
     worker_t0 = time.perf_counter()
+    _set_planned_work_item_status(
+        state,
+        work_item_id,
+        "in_execution",
+        slot_name=slot_name,
+        started_at_epoch=time.time(),
+        finished_at_epoch=None,
+        duration_sec=None,
+        error="",
+    )
     old_history = get_role_history(state, role_key)
 
     live_tool_log_token = _LIVE_TOOL_LOG_STATE.set(state)
     active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
-    active_stage_token = _ACTIVE_PIPELINE_STAGE.set("workers")
+    active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage_name)
     try:
         agent, deps = build_host_worker_assignment_executor(
             runtime,
-            stage_name="workers",
+            stage_name=stage_name,
             slot_name=slot_name,
             archetype_name=archetype_name,
             stage_model=stage_model,
         )
-        deps.ask_user = _make_parent_input_callback(state, f"workers/{slot_name}/{work_item_id}")
+        deps.ask_user = _make_parent_input_callback(state, f"{stage_name}/{slot_name}/{work_item_id}")
         result = agent.run_sync(
             prompt,
             message_history=old_history if old_history else None,
@@ -993,7 +1575,7 @@ def _run_host_parallel_worker_stage(
     append_status(
         state,
         (
-            f"Worker stage using host-managed parallel execution "
+            f"Stage {stage.name} using host-managed parallel execution "
             f"({len(assignments)} assignments, max_parallel={concurrency_limit})"
         ),
     )
@@ -1004,6 +1586,8 @@ def _run_host_parallel_worker_stage(
             executor.submit(
                 _run_host_worker_assignment,
                 runtime,
+                stage.name,
+                stage.stage_kind,
                 state,
                 user_text,
                 prior_stage_outputs,
@@ -1019,17 +1603,26 @@ def _run_host_parallel_worker_stage(
             results_by_index[int(result["index"])] = result
             history = list(result.get("history") or [])
             set_role_history(state, str(result.get("role_key") or ""), history)
-            append_tool_log_delta(state, "workers", [], history)
+            append_tool_log_delta(state, stage.name, [], history)
             update_validated_sample_path_from_messages(
                 state,
                 history,
-                f"tool_return:workers:{result.get('slot_name')}",
+                f"tool_return:{stage.name}:{result.get('slot_name')}",
             )
             if result.get("status") == "ok":
+                _set_planned_work_item_status(
+                    state,
+                    str(result.get("work_item_id") or ""),
+                    "completed",
+                    slot_name=str(result.get("slot_name") or ""),
+                    finished_at_epoch=time.time(),
+                    duration_sec=float(result.get("duration_sec") or 0.0),
+                    error="",
+                )
                 update_validated_sample_path(
                     state,
                     str(result.get("output_text") or ""),
-                    f"stage:workers:{result.get('slot_name')}",
+                    f"stage:{stage.name}:{result.get('slot_name')}",
                     explicit_only=True,
                 )
                 append_status(
@@ -1040,6 +1633,15 @@ def _run_host_parallel_worker_stage(
                     ),
                 )
             else:
+                _set_planned_work_item_status(
+                    state,
+                    str(result.get("work_item_id") or ""),
+                    "blocked",
+                    slot_name=str(result.get("slot_name") or ""),
+                    finished_at_epoch=time.time(),
+                    duration_sec=float(result.get("duration_sec") or 0.0),
+                    error=str(result.get("error") or ""),
+                )
                 _set_pipeline_stage_status(
                     state,
                     stage.name,
@@ -1071,7 +1673,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         state,
         (
             f"Deep pipeline started (pipeline={runtime.pipeline_name}, "
-            f"worker_breadth={DEEP_AGENT_ARCHITECTURE_NAME}, "
+            f"worker_breadth={runtime.worker_architecture_name}, "
             f"stages={', '.join(stage.name for stage in runtime.stages)})"
         ),
     )
@@ -1093,9 +1695,9 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["validator_review_level"] = _normalize_validator_review_level(
         state.get("validator_review_level", state.get("validator_strict_mode", "default"))
     )
-    shared["deep_architecture_name"] = DEEP_AGENT_ARCHITECTURE_NAME
-    shared["deep_architecture"] = list(DEEP_AGENT_ARCHITECTURE)
-    shared["deep_subagents"] = expand_architecture_names(DEEP_AGENT_ARCHITECTURE)
+    shared["deep_architecture_name"] = runtime.worker_architecture_name
+    shared["deep_architecture"] = list(runtime.worker_architecture)
+    shared["deep_subagents"] = expand_architecture_names(runtime.worker_architecture)
     shared["deep_pipeline_name"] = runtime.pipeline_name
     shared["deep_pipeline"] = list(runtime.pipeline_definition)
     shared["available_static_tools"] = list(runtime.static_tool_ids)
@@ -1104,7 +1706,12 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["supports_dynamic_analysis"] = bool(runtime.dynamic_tool_ids)
     shared["supports_sandboxed_execution"] = bool(runtime.sandbox_tool_ids)
     shared["planned_work_items"] = []
+    shared["planned_work_item_status"] = {}
     shared["planned_work_items_parse_error"] = ""
+    shared["ghidra_change_proposals"] = []
+    shared["ghidra_change_draft_proposals"] = []
+    shared["ghidra_change_queue_finalized"] = False
+    shared["ghidra_change_parse_error"] = ""
     shared["validation_retry_count"] = 0
     shared["validation_max_retries"] = MAX_VALIDATION_REPLAN_RETRIES
     shared["validation_last_decision"] = ""
@@ -1123,8 +1730,8 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     final_output = ""
     stage_name_to_index = {stage.name: idx for idx, stage in enumerate(runtime.stages)}
     planner_restart_index = next(
-        (idx for idx, stage in enumerate(runtime.stages) if stage.stage_kind == "planner"),
-        next((idx for idx, stage in enumerate(runtime.stages) if stage.stage_kind == "workers"), 0),
+        (idx for idx, stage in enumerate(runtime.stages) if stage_kind_flag(stage.stage_kind, "parses_planner_work_items")),
+        next((idx for idx, stage in enumerate(runtime.stages) if stage_kind_flag(stage.stage_kind, "supports_parallel_assignments")), 0),
     )
     restart_stage_names = [stage.name for stage in runtime.stages[planner_restart_index:]]
     stage_index = 0
@@ -1132,6 +1739,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     while stage_index < len(runtime.stages):
         _check_cancel_requested(state, location="before stage start")
         stage = runtime.stages[stage_index]
+        stage_meta = get_stage_kind_metadata(stage.stage_kind)
         stage.deps.ask_user = _make_parent_input_callback(state, stage.name)
         role_key = f"pipeline_{stage.name}"
         old_history = get_role_history(state, role_key)
@@ -1158,6 +1766,17 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
             subagents=list(stage.subagent_names),
             status="running",
         )
+        if stage_meta["supports_parallel_assignments"] and not (
+            HOST_PARALLEL_WORKER_EXECUTION and (state.get("shared_state") or {}).get("planned_work_items")
+        ):
+            for work_item in list((state.get("shared_state") or {}).get("planned_work_items") or []):
+                _set_planned_work_item_status(
+                    state,
+                    str(work_item.get("id") or ""),
+                    "in_execution",
+                    started_at_epoch=time.time(),
+                    error="",
+                )
         stage_t0 = time.perf_counter()
         live_tool_log_token = _LIVE_TOOL_LOG_STATE.set(state)
         active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
@@ -1165,7 +1784,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         try:
             _check_cancel_requested(state, location=f"before executing {stage.name}")
             if (
-                stage.stage_kind == "workers"
+                stage_meta["supports_parallel_assignments"]
                 and HOST_PARALLEL_WORKER_EXECUTION
                 and (state.get("shared_state") or {}).get("planned_work_items")
             ):
@@ -1184,6 +1803,20 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                     deps=stage.deps,
                 )
         except Exception as e:
+            if stage_meta["supports_parallel_assignments"]:
+                status_map = ((state.get("shared_state") or {}).get("planned_work_item_status") or {})
+                for work_item in list((state.get("shared_state") or {}).get("planned_work_items") or []):
+                    work_item_id = str(work_item.get("id") or "")
+                    current = str((status_map.get(work_item_id) or {}).get("status") or "").strip().lower()
+                    if current == "completed":
+                        continue
+                    _set_planned_work_item_status(
+                        state,
+                        work_item_id,
+                        "blocked",
+                        finished_at_epoch=time.time(),
+                        error=f"{type(e).__name__}: {e}",
+                    )
             _set_pipeline_stage_status(
                 state,
                 stage.name,
@@ -1212,9 +1845,16 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 f"tool_return:{stage.name}",
             )
             stage_output = str(result.output)
-        if stage.stage_kind == "planner":
+        if stage_meta["parses_planner_work_items"]:
             update_planned_work_items_from_planner_output(state, stage_output)
-        if stage.stage_kind != "reporter":
+        if stage_meta["supports_parallel_assignments"] or stage_meta["finalizes_report"]:
+            update_ghidra_change_proposals_from_stage_output(
+                state,
+                stage_output,
+                stage_name=stage.name,
+                stage_kind=stage.stage_kind,
+            )
+        if not stage_meta["finalizes_report"]:
             update_validated_sample_path(
                 state,
                 stage_output,
@@ -1222,7 +1862,18 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 explicit_only=True,
             )
         prior_stage_outputs[stage.name] = stage_output
-        final_output = _sanitize_user_facing_output(stage_output) if stage.stage_kind == "reporter" else stage_output
+        final_output = _sanitize_user_facing_output(stage_output) if stage_meta["finalizes_report"] else stage_output
+        if stage_meta["supports_parallel_assignments"] and not (
+            HOST_PARALLEL_WORKER_EXECUTION and (state.get("shared_state") or {}).get("planned_work_items")
+        ):
+            for work_item in list((state.get("shared_state") or {}).get("planned_work_items") or []):
+                _set_planned_work_item_status(
+                    state,
+                    str(work_item.get("id") or ""),
+                    "completed",
+                    finished_at_epoch=time.time(),
+                    error="",
+                )
 
         stage_entry = {
             "task_id": f"stage:{stage.name}",
@@ -1240,7 +1891,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 "output_text": stage_output,
             }
         )
-        if stage.stage_kind == "reporter":
+        if stage_meta["finalizes_report"]:
             stage_entry["output_text"] = final_output
         state["shared_state"]["task_outputs"].append(stage_entry)
         state["shared_state"]["turn_task_runs"] = int(state["shared_state"].get("turn_task_runs", 0)) + 1
@@ -1256,7 +1907,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         append_status(state, f"Stage finished: {stage.name} in {time.perf_counter() - stage_t0:.1f}s")
         _check_cancel_requested(state, location=f"after stage {stage.name}")
 
-        if stage.stage_kind == "validators":
+        if stage_meta["runs_validation_gate"]:
             required_signoffs = max(1, len(stage.subagent_names) or len(stage.architecture) or 1)
             gate, gate_error = extract_validation_gate(stage_output, required_signoffs=required_signoffs)
             shared["validation_history"].append(
@@ -1304,7 +1955,12 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                     _reset_pipeline_stages_to_pending(state, restart_stage_names)
                     _clear_stage_role_histories(state, restart_stage_names)
                     shared["planned_work_items"] = []
+                    shared["planned_work_item_status"] = {}
                     shared["planned_work_items_parse_error"] = ""
+                    shared["ghidra_change_proposals"] = []
+                    shared["ghidra_change_draft_proposals"] = []
+                    shared["ghidra_change_queue_finalized"] = False
+                    shared["ghidra_change_parse_error"] = ""
                     prior_stage_outputs = {
                         name: output
                         for name, output in prior_stage_outputs.items()
