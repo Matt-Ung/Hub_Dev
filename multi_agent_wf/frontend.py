@@ -64,6 +64,7 @@ from .shared_state import (
     _shorten,
     _snapshot_state_default,
     _store_ui_snapshot,
+    apply_automation_payload_to_state,
     append_status,
     render_parent_input_panel,
 )
@@ -71,6 +72,7 @@ from .shared_state import (
 _AUTOMATION_TRIGGER_SERVER: ThreadingHTTPServer | None = None
 _AUTOMATION_TRIGGER_LOCK = Lock()
 _AUTOMATION_TRIGGER_PENDING = False
+_AUTOMATION_RUN_HISTORY: Dict[str, Dict[str, Any]] = {}
 _FRONTEND_HEAD_PATH = Path(__file__).resolve().parent / "assets" / "frontend_head.html"
 
 _PIPELINE_PRESET_CHOICES = [("DYNAMIC (agent chooses)", "dynamic")] + [
@@ -695,6 +697,11 @@ def chat_turn(
         except PipelineCancelled:
             append_status(state, f"Chat turn canceled after {time.perf_counter() - turn_t0:.1f}s")
             result_box["assistant_text"] = "[pipeline canceled by user]"
+            if selected_pipeline_name == "auto_triage":
+                shared = state.setdefault("shared_state", _new_shared_state())
+                shared["auto_triage_status"] = "canceled"
+                shared["auto_triage_last_error"] = "Pipeline canceled by user"
+                shared["auto_triage_last_run_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             return
         except Exception as e:
             err = str(e)
@@ -715,9 +722,19 @@ def chat_turn(
                         f"Chat turn failed after history-reset retry ({type(e2).__name__}) in {time.perf_counter() - turn_t0:.1f}s",
                     )
                     result_box["assistant_text"] = f"[multi-agent pipeline error] {type(e2).__name__}: {e2}"
+                    if selected_pipeline_name == "auto_triage":
+                        shared = state.setdefault("shared_state", _new_shared_state())
+                        shared["auto_triage_status"] = "failed"
+                        shared["auto_triage_last_error"] = f"{type(e2).__name__}: {e2}"
+                        shared["auto_triage_last_run_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
                     return
             append_status(state, f"Chat turn failed ({type(e).__name__}) in {time.perf_counter() - turn_t0:.1f}s")
             result_box["assistant_text"] = f"[multi-agent pipeline error] {type(e).__name__}: {e}"
+            if selected_pipeline_name == "auto_triage":
+                shared = state.setdefault("shared_state", _new_shared_state())
+                shared["auto_triage_status"] = "failed"
+                shared["auto_triage_last_error"] = f"{type(e).__name__}: {e}"
+                shared["auto_triage_last_run_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         finally:
             if str(state.get("active_run_id") or "") == run_id:
                 if chat_box["history"]:
@@ -1311,6 +1328,93 @@ def _automation_run_busy() -> bool:
     return bool(snapshot.get("run_active"))
 
 
+def _automation_program_key_from_payload(payload: Dict[str, Any]) -> str:
+    return str(
+        payload.get("automation_program_key")
+        or payload.get("program_key")
+        or payload.get("ghidra_project_path")
+        or payload.get("executable_path")
+        or payload.get("program_name")
+        or "global"
+    ).strip() or "global"
+
+
+def _automation_analysis_token_from_payload(payload: Dict[str, Any]) -> str:
+    return str(
+        payload.get("analysis_token")
+        or payload.get("automation_signature")
+        or payload.get("analysis_completed_at_epoch_ms")
+        or ""
+    ).strip()
+
+
+def _automation_sha256_from_payload(payload: Dict[str, Any]) -> str:
+    return str(
+        payload.get("executable_sha256")
+        or payload.get("sha256")
+        or (((payload.get("program_info") or {}).get("program") or {}).get("executableSHA256") if isinstance(payload.get("program_info"), dict) else "")
+        or ""
+    ).strip()
+
+
+def _should_accept_automation_trigger(payload: Dict[str, Any]) -> Tuple[bool, str, str]:
+    program_key = _automation_program_key_from_payload(payload)
+    force_rerun = bool(payload.get("force_rerun"))
+    if force_rerun:
+        return True, "manual_force_rerun", program_key
+
+    prior = _AUTOMATION_RUN_HISTORY.get(program_key)
+    if prior is None:
+        return True, "first_trigger_for_program", program_key
+
+    prior_status = str(prior.get("status") or "").strip().lower()
+    if prior_status and prior_status != "succeeded":
+        return True, "previous_auto_triage_not_successful", program_key
+
+    prior_sha256 = str(prior.get("sha256") or "").strip()
+    incoming_sha256 = _automation_sha256_from_payload(payload)
+    if incoming_sha256 and prior_sha256 and incoming_sha256 != prior_sha256:
+        return True, "sample_hash_changed", program_key
+
+    prior_analysis_token = str(prior.get("analysis_token") or "").strip()
+    incoming_analysis_token = _automation_analysis_token_from_payload(payload)
+    if incoming_analysis_token and prior_analysis_token and incoming_analysis_token != prior_analysis_token:
+        return True, "analysis_token_changed", program_key
+
+    return False, "duplicate_completed_auto_triage", program_key
+
+
+def _register_automation_run_start(payload: Dict[str, Any], rerun_reason: str) -> str:
+    program_key = _automation_program_key_from_payload(payload)
+    _AUTOMATION_RUN_HISTORY[program_key] = {
+        "status": "running",
+        "sha256": _automation_sha256_from_payload(payload),
+        "analysis_token": _automation_analysis_token_from_payload(payload),
+        "rerun_reason": rerun_reason,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "source": str(payload.get("source") or "").strip(),
+    }
+    return program_key
+
+
+def _register_automation_run_finish(
+    program_key: str,
+    payload: Dict[str, Any],
+    *,
+    status: str,
+    error: str = "",
+) -> None:
+    _AUTOMATION_RUN_HISTORY[program_key] = {
+        "status": status,
+        "sha256": _automation_sha256_from_payload(payload),
+        "analysis_token": _automation_analysis_token_from_payload(payload),
+        "rerun_reason": str(payload.get("rerun_reason") or payload.get("trigger_reason") or "").strip(),
+        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "source": str(payload.get("source") or "").strip(),
+        "error": error,
+    }
+
+
 def _automation_prompt_from_payload(payload: Dict[str, Any]) -> str:
     user_text = str(payload.get("user_text") or payload.get("prompt") or "").strip()
     if user_text:
@@ -1322,7 +1426,7 @@ def _automation_prompt_from_payload(payload: Dict[str, Any]) -> str:
     executable_md5 = str(payload.get("executable_md5") or payload.get("md5") or "").strip() or "unknown"
     ghidra_project_path = str(payload.get("ghidra_project_path") or payload.get("project_path") or "").strip() or "unknown"
     path_handoff_line = f"{PATH_HANDOFF_LINE_PREFIX} {executable_path}" if executable_path else ""
-    return AUTOMATION_DEFAULT_PROMPT_TEMPLATE.format(
+    base_prompt = AUTOMATION_DEFAULT_PROMPT_TEMPLATE.format(
         program_name=program_name,
         executable_path=executable_path or "unknown",
         executable_sha256=executable_sha256,
@@ -1331,8 +1435,50 @@ def _automation_prompt_from_payload(payload: Dict[str, Any]) -> str:
         path_handoff_line=path_handoff_line,
     ).strip()
 
+    extra_lines: List[str] = [
+        "",
+        "This request should use the dedicated automated bootstrap triage pipeline.",
+        "Treat any automation bootstrap metadata and deterministic pre-sweeps as primary starting context.",
+        "Do not auto-apply edits or launch dynamic analysis automatically.",
+    ]
+    for label, key in (
+        ("Language", "language"),
+        ("Compiler", "compiler"),
+        ("Image Base", "image_base"),
+        ("Entry Point", "entry_point"),
+    ):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            extra_lines.append(f"{label}: {value}")
 
-def _run_automation_trigger(user_text: str, source: str) -> None:
+    section_summary = list(payload.get("section_summary") or [])
+    if section_summary:
+        extra_lines.append("Section summary:")
+        extra_lines.extend(f"- {line}" for line in section_summary[:6])
+
+    import_summary = list(payload.get("import_summary") or [])
+    if import_summary:
+        extra_lines.append("Import summary:")
+        extra_lines.extend(f"- {line}" for line in import_summary[:8])
+
+    root_functions = list(payload.get("root_functions") or [])
+    if root_functions:
+        extra_lines.append("Discovered root functions:")
+        extra_lines.extend(f"- {line}" for line in root_functions[:6])
+
+    warnings = list(payload.get("auto_analysis_warnings") or [])
+    failures = list(payload.get("auto_analysis_failures") or [])
+    if warnings:
+        extra_lines.append("Auto-analysis warnings:")
+        extra_lines.extend(f"- {line}" for line in warnings[:6])
+    if failures:
+        extra_lines.append("Auto-analysis failures:")
+        extra_lines.extend(f"- {line}" for line in failures[:6])
+
+    return "\n".join([base_prompt, *extra_lines]).strip()
+
+
+def _run_automation_trigger(user_text: str, source: str, payload: Dict[str, Any], program_key: str) -> None:
     global _AUTOMATION_TRIGGER_PENDING
     try:
         snapshot = _get_ui_snapshot()
@@ -1343,9 +1489,8 @@ def _run_automation_trigger(user_text: str, source: str) -> None:
         if not isinstance(chat_history, list):
             chat_history = []
 
-        shell_execution_mode = _normalize_shell_execution_mode(
-            state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)
-        )
+        apply_automation_payload_to_state(state, payload)
+        shell_execution_mode = "none"
         validator_review_level = _normalize_validator_review_level(
             state.get("validator_review_level", DEFAULT_VALIDATOR_REVIEW_LEVEL)
         )
@@ -1358,10 +1503,28 @@ def _run_automation_trigger(user_text: str, source: str) -> None:
             False,
             shell_execution_mode,
             validator_review_level,
+            False,
+            "balanced",
+            "auto_triage",
         ):
             pass
+        shared = state.get("shared_state") if isinstance(state.get("shared_state"), dict) else {}
+        final_status = str((shared or {}).get("auto_triage_status") or "").strip().lower() or "succeeded"
+        final_error = str((shared or {}).get("auto_triage_last_error") or "").strip()
+        _register_automation_run_finish(
+            program_key,
+            payload,
+            status=final_status,
+            error=final_error,
+        )
     except Exception as e:
         print(f"[automation trigger error] {type(e).__name__}: {e}", flush=True)
+        _register_automation_run_finish(
+            program_key,
+            payload,
+            status="failed",
+            error=f"{type(e).__name__}: {e}",
+        )
     finally:
         with _AUTOMATION_TRIGGER_LOCK:
             _AUTOMATION_TRIGGER_PENDING = False
@@ -1422,6 +1585,21 @@ class _AutomationTriggerHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "trigger prompt resolved to an empty request"})
             return
 
+        accept_trigger, rerun_reason, program_key = _should_accept_automation_trigger(payload)
+        if not accept_trigger:
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "accepted": False,
+                    "source": source,
+                    "reason": rerun_reason,
+                    "program_key": program_key,
+                },
+            )
+            return
+        payload["rerun_reason"] = rerun_reason
+
         global _AUTOMATION_TRIGGER_PENDING
         with _AUTOMATION_TRIGGER_LOCK:
             if _AUTOMATION_TRIGGER_PENDING or _automation_run_busy():
@@ -1435,10 +1613,11 @@ class _AutomationTriggerHandler(BaseHTTPRequestHandler):
                 )
                 return
             _AUTOMATION_TRIGGER_PENDING = True
+            program_key = _register_automation_run_start(payload, rerun_reason)
 
         worker = Thread(
             target=_run_automation_trigger,
-            args=(user_text, source),
+            args=(user_text, source, payload, program_key),
             daemon=True,
             name="automation-trigger",
         )
@@ -1449,6 +1628,8 @@ class _AutomationTriggerHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "accepted": True,
                 "source": source,
+                "reason": rerun_reason,
+                "program_key": program_key,
             },
         )
 

@@ -33,6 +33,7 @@ from .runtime import (
     expand_architecture_slots,
     expand_architecture_names,
     prepare_ghidra_change_operation,
+    run_deterministic_presweeps_sync,
 )
 from .shared_state import (
     _empty_parent_input,
@@ -1558,6 +1559,72 @@ def _merge_host_worker_results(results: List[Dict[str, Any]], concurrency_limit:
     return "\n".join(section for section in sections if section is not None).strip()
 
 
+def _compact_auto_triage_report_text(text: str, *, max_lines: int = 28, max_chars: int = 5000) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
+    compact = "\n".join(lines[:max_lines]).strip()
+    if len(compact) > max_chars:
+        compact = compact[: max_chars - 15].rstrip() + "\n...[truncated]..."
+    return compact
+
+
+def _build_auto_triage_context_summary(state: Dict[str, Any], final_output: str = "") -> str:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    lines: List[str] = ["Reusable automated triage context"]
+    status = str(shared.get("auto_triage_status") or "").strip()
+    if status:
+        lines.append(f"- status: {status}")
+    last_run_at = str(shared.get("auto_triage_last_run_at") or "").strip()
+    if last_run_at:
+        lines.append(f"- last_run_at: {last_run_at}")
+    sample_path = str(shared.get("auto_triage_sample_path") or shared.get("validated_sample_path") or "").strip()
+    if sample_path:
+        lines.append(f"- sample_path: {sample_path}")
+    sample_sha256 = str(shared.get("auto_triage_sample_sha256") or shared.get("validated_sample_sha256") or "").strip()
+    if sample_sha256:
+        lines.append(f"- sample_sha256: {sample_sha256}")
+    pre_sweep_summary = str(shared.get("auto_triage_pre_sweep_summary") or "").strip()
+    if pre_sweep_summary:
+        lines.extend(["", "Deterministic pre-sweeps:", pre_sweep_summary])
+    report_text = _compact_auto_triage_report_text(final_output or str(shared.get("auto_triage_report") or ""))
+    if report_text:
+        lines.extend(["", "Latest automated triage report:", report_text])
+    error = str(shared.get("auto_triage_last_error") or "").strip()
+    if error:
+        lines.extend(["", "Latest auto-triage error:", error])
+    return "\n".join(lines).strip()
+
+
+def _record_auto_triage_run(
+    state: Dict[str, Any],
+    *,
+    status: str,
+    report: str = "",
+    error: str = "",
+) -> None:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    shared["auto_triage_status"] = status
+    shared["auto_triage_last_error"] = error
+    shared["auto_triage_last_run_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    shared["auto_triage_sample_path"] = str(shared.get("validated_sample_path") or "").strip()
+    shared["auto_triage_sample_sha256"] = str(shared.get("validated_sample_sha256") or "").strip()
+    if report:
+        shared["auto_triage_report"] = report
+    shared["auto_triage_context_summary"] = _build_auto_triage_context_summary(state, report)
+    runs = shared.setdefault("auto_triage_runs", [])
+    runs.append(
+        {
+            "status": status,
+            "at": shared["auto_triage_last_run_at"],
+            "sample_path": shared["auto_triage_sample_path"],
+            "sample_sha256": shared["auto_triage_sample_sha256"],
+            "error": error,
+        }
+    )
+
+
 def _run_host_parallel_worker_stage(
     runtime: MultiAgentRuntime,
     stage: Any,
@@ -1720,6 +1787,12 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["host_parallel_worker_execution"] = HOST_PARALLEL_WORKER_EXECUTION
     shared["max_parallel_workers"] = MAX_PARALLEL_WORKERS
     state["pending_parent_input"] = _empty_parent_input()
+    if runtime.pipeline_name == "auto_triage":
+        shared["auto_triage_status"] = "running"
+        shared["auto_triage_last_error"] = ""
+        shared["auto_triage_pre_sweeps"] = {}
+        shared["auto_triage_pre_sweep_summary"] = ""
+        shared["auto_triage_report"] = ""
     _seed_pipeline_stage_progress(
         state,
         [(stage.name, stage.stage_kind, list(stage.subagent_names)) for stage in runtime.stages],
@@ -1783,7 +1856,12 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage.name)
         try:
             _check_cancel_requested(state, location=f"before executing {stage.name}")
-            if (
+            if stage.stage_kind == "deterministic_presweeps":
+                stage_output, presweep_bundle = run_deterministic_presweeps_sync(runtime, state)
+                shared["auto_triage_pre_sweeps"] = presweep_bundle
+                shared["auto_triage_pre_sweep_summary"] = stage_output
+                result = None
+            elif (
                 stage_meta["supports_parallel_assignments"]
                 and HOST_PARALLEL_WORKER_EXECUTION
                 and (state.get("shared_state") or {}).get("planned_work_items")
@@ -1829,6 +1907,12 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 state,
                 f"Stage failed: {stage.name} after {time.perf_counter() - stage_t0:.1f}s ({type(e).__name__})",
             )
+            if runtime.pipeline_name == "auto_triage":
+                _record_auto_triage_run(
+                    state,
+                    status="failed",
+                    error=f"{type(e).__name__}: {e}",
+                )
             raise
         finally:
             _ACTIVE_PIPELINE_STAGE.reset(active_stage_token)
@@ -1992,6 +2076,13 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                     stage_output,
                     gate_error,
                 )
+                if runtime.pipeline_name == "auto_triage":
+                    _record_auto_triage_run(
+                        state,
+                        status="failed",
+                        report=final_output,
+                        error="Validation gate rejected after max replans",
+                    )
                 shared["run_count"] = int(shared.get("run_count", 0)) + 1
                 shared["final_output"] = final_output
                 append_status(state, f"Deep pipeline stopped in {time.perf_counter() - t0:.1f}s")
@@ -2001,5 +2092,11 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
 
     shared["run_count"] = int(shared.get("run_count", 0)) + 1
     shared["final_output"] = final_output
+    if runtime.pipeline_name == "auto_triage":
+        _record_auto_triage_run(
+            state,
+            status="succeeded",
+            report=final_output,
+        )
     append_status(state, f"Deep pipeline finished in {time.perf_counter() - t0:.1f}s")
     return final_output

@@ -4,6 +4,11 @@
     "Do not perform deep analysis, full obfuscation assessment, or final purpose conclusions.",
     "Limit the handoff to path resolution, basic metadata, and a few worker pivots; do not include broad xref walks or large call-graph summaries."
   ],
+  "deterministic_presweeps": [
+    "Produce a compact deterministic sweep bundle for the current sample.",
+    "Include canonical sample identity, bounded Ghidra metadata, and the results or explicit unavailability of each enabled sweep such as strings, FLOSS, capa, HashDB candidate checks, entropy/packer heuristics, and baseline YARA.",
+    "Prefer reusable artifacts and compact summaries over long raw dumps, and clearly mark unavailable or failed sweeps instead of guessing."
+  ],
   "planner": [
     "Produce a compact execution plan with prioritized work items, suggested worker-role assignments, and concrete evidence targets.",
     "Include exactly one machine-readable JSON block delimited by `{{PLANNER_WORK_ITEMS_START}}` and `{{PLANNER_WORK_ITEMS_END}}`.",

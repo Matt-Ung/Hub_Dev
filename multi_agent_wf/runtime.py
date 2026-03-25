@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import sys
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
@@ -74,6 +75,8 @@ from .shared_state import (
 # ----------------------------
 _PIPELINE_ROUTER_AGENT: Agent | None = None
 _ARCHITECTURE_ROUTER_AGENT: Agent | None = None
+_AUTO_TRIAGE_HASHDB_ALGORITHMS = ("crc32", "fnv1a32", "djb2", "sdbm")
+_HASHLIKE_STRING_RE = re.compile(r"(?i)\b(?:0x)?([0-9a-f]{8,16})\b")
 
 
 def load_mcp_servers(path: str) -> List[MCPServerStdio]:
@@ -816,6 +819,11 @@ def build_stage_prompt(
     validated_sample_sha256 = (shared.get("validated_sample_sha256") or "").strip()
     validated_sample_image_base = (shared.get("validated_sample_image_base") or "").strip()
     validated_sample_metadata_source = (shared.get("validated_sample_metadata_source") or "").strip()
+    auto_triage_status = str(shared.get("auto_triage_status") or "").strip()
+    auto_triage_context_summary = str(shared.get("auto_triage_context_summary") or "").strip()
+    auto_triage_pre_sweep_summary = str(shared.get("auto_triage_pre_sweep_summary") or "").strip()
+    auto_triage_sample_path = str(shared.get("auto_triage_sample_path") or "").strip()
+    auto_triage_sample_sha256 = str(shared.get("auto_triage_sample_sha256") or "").strip()
     sections.extend(["", "Shared execution context:"])
     if validated_sample_path:
         sections.extend(
@@ -883,6 +891,15 @@ def build_stage_prompt(
     else:
         sections.append("- Clarification rule: parent input is disabled for this run; do not rely on follow-up questions.")
 
+    same_sample_auto_triage = bool(
+        auto_triage_context_summary
+        and (
+            (validated_sample_sha256 and auto_triage_sample_sha256 and validated_sample_sha256 == auto_triage_sample_sha256)
+            or (validated_sample_path and auto_triage_sample_path and validated_sample_path == auto_triage_sample_path)
+            or (not validated_sample_path and not validated_sample_sha256)
+        )
+    )
+
     if selected_pipeline_name == "preflight_direct_answer":
         sections.extend(
             [
@@ -906,6 +923,60 @@ def build_stage_prompt(
                     "- If one short supporting detail helps disambiguate the answer, include only that detail.",
                 ]
             )
+    elif selected_pipeline_name == "auto_triage":
+        sections.extend(
+            [
+                "",
+                "Auto-triage mode:",
+                "- This is an automated initial triage after Ghidra auto-analysis, not a normal open-ended chat run.",
+                "- Prefer bounded synthesis over exploratory re-discovery.",
+                "- Do not auto-apply Ghidra edits, do not launch dynamic analysis automatically, and do not generate validator-heavy appendices by default.",
+            ]
+        )
+        if stage_kind == "preflight":
+            sections.extend(
+                [
+                    "- Use the automation bootstrap metadata to confirm the canonical sample path and only the minimum extra context needed before the deterministic sweep stage.",
+                    "- Do not broaden into behavior explanation or wide pivot chasing here.",
+                ]
+            )
+        elif stage_kind == "planner":
+            sections.extend(
+                [
+                    "- Treat the deterministic pre-sweep bundle as already collected evidence.",
+                    "- Plan only the smallest follow-on work needed to synthesize or clarify program purpose, key control-flow, capabilities, obfuscation, or naming opportunities from that bundle.",
+                    "- Do not create work items that merely repeat the same bootstrap sweeps unless a sweep explicitly failed or the prior result was insufficient for the user-facing triage.",
+                ]
+            )
+        elif stage_kind == "workers":
+            sections.extend(
+                [
+                    "- Use the deterministic pre-sweep bundle and automation bootstrap metadata as the primary starting point.",
+                    "- Do not rerun full strings/FLOSS/capa/YARA/binwalk sweeps unless the stage context shows that one of them failed, was unavailable, or is materially insufficient.",
+                    "- If you identify useful rename/type suggestions, keep them proposal-only and secondary to the initial triage artifact.",
+                ]
+            )
+        elif stage_kind == "reporter":
+            sections.extend(
+                [
+                    "- Produce an initial triage artifact that can be reused by later interactive queries.",
+                    "- Keep the report analyst-facing, concise, and forward-looking about the highest-value next pivots.",
+                ]
+            )
+        if auto_triage_pre_sweep_summary:
+            sections.extend(["", "Deterministic pre-sweep bundle:", auto_triage_pre_sweep_summary])
+    elif same_sample_auto_triage:
+        sections.extend(
+            [
+                "",
+                "Reusable prior auto-triage context:",
+                auto_triage_context_summary,
+                "- Reuse this earlier automated triage and its deterministic sweep outputs when relevant.",
+                "- Do not rerun the same bootstrap sweeps unless the sample changed, the prior auto-triage failed, or the user explicitly asks for a rerun.",
+            ]
+        )
+        if auto_triage_status and auto_triage_status != "succeeded":
+            sections.append(f"- Prior auto-triage status: {auto_triage_status}")
     if shell_execution_mode == "none":
         sections.append("- Shell rule: do not call `execute`. Shell command execution is disabled for this run.")
     elif shell_execution_mode == "ask":
@@ -1005,6 +1076,8 @@ def build_stage_prompt(
                 "- If there are no concrete proposals for approval, emit an empty array in the machine-readable block rather than omitting the block.",
             ]
         )
+        if selected_pipeline_name == "auto_triage":
+            sections.append("- Auto-triage edit rule: do not populate the Ghidra approval queue unless the original request explicitly asked for naming or type-improvement proposals.")
 
     if prior_stage_outputs:
         sections.extend(["", "Prior stage outputs:"])
@@ -1245,6 +1318,655 @@ def _build_deep_backend() -> Any:
     return deep_backend
 
 
+def _find_mcp_server_by_marker(
+    runtime: "MultiAgentRuntime",
+    marker: str,
+    *,
+    include_dynamic: bool = False,
+) -> Optional[MCPServerStdio]:
+    marker_lower = str(marker or "").strip().lower()
+    toolsets = list(runtime.static_tools)
+    if include_dynamic:
+        toolsets.extend(runtime.dynamic_tools)
+    for server in toolsets:
+        if marker_lower in str(server.id or "").lower():
+            return server
+    return None
+
+
+def _render_tool_log_entry_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(_json_safe(value), indent=2, ensure_ascii=False)
+    except Exception:
+        return str(value)
+
+
+def _direct_mcp_tool_call_sync(
+    runtime: "MultiAgentRuntime",
+    state: Optional[Dict[str, Any]],
+    *,
+    stage_name: str,
+    server_marker: str,
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    include_dynamic: bool = False,
+) -> Dict[str, Any]:
+    server = _find_mcp_server_by_marker(runtime, server_marker, include_dynamic=include_dynamic)
+    if server is None:
+        return {
+            "ok": False,
+            "server_id": "",
+            "tool_name": tool_name,
+            "result": None,
+            "text": "",
+            "error": f"No MCP server matching marker `{server_marker}` is configured.",
+        }
+
+    call_id = f"presweep_{tool_name}_{int(time.time() * 1000)}"
+    if isinstance(state, dict):
+        _append_tool_log_entries(
+            state,
+            stage_name,
+            [
+                {
+                    "stage": stage_name,
+                    "kind": "tool_call",
+                    "tool_name": tool_name,
+                    "tool_call_id": call_id,
+                    "server_id": server.id or "",
+                    "args": _json_safe(tool_args),
+                    "source": "deterministic_presweeps.host",
+                }
+            ],
+        )
+
+    cloned_server = _clone_mcp_server(server)
+
+    async def _call() -> Any:
+        return await cloned_server.direct_call_tool(tool_name, dict(tool_args or {}))
+
+    try:
+        raw_result = asyncio.run(_call())
+        text_result = _coerce_direct_tool_result_text(raw_result)
+        if isinstance(state, dict):
+            _append_tool_log_entries(
+                state,
+                stage_name,
+                [
+                    {
+                        "stage": stage_name,
+                        "kind": "tool_return",
+                        "tool_name": tool_name,
+                        "tool_call_id": call_id,
+                        "server_id": server.id or "",
+                        "content": _render_tool_log_entry_content(raw_result),
+                        "source": "deterministic_presweeps.host",
+                    }
+                ],
+            )
+        return {
+            "ok": True,
+            "server_id": server.id or "",
+            "tool_name": tool_name,
+            "result": raw_result,
+            "text": text_result,
+            "error": "",
+        }
+    except Exception as exc:
+        error_text = f"{type(exc).__name__}: {exc}"
+        if isinstance(state, dict):
+            _append_tool_log_entries(
+                state,
+                stage_name,
+                [
+                    {
+                        "stage": stage_name,
+                        "kind": "tool_return",
+                        "tool_name": tool_name,
+                        "tool_call_id": call_id,
+                        "server_id": server.id or "",
+                        "content": error_text,
+                        "source": "deterministic_presweeps.host",
+                    }
+                ],
+            )
+        return {
+            "ok": False,
+            "server_id": server.id or "",
+            "tool_name": tool_name,
+            "result": None,
+            "text": "",
+            "error": error_text,
+        }
+
+
+def _parse_jsonish_tool_result(value: Any) -> Optional[Any]:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    text = _coerce_direct_tool_result_text(value)
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+        try:
+            return json.loads(stripped)
+        except Exception:
+            return None
+    return None
+
+
+def _compact_text_block(text: str, *, max_lines: int = 24, max_chars: int = 4000) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
+    compact = "\n".join(lines[:max_lines]).strip()
+    if len(compact) > max_chars:
+        compact = compact[: max_chars - 15].rstrip() + "\n...[truncated]..."
+    return compact
+
+
+def _parse_ghidra_string_lines(value: Any, *, max_items: int = 40) -> List[Dict[str, str]]:
+    if isinstance(value, list):
+        lines = [str(item) for item in value]
+    else:
+        lines = _coerce_direct_tool_result_text(value).splitlines()
+
+    out: List[Dict[str, str]] = []
+    for raw_line in lines:
+        line = str(raw_line or "").strip()
+        if not line or len(out) >= max_items:
+            continue
+        if ": " in line:
+            address, _, remainder = line.partition(":")
+            value_text = remainder.strip().strip("\"")
+            out.append({"address": address.strip(), "value": value_text})
+        else:
+            out.append({"address": "", "value": line})
+    return out
+
+
+def _extract_hashdb_candidates_from_strings(strings_preview: List[Dict[str, str]], *, max_candidates: int = 6) -> List[str]:
+    candidates: List[str] = []
+    seen: set[str] = set()
+    for item in strings_preview:
+        value = str(item.get("value") or "")
+        for match in _HASHLIKE_STRING_RE.finditer(value):
+            candidate = match.group(1).lower()
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+            if len(candidates) >= max_candidates:
+                return candidates
+    return candidates
+
+
+def _compact_capa_summary(parsed: Any) -> Dict[str, Any]:
+    if not isinstance(parsed, dict):
+        return {"available": False, "error": "Unable to parse capa output."}
+    result = parsed.get("result") if isinstance(parsed.get("result"), dict) else {}
+    rules = result.get("rules") if isinstance(result.get("rules"), list) else []
+    top_rules: List[str] = []
+    for rule in rules[:8]:
+        if not isinstance(rule, dict):
+            continue
+        name = str(rule.get("name") or "").strip()
+        if name:
+            top_rules.append(name)
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    analysis = meta.get("analysis") if isinstance(meta.get("analysis"), dict) else {}
+    return {
+        "available": True,
+        "total_rules": summary.get("total_rules"),
+        "returned_rules": summary.get("returned_rules"),
+        "top_rules": top_rules,
+        "analysis": {
+            "format": analysis.get("format"),
+            "arch": analysis.get("arch"),
+            "os": analysis.get("os"),
+            "extractor": analysis.get("extractor"),
+        },
+    }
+
+
+def _compact_yara_summary(parsed: Any) -> Dict[str, Any]:
+    if not isinstance(parsed, dict):
+        return {"available": False, "error": "Unable to parse YARA output."}
+    stats = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
+    return {
+        "available": bool(parsed.get("ok")),
+        "match_count": stats.get("match_count"),
+        "rules": list(stats.get("rules") or [])[:10],
+        "error": str(parsed.get("error") or "").strip(),
+    }
+
+
+def _compact_binwalk_summary(parsed: Any) -> Dict[str, Any]:
+    if not isinstance(parsed, dict):
+        return {"available": False, "error": "Unable to parse binwalk output."}
+    stats = parsed.get("stats") if isinstance(parsed.get("stats"), dict) else {}
+    signatures = parsed.get("signatures") if isinstance(parsed.get("signatures"), list) else []
+    preview: List[str] = []
+    for item in signatures[:8]:
+        if isinstance(item, dict):
+            description = str(item.get("description") or item.get("type") or "").strip()
+            if description:
+                preview.append(description)
+        elif str(item).strip():
+            preview.append(str(item).strip())
+    return {
+        "available": bool(parsed.get("ok")),
+        "signature_count": stats.get("signature_count"),
+        "signatures": preview,
+        "stderr": _compact_text_block(str(parsed.get("stderr") or ""), max_lines=8, max_chars=1200),
+        "error": str(parsed.get("error") or "").strip(),
+    }
+
+
+def _build_auto_triage_presweep_summary(bundle: Dict[str, Any]) -> str:
+    summary_lines: List[str] = ["Deterministic pre-sweep bundle"]
+    sample_path = str(bundle.get("validated_sample_path") or "").strip()
+    if sample_path:
+        summary_lines.append(f"- validated_sample_path: {sample_path}")
+    if bundle.get("sample_sha256"):
+        summary_lines.append(f"- sample_sha256: {bundle.get('sample_sha256')}")
+    if bundle.get("sample_md5"):
+        summary_lines.append(f"- sample_md5: {bundle.get('sample_md5')}")
+    program = bundle.get("program") if isinstance(bundle.get("program"), dict) else {}
+    program_bits: List[str] = []
+    for label in ("name", "language", "compiler", "image_base", "entry_point"):
+        value = str(program.get(label) or "").strip()
+        if value:
+            program_bits.append(f"{label}={value}")
+    if program_bits:
+        summary_lines.append(f"- program: {', '.join(program_bits)}")
+
+    counts = bundle.get("counts") if isinstance(bundle.get("counts"), dict) else {}
+    if counts:
+        count_bits = [f"{k}={v}" for k, v in counts.items() if v not in ("", None)]
+        if count_bits:
+            summary_lines.append(f"- counts: {', '.join(count_bits)}")
+
+    sections = list(bundle.get("section_summary") or [])
+    if sections:
+        summary_lines.append("- section_summary:")
+        summary_lines.extend(f"  - {line}" for line in sections[:6])
+    imports = list(bundle.get("import_summary") or [])
+    if imports:
+        summary_lines.append("- import_summary:")
+        summary_lines.extend(f"  - {line}" for line in imports[:10])
+    exports = list(bundle.get("export_summary") or [])
+    if exports:
+        summary_lines.append("- export_summary:")
+        summary_lines.extend(f"  - {line}" for line in exports[:8])
+    roots = list(bundle.get("root_functions") or [])
+    if roots:
+        summary_lines.append("- root_functions:")
+        summary_lines.extend(f"  - {line}" for line in roots[:8])
+
+    known_context = bundle.get("known_malware_context") if isinstance(bundle.get("known_malware_context"), dict) else {}
+    if known_context:
+        summary_lines.append(
+            "- known_malware_context: "
+            + str(known_context.get("summary") or known_context.get("reason") or "").strip()
+        )
+
+    strings_preview = bundle.get("ghidra_strings") if isinstance(bundle.get("ghidra_strings"), dict) else {}
+    string_items = list(strings_preview.get("items") or [])
+    if string_items:
+        summary_lines.append("- ghidra_strings_preview:")
+        for item in string_items[:8]:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("value") or "").strip()
+            address = str(item.get("address") or "").strip()
+            if value:
+                summary_lines.append(f"  - {address}: {value}" if address else f"  - {value}")
+
+    for label in ("raw_strings", "floss", "capa", "hashdb", "entropy_packer", "baseline_yara"):
+        section = bundle.get(label)
+        if not section:
+            continue
+        if isinstance(section, dict):
+            if label in {"raw_strings", "floss"}:
+                available = "yes" if section.get("available") else "no"
+                error = str(section.get("error") or "").strip()
+                preview = _compact_text_block(str(section.get("preview") or ""), max_lines=8, max_chars=800)
+                summary_lines.append(f"- {label}: available={available}")
+                if error:
+                    summary_lines.append(f"  error: {error}")
+                if preview:
+                    summary_lines.append("  preview:")
+                    summary_lines.extend(f"    {line}" for line in preview.splitlines())
+            else:
+                compact = json.dumps(_json_safe(section), ensure_ascii=False)
+                summary_lines.append(f"- {label}: {compact}")
+        else:
+            summary_lines.append(f"- {label}: {section}")
+
+    return "\n".join(summary_lines).strip()
+
+
+def run_deterministic_presweeps_sync(runtime: "MultiAgentRuntime", state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    shared = state.setdefault("shared_state", {})
+    payload = shared.get("automation_trigger_payload") if isinstance(shared.get("automation_trigger_payload"), dict) else {}
+    stage_name = "presweeps"
+    append_status(state, "Deterministic pre-sweeps started")
+
+    program_info_payload = payload.get("program_info") if isinstance(payload.get("program_info"), dict) else {}
+    program_block = program_info_payload.get("program") if isinstance(program_info_payload.get("program"), dict) else {}
+    counts_block = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    validated_sample_path = str(shared.get("validated_sample_path") or payload.get("executable_path") or "").strip()
+    validated_sample_md5 = str(shared.get("validated_sample_md5") or payload.get("executable_md5") or "").strip()
+    validated_sample_sha256 = str(shared.get("validated_sample_sha256") or payload.get("executable_sha256") or "").strip()
+    validated_sample_image_base = str(shared.get("validated_sample_image_base") or payload.get("image_base") or "").strip()
+
+    bundle: Dict[str, Any] = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "validated_sample_path": validated_sample_path,
+        "sample_md5": validated_sample_md5,
+        "sample_sha256": validated_sample_sha256,
+        "program": {
+            "name": str(payload.get("program_name") or program_block.get("name") or "").strip(),
+            "ghidra_project_path": str(
+                payload.get("ghidra_project_path") or program_block.get("ghidraProjectPath") or ""
+            ).strip(),
+            "language": str(payload.get("language") or program_block.get("language") or "").strip(),
+            "compiler": str(payload.get("compiler") or program_block.get("compiler") or "").strip(),
+            "image_base": validated_sample_image_base or str(program_block.get("imageBase") or "").strip(),
+            "entry_point": str(payload.get("entry_point") or "").strip(),
+        },
+        "counts": dict(counts_block) if counts_block else {},
+        "section_summary": list(payload.get("section_summary") or []),
+        "import_summary": list(payload.get("import_summary") or []),
+        "export_summary": list(payload.get("export_summary") or []),
+        "root_functions": list(payload.get("root_functions") or []),
+        "auto_analysis_warnings": list(payload.get("auto_analysis_warnings") or []),
+        "auto_analysis_failures": list(payload.get("auto_analysis_failures") or []),
+        "known_malware_context": {
+            "available": False,
+            "summary": "Offline fallback only. Preserve hashes for later VirusTotal/MalwareBazaar lookup; no intel MCP server is configured in this hub.",
+            "reason": "No VirusTotal or MalwareBazaar MCP tooling is currently configured.",
+        },
+    }
+
+    ghidra_info = _direct_mcp_tool_call_sync(
+        runtime,
+        state,
+        stage_name=stage_name,
+        server_marker="ghidra",
+        tool_name="get_program_info",
+        tool_args={},
+    )
+    parsed_program_info = _parse_jsonish_tool_result(ghidra_info.get("result"))
+    if isinstance(parsed_program_info, list) and len(parsed_program_info) == 1:
+        parsed_program_info = _parse_jsonish_tool_result(parsed_program_info[0])
+    if isinstance(parsed_program_info, dict):
+        bundle["canonical_program_info"] = parsed_program_info
+        program_from_tool = parsed_program_info.get("program") if isinstance(parsed_program_info.get("program"), dict) else {}
+        counts_from_tool = parsed_program_info.get("counts") if isinstance(parsed_program_info.get("counts"), dict) else {}
+        if not bundle["program"].get("name"):
+            bundle["program"]["name"] = str(program_from_tool.get("name") or "").strip()
+        if not bundle["program"].get("ghidra_project_path"):
+            bundle["program"]["ghidra_project_path"] = str(program_from_tool.get("ghidraProjectPath") or "").strip()
+        if not validated_sample_path:
+            validated_sample_path = str(program_from_tool.get("executablePath") or "").strip()
+            bundle["validated_sample_path"] = validated_sample_path
+        if not validated_sample_md5:
+            validated_sample_md5 = str(program_from_tool.get("executableMD5") or "").strip()
+            bundle["sample_md5"] = validated_sample_md5
+        if not validated_sample_sha256:
+            validated_sample_sha256 = str(program_from_tool.get("executableSHA256") or "").strip()
+            bundle["sample_sha256"] = validated_sample_sha256
+        if not bundle["program"].get("language"):
+            bundle["program"]["language"] = str(program_from_tool.get("language") or "").strip()
+        if not bundle["program"].get("compiler"):
+            bundle["program"]["compiler"] = str(program_from_tool.get("compiler") or "").strip()
+        if not bundle["program"].get("image_base"):
+            bundle["program"]["image_base"] = str(program_from_tool.get("imageBase") or "").strip()
+        if counts_from_tool:
+            merged_counts = dict(counts_from_tool)
+            merged_counts.update({k: v for k, v in bundle["counts"].items() if v not in ("", None)})
+            bundle["counts"] = merged_counts
+    elif ghidra_info.get("error"):
+        bundle["canonical_program_info_error"] = ghidra_info["error"]
+
+    if not bundle["section_summary"]:
+        segment_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="ghidra",
+            tool_name="list_segments",
+            tool_args={"offset": 0, "limit": 24},
+        )
+        segment_lines = [line for line in _coerce_direct_tool_result_text(segment_result.get("result")).splitlines() if line.strip()]
+        if segment_lines:
+            bundle["section_summary"] = segment_lines[:12]
+    if not bundle["import_summary"]:
+        import_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="ghidra",
+            tool_name="list_imports",
+            tool_args={"offset": 0, "limit": 40},
+        )
+        import_lines = [line for line in _coerce_direct_tool_result_text(import_result.get("result")).splitlines() if line.strip()]
+        if import_lines:
+            bundle["import_summary"] = import_lines[:20]
+    if not bundle["export_summary"]:
+        export_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="ghidra",
+            tool_name="list_exports",
+            tool_args={"offset": 0, "limit": 20},
+        )
+        export_lines = [line for line in _coerce_direct_tool_result_text(export_result.get("result")).splitlines() if line.strip()]
+        if export_lines:
+            bundle["export_summary"] = export_lines[:12]
+    if not bundle["root_functions"]:
+        call_graph_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="ghidra",
+            tool_name="get_call_graph",
+            tool_args={"maxDepth": 2, "maxNodes": 12},
+        )
+        parsed_graph = _parse_jsonish_tool_result(call_graph_result.get("result"))
+        if isinstance(parsed_graph, list) and len(parsed_graph) == 1:
+            parsed_graph = _parse_jsonish_tool_result(parsed_graph[0])
+        if isinstance(parsed_graph, dict):
+            meta = parsed_graph.get("meta") if isinstance(parsed_graph.get("meta"), dict) else {}
+            root_addrs = [str(item).strip() for item in meta.get("roots") or [] if str(item).strip()]
+            node_map = {
+                str(node.get("addr") or "").strip(): str(node.get("name") or "").strip()
+                for node in parsed_graph.get("nodes") or []
+                if isinstance(node, dict)
+            }
+            bundle["root_functions"] = [
+                f"{node_map.get(addr) or '<unknown>'} @ {addr}"
+                for addr in root_addrs[:8]
+            ]
+            if not bundle["program"].get("entry_point") and root_addrs:
+                bundle["program"]["entry_point"] = root_addrs[0]
+
+    ghidra_strings_result = _direct_mcp_tool_call_sync(
+        runtime,
+        state,
+        stage_name=stage_name,
+        server_marker="ghidra",
+        tool_name="list_strings",
+        tool_args={"offset": 0, "limit": 120},
+    )
+    ghidra_strings_items = _parse_ghidra_string_lines(ghidra_strings_result.get("result"), max_items=40)
+    if ghidra_strings_items:
+        bundle["ghidra_strings"] = {
+            "available": True,
+            "count": len(ghidra_strings_items),
+            "items": ghidra_strings_items,
+        }
+        bundle["counts"].setdefault("strings_preview", len(ghidra_strings_items))
+    elif ghidra_strings_result.get("error"):
+        bundle["ghidra_strings"] = {
+            "available": False,
+            "error": ghidra_strings_result["error"],
+            "items": [],
+        }
+
+    if validated_sample_path:
+        raw_strings_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="string",
+            tool_name="callStrings",
+            tool_args={"file_path": validated_sample_path, "min_len": 4},
+        )
+        raw_strings_text = _compact_text_block(raw_strings_result.get("text") or "", max_lines=20, max_chars=1800)
+        bundle["raw_strings"] = {
+            "available": bool(raw_strings_text) and not raw_strings_text.lower().startswith("error:"),
+            "preview": raw_strings_text,
+            "error": "" if raw_strings_text and not raw_strings_text.lower().startswith("error:") else raw_strings_text,
+        }
+
+        floss_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="floss",
+            tool_name="runFloss",
+            tool_args={"command": f'floss "{validated_sample_path}"', "timeout_sec": 180},
+        )
+        floss_text = _compact_text_block(floss_result.get("text") or "", max_lines=30, max_chars=2800)
+        bundle["floss"] = {
+            "available": bool(floss_text) and not floss_text.lower().startswith("error:"),
+            "preview": floss_text,
+            "error": "" if floss_text and not floss_text.lower().startswith("error:") else floss_text,
+        }
+
+        capa_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="capa",
+            tool_name="runCapa",
+            tool_args={
+                "command": f'capa -- "{validated_sample_path}"',
+                "timeout_sec": 180,
+                "output_mode": "json_compact",
+                "max_rules": 40,
+            },
+        )
+        bundle["capa"] = _compact_capa_summary(_parse_jsonish_tool_result(capa_result.get("result")))
+
+        binwalk_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="binwalk",
+            tool_name="binwalkScan",
+            tool_args={"file_path": validated_sample_path, "entropy": True, "timeout_sec": 180},
+        )
+        bundle["entropy_packer"] = _compact_binwalk_summary(binwalk_result.get("result"))
+
+        yara_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="yara",
+            tool_name="yaraScan",
+            tool_args={"target_path": validated_sample_path, "recursive": False, "show_strings": False, "timeout_sec": 180},
+        )
+        bundle["baseline_yara"] = _compact_yara_summary(yara_result.get("result"))
+    else:
+        bundle["raw_strings"] = {
+            "available": False,
+            "error": "Validated sample path was unavailable for raw strings sweep.",
+        }
+        bundle["floss"] = {
+            "available": False,
+            "error": "Validated sample path was unavailable for FLOSS sweep.",
+        }
+        bundle["capa"] = {
+            "available": False,
+            "error": "Validated sample path was unavailable for capa sweep.",
+        }
+        bundle["entropy_packer"] = {
+            "available": False,
+            "error": "Validated sample path was unavailable for binwalk entropy sweep.",
+        }
+        bundle["baseline_yara"] = {
+            "available": False,
+            "error": "Validated sample path was unavailable for baseline YARA sweep.",
+        }
+
+    hash_candidates = _extract_hashdb_candidates_from_strings(
+        list((bundle.get("ghidra_strings") or {}).get("items") or [])
+    )
+    hashdb_section: Dict[str, Any] = {
+        "available": bool(_find_mcp_server_by_marker(runtime, "hashdb")),
+        "candidate_source": "ghidra_strings_hex_literals",
+        "candidates": hash_candidates,
+        "results": [],
+    }
+    if hashdb_section["available"] and hash_candidates:
+        for candidate in hash_candidates[:4]:
+            matched = False
+            for algorithm in _AUTO_TRIAGE_HASHDB_ALGORITHMS:
+                lookup_result = _direct_mcp_tool_call_sync(
+                    runtime,
+                    state,
+                    stage_name=stage_name,
+                    server_marker="hashdb",
+                    tool_name="resolve_hash_in_hashdb_to_plain",
+                    tool_args={"algorithm": algorithm, "hash_value": candidate},
+                )
+                parsed_lookup = _parse_jsonish_tool_result(lookup_result.get("result"))
+                if isinstance(parsed_lookup, dict) and parsed_lookup.get("ok"):
+                    hashdb_section["results"].append(
+                        {
+                            "candidate": candidate,
+                            "algorithm": algorithm,
+                            "result": _json_safe(parsed_lookup.get("result")),
+                        }
+                    )
+                    matched = True
+                    break
+            if not matched:
+                hashdb_section["results"].append(
+                    {
+                        "candidate": candidate,
+                        "algorithm": "",
+                        "result": "no_match",
+                    }
+                )
+    elif not hash_candidates:
+        hashdb_section["summary"] = "No bounded hash-like candidates were identified from the Ghidra string sweep."
+    else:
+        hashdb_section["summary"] = "HashDB MCP server is not configured."
+    bundle["hashdb"] = hashdb_section
+
+    summary_text = _build_auto_triage_presweep_summary(bundle)
+    append_status(state, "Deterministic pre-sweeps finished")
+    return summary_text, bundle
+
+
 def get_architecture_definition_sync(architecture_name: Optional[str] = None) -> List[Tuple[str, int]]:
     selected_name = str(architecture_name or DEEP_AGENT_ARCHITECTURE_NAME).strip() or DEEP_AGENT_ARCHITECTURE_NAME
     if selected_name.lower() in {"dynamic", "auto"}:
@@ -1287,6 +2009,7 @@ def _pipeline_router_prompt(default_pipeline_name: str) -> str:
         "Select the preset whose ideal use case best matches the user request.\n"
         "Prefer the smallest sufficient pipeline.\n"
         "Do not choose a direct-answer pipeline when the user asks for real analysis, evidence gathering, or any change to symbols, types, comments, or program structure.\n"
+        "Choose `auto_triage` only for automated Ghidra-load bootstrap requests or when the user explicitly asks to rerun the automated triage bootstrap.\n"
         f"- If unsure, choose `{default_pipeline_name}`.\n\n"
         f"Available presets:\n{available}"
     )

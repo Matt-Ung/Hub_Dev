@@ -56,6 +56,7 @@ import javax.swing.SwingUtilities;
 import java.io.InputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.lang.reflect.Method;
 import java.lang.reflect.InvocationTargetException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
@@ -83,7 +84,7 @@ public class GhidraMCPPlugin extends ProgramPlugin {
         "Trigger Multi-Agent workflow after auto-analysis";
     private static final String AUTO_WORKFLOW_URL_OPTION_NAME = "Multi-Agent trigger URL";
     private static final String DEFAULT_AUTO_WORKFLOW_URL = "http://127.0.0.1:7861/automation/ghidra-load";
-    private final Set<String> autoWorkflowTriggeredKeys = Collections.synchronizedSet(new HashSet<>());
+    private final Map<String, String> autoWorkflowTriggerFingerprints = Collections.synchronizedMap(new HashMap<>());
 
     private static final class GraphRootSelection {
         final List<Function> roots;
@@ -140,7 +141,7 @@ public class GhidraMCPPlugin extends ProgramPlugin {
     @Override
     protected void programClosed(Program program) {
         super.programClosed(program);
-        autoWorkflowTriggeredKeys.remove(getProgramAutomationKey(program));
+        autoWorkflowTriggerFingerprints.remove(getProgramAutomationBaseKey(program));
     }
 
     private void maybeQueueAutoWorkflowTrigger(Program program) {
@@ -148,12 +149,15 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             return;
         }
 
-        String key = getProgramAutomationKey(program);
-        if (!autoWorkflowTriggeredKeys.add(key)) {
+        String baseKey = getProgramAutomationBaseKey(program);
+        String fingerprint = getProgramAutomationFingerprint(program);
+        String previousFingerprint = autoWorkflowTriggerFingerprints.get(baseKey);
+        if (previousFingerprint != null && previousFingerprint.equals(fingerprint)) {
             return;
         }
+        autoWorkflowTriggerFingerprints.put(baseKey, fingerprint);
 
-        Thread worker = new Thread(() -> waitForAutoAnalysisAndTrigger(program, key),
+        Thread worker = new Thread(() -> waitForAutoAnalysisAndTrigger(program, baseKey, fingerprint),
             "GhidraMCP-AutoWorkflow-" + Integer.toHexString(System.identityHashCode(program)));
         worker.setDaemon(true);
         worker.start();
@@ -169,7 +173,7 @@ public class GhidraMCPPlugin extends ProgramPlugin {
         return trimToNull(automationOptions.getString(AUTO_WORKFLOW_URL_OPTION_NAME, DEFAULT_AUTO_WORKFLOW_URL));
     }
 
-    private String getProgramAutomationKey(Program program) {
+    private String getProgramAutomationBaseKey(Program program) {
         if (program == null) {
             return "";
         }
@@ -186,19 +190,47 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             executablePath = safe(program.getExecutablePath());
         } catch (Exception ignored) {}
 
+        String base = !domainPath.isEmpty()
+            ? domainPath
+            : (!executablePath.isEmpty() ? executablePath : safe(program.getName()));
+        if (base.isEmpty()) {
+            base = Integer.toHexString(System.identityHashCode(program));
+        }
+        return base;
+    }
+
+    private String getProgramModificationToken(Program program) {
+        if (program == null) {
+            return "";
+        }
+
+        try {
+            Method method = program.getClass().getMethod("getModificationNumber");
+            Object value = method.invoke(program);
+            return safe(String.valueOf(value));
+        } catch (Exception ignored) {}
+
+        return "";
+    }
+
+    private String getProgramAutomationFingerprint(Program program) {
+        if (program == null) {
+            return "";
+        }
+
         String sha256 = "";
         try {
             sha256 = safe(program.getExecutableSHA256());
         } catch (Exception ignored) {}
-
-        String base = !domainPath.isEmpty() ? domainPath : (!executablePath.isEmpty() ? executablePath : safe(program.getName()));
-        if (base.isEmpty()) {
-            base = Integer.toHexString(System.identityHashCode(program));
+        String modificationToken = getProgramModificationToken(program);
+        String fingerprint = sha256 + "|" + modificationToken;
+        if ("|".equals(fingerprint)) {
+            fingerprint = getProgramAutomationBaseKey(program) + "|" + safe(program.getName());
         }
-        return base + "|" + sha256;
+        return fingerprint;
     }
 
-    private void waitForAutoAnalysisAndTrigger(Program program, String key) {
+    private void waitForAutoAnalysisAndTrigger(Program program, String baseKey, String fingerprint) {
         try {
             AutoAnalysisManager manager = AutoAnalysisManager.getAnalysisManager(program);
             boolean scheduled = manager.scheduleWorker(new AnalysisWorker() {
@@ -210,25 +242,25 @@ public class GhidraMCPPlugin extends ProgramPlugin {
                 @Override
                 public boolean analysisWorkerCallback(Program analyzedProgram, Object workerContext, TaskMonitor monitor)
                         throws Exception {
-                    postAutoWorkflowTrigger(analyzedProgram, key);
+                    postAutoWorkflowTrigger(analyzedProgram, baseKey, fingerprint);
                     return true;
                 }
             }, null, true, TaskMonitor.DUMMY);
 
             if (!scheduled) {
-                autoWorkflowTriggeredKeys.remove(key);
+                autoWorkflowTriggerFingerprints.remove(baseKey);
                 Msg.warn(this, "Auto workflow trigger was not scheduled for program " + safe(program.getName()));
             }
         } catch (Exception e) {
-            autoWorkflowTriggeredKeys.remove(key);
+            autoWorkflowTriggerFingerprints.remove(baseKey);
             Msg.error(this, "Failed to queue auto workflow trigger for " + safe(program.getName()), e);
         }
     }
 
-    private void postAutoWorkflowTrigger(Program program, String key) {
+    private void postAutoWorkflowTrigger(Program program, String baseKey, String fingerprint) {
         String targetUrl = getAutoWorkflowUrl();
         if (program == null || targetUrl == null) {
-            autoWorkflowTriggeredKeys.remove(key);
+            autoWorkflowTriggerFingerprints.remove(baseKey);
             return;
         }
 
@@ -242,7 +274,7 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             connection.setReadTimeout(5000);
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
 
-            byte[] body = buildAutoWorkflowPayload(program).getBytes(StandardCharsets.UTF_8);
+            byte[] body = buildAutoWorkflowPayload(program, baseKey, fingerprint).getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(body.length);
             try (OutputStream os = connection.getOutputStream()) {
                 os.write(body);
@@ -251,22 +283,26 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             int status = connection.getResponseCode();
             String response = readHttpResponseBody(connection);
             if (status >= 200 && status < 300) {
+                if (response.contains("\"accepted\":false")) {
+                    Msg.info(this, "Multi-Agent workflow auto-trigger skipped for " + safe(program.getName()) + " (duplicate or already triaged).");
+                    return;
+                }
                 Msg.info(this, "Auto-triggered Multi-Agent workflow for " + safe(program.getName()));
                 return;
             }
             if (status == 409) {
-                autoWorkflowTriggeredKeys.remove(key);
+                autoWorkflowTriggerFingerprints.remove(baseKey);
                 Msg.info(this, "Multi-Agent workflow is already running; skipped auto-trigger for " + safe(program.getName()));
                 return;
             }
-            autoWorkflowTriggeredKeys.remove(key);
+            autoWorkflowTriggerFingerprints.remove(baseKey);
             Msg.warn(
                 this,
                 "Multi-Agent workflow trigger failed for " + safe(program.getName()) +
                 " with HTTP " + status + (response.isEmpty() ? "" : (": " + response))
             );
         } catch (IOException e) {
-            autoWorkflowTriggeredKeys.remove(key);
+            autoWorkflowTriggerFingerprints.remove(baseKey);
             Msg.info(
                 this,
                 "Multi-Agent-WF trigger endpoint not reachable at " + targetUrl +
@@ -279,7 +315,7 @@ public class GhidraMCPPlugin extends ProgramPlugin {
         }
     }
 
-    private String buildAutoWorkflowPayload(Program program) {
+    private String buildAutoWorkflowPayload(Program program, String baseKey, String fingerprint) {
         String domainPath = "";
         try {
             if (program.getDomainFile() != null) {
@@ -287,13 +323,75 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             }
         } catch (Exception ignored) {}
 
+        String languageId = "";
+        try {
+            if (program.getLanguageID() != null) {
+                languageId = program.getLanguageID().getIdAsString();
+            }
+        } catch (Exception ignored) {}
+
+        String compilerId = "";
+        try {
+            if (program.getCompilerSpec() != null && program.getCompilerSpec().getCompilerSpecID() != null) {
+                compilerId = program.getCompilerSpec().getCompilerSpecID().getIdAsString();
+            }
+        } catch (Exception ignored) {}
+
+        String imageBase = "";
+        try {
+            if (program.getImageBase() != null) {
+                imageBase = program.getImageBase().toString();
+            }
+        } catch (Exception ignored) {}
+
+        List<String> warnings = new ArrayList<>();
+        List<String> failures = new ArrayList<>();
+        List<String> sectionSummary = buildAutomationSectionSummary(program, 12, warnings);
+        List<String> importSummary = buildAutomationImportSummary(program, 20, warnings);
+        List<String> exportSummary = buildAutomationExportSummary(program, 12, warnings);
+        List<String> rootFunctions = buildAutomationRootSummary(program, 8, warnings);
+        String entryPoint = "";
+        if (!rootFunctions.isEmpty()) {
+            String firstRoot = rootFunctions.get(0);
+            int atIdx = firstRoot.indexOf(" @ ");
+            if (atIdx >= 0) {
+                int endIdx = firstRoot.indexOf(" [", atIdx);
+                entryPoint = endIdx > atIdx
+                    ? firstRoot.substring(atIdx + 3, endIdx).trim()
+                    : firstRoot.substring(atIdx + 3).trim();
+            }
+        }
+
         return "{"
             + "\"source\":\"ghidra_auto_analysis\","
+            + "\"automation_program_key\":" + jsonStr(baseKey) + ","
+            + "\"automation_signature\":" + jsonStr(fingerprint) + ","
+            + "\"analysis_token\":" + jsonStr(fingerprint) + ","
+            + "\"analysis_completed_at_epoch_ms\":" + System.currentTimeMillis() + ","
             + "\"program_name\":" + jsonStr(safe(program.getName())) + ","
             + "\"ghidra_project_path\":" + jsonStr(domainPath) + ","
             + "\"executable_path\":" + jsonStr(safe(program.getExecutablePath())) + ","
             + "\"executable_md5\":" + jsonStr(safe(program.getExecutableMD5())) + ","
-            + "\"executable_sha256\":" + jsonStr(safe(program.getExecutableSHA256()))
+            + "\"executable_sha256\":" + jsonStr(safe(program.getExecutableSHA256())) + ","
+            + "\"language\":" + jsonStr(safe(languageId)) + ","
+            + "\"compiler\":" + jsonStr(safe(compilerId)) + ","
+            + "\"image_base\":" + jsonStr(safe(imageBase)) + ","
+            + "\"entry_point\":" + jsonStr(safe(entryPoint)) + ","
+            + "\"section_summary\":" + jsonStrArray(sectionSummary) + ","
+            + "\"import_summary\":" + jsonStrArray(importSummary) + ","
+            + "\"export_summary\":" + jsonStrArray(exportSummary) + ","
+            + "\"root_functions\":" + jsonStrArray(rootFunctions) + ","
+            + "\"counts\":{"
+                + "\"functions\":" + countFunctions(program) + ","
+                + "\"imports\":" + countImports(program) + ","
+                + "\"exports\":" + countExports(program) + ","
+                + "\"strings\":" + countDefinedStrings(program) + ","
+                + "\"external_references\":" + countExternalReferences(program) + ","
+                + "\"segments\":" + program.getMemory().getBlocks().length
+            + "},"
+            + "\"program_info\":" + getProgramInfoJson() + ","
+            + "\"auto_analysis_warnings\":" + jsonStrArray(warnings) + ","
+            + "\"auto_analysis_failures\":" + jsonStrArray(failures)
             + "}";
     }
 
@@ -855,6 +953,140 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             }
         }
         return count;
+    }
+
+    private int countDefinedStrings(Program program) {
+        if (program == null) {
+            return 0;
+        }
+
+        int count = 0;
+        DataIterator dataIt = program.getListing().getDefinedData(true);
+        while (dataIt.hasNext()) {
+            Data data = dataIt.next();
+            if (data != null && isStringData(data)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int countExternalReferences(Program program) {
+        if (program == null) {
+            return 0;
+        }
+
+        int count = 0;
+        ReferenceManager refManager = program.getReferenceManager();
+        for (Symbol symbol : program.getSymbolTable().getExternalSymbols()) {
+            Address address = symbol.getAddress();
+            if (address == null) {
+                continue;
+            }
+            ReferenceIterator refs = refManager.getReferencesTo(address);
+            while (refs.hasNext()) {
+                refs.next();
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private List<String> buildAutomationSectionSummary(Program program, int maxItems, List<String> warnings) {
+        List<String> lines = new ArrayList<>();
+        if (program == null) {
+            return lines;
+        }
+
+        try {
+            for (MemoryBlock block : program.getMemory().getBlocks()) {
+                if (lines.size() >= maxItems) {
+                    break;
+                }
+                String perms =
+                    (block.isRead() ? "r" : "-") +
+                    (block.isWrite() ? "w" : "-") +
+                    (block.isExecute() ? "x" : "-");
+                lines.add(
+                    String.format(
+                        "%s: %s - %s perms=%s size=%d",
+                        block.getName(),
+                        block.getStart(),
+                        block.getEnd(),
+                        perms,
+                        block.getSize()
+                    )
+                );
+            }
+        } catch (Exception e) {
+            warnings.add("Section summary collection failed: " + safe(e.getMessage()));
+        }
+        return lines;
+    }
+
+    private List<String> buildAutomationImportSummary(Program program, int maxItems, List<String> warnings) {
+        List<String> lines = new ArrayList<>();
+        if (program == null) {
+            return lines;
+        }
+
+        try {
+            for (Symbol symbol : program.getSymbolTable().getExternalSymbols()) {
+                if (lines.size() >= maxItems) {
+                    break;
+                }
+                lines.add(symbol.getName() + " -> " + symbol.getAddress());
+            }
+        } catch (Exception e) {
+            warnings.add("Import summary collection failed: " + safe(e.getMessage()));
+        }
+        return lines;
+    }
+
+    private List<String> buildAutomationExportSummary(Program program, int maxItems, List<String> warnings) {
+        List<String> lines = new ArrayList<>();
+        if (program == null) {
+            return lines;
+        }
+
+        try {
+            SymbolIterator it = program.getSymbolTable().getAllSymbols(true);
+            while (it.hasNext() && lines.size() < maxItems) {
+                Symbol symbol = it.next();
+                if (symbol.isExternalEntryPoint()) {
+                    lines.add(symbol.getName() + " -> " + symbol.getAddress());
+                }
+            }
+        } catch (Exception e) {
+            warnings.add("Export summary collection failed: " + safe(e.getMessage()));
+        }
+        return lines;
+    }
+
+    private List<String> buildAutomationRootSummary(Program program, int maxItems, List<String> warnings) {
+        List<String> lines = new ArrayList<>();
+        if (program == null) {
+            return lines;
+        }
+
+        try {
+            GraphRootSelection selection = selectCallGraphRoots(program, Collections.emptyMap());
+            if (selection.error != null && !selection.error.isEmpty()) {
+                warnings.add("Root function selection reported: " + selection.error);
+            }
+            for (Function root : selection.roots) {
+                if (root == null || lines.size() >= maxItems) {
+                    continue;
+                }
+                String strategy = selection.strategy != null && !selection.strategy.isEmpty()
+                    ? " [" + selection.strategy + "]"
+                    : "";
+                lines.add(root.getName() + " @ " + root.getEntryPoint() + strategy);
+            }
+        } catch (Exception e) {
+            warnings.add("Root function summary collection failed: " + safe(e.getMessage()));
+        }
+        return lines;
     }
 
     private GraphRootSelection selectCallGraphRoots(Program program, Map<String, String> qparams) {
@@ -2103,6 +2335,21 @@ private void sendJsonResponse(HttpExchange exchange, String json) throws IOExcep
 
 private String jsonError(String message) {
     return "{\"error\":" + jsonStr(message) + "}";
+}
+
+private String jsonStrArray(List<String> values) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("[");
+    if (values != null) {
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                sb.append(",");
+            }
+            sb.append(jsonStr(values.get(i)));
+        }
+    }
+    sb.append("]");
+    return sb.toString();
 }
 
 private String jsonStr(String s) {

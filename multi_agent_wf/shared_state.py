@@ -449,6 +449,9 @@ def compact_shared_state(state: Dict[str, Any]) -> None:
     outputs = shared.get("task_outputs", []) or []
     if len(outputs) > MAX_TASK_OUTPUTS:
         shared["task_outputs"] = outputs[-MAX_TASK_OUTPUTS:]
+    auto_triage_runs = shared.get("auto_triage_runs", []) or []
+    if len(auto_triage_runs) > 6:
+        shared["auto_triage_runs"] = auto_triage_runs[-6:]
 
 
 def _pending_parent_input(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -746,6 +749,116 @@ def _extract_ghidra_program_metadata(text: str) -> Dict[str, str]:
     return metadata
 
 
+def _payload_nested_value(payload: Dict[str, Any], *keys: str) -> Any:
+    current: Any = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def apply_automation_payload_to_state(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    shared = state.setdefault("shared_state", _new_shared_state())
+    normalized_payload = _json_safe(payload)
+    shared["automation_trigger_payload"] = normalized_payload
+    shared["automation_trigger_source"] = str(payload.get("source") or "").strip()
+    shared["automation_program_key"] = str(
+        payload.get("automation_program_key")
+        or payload.get("program_key")
+        or payload.get("ghidra_project_path")
+        or payload.get("executable_path")
+        or payload.get("program_name")
+        or ""
+    ).strip()
+    shared["automation_analysis_token"] = str(
+        payload.get("analysis_token")
+        or payload.get("automation_signature")
+        or payload.get("analysis_completed_at_epoch_ms")
+        or ""
+    ).strip()
+    shared["automation_rerun_reason"] = str(
+        payload.get("rerun_reason")
+        or payload.get("trigger_reason")
+        or ""
+    ).strip()
+
+    candidate_path = _validate_existing_sample_path(
+        str(
+            payload.get("executable_path")
+            or _payload_nested_value(payload, "program_info", "program", "executablePath")
+            or ""
+        )
+    )
+    candidate_md5 = _normalize_digest(
+        str(
+            payload.get("executable_md5")
+            or _payload_nested_value(payload, "program_info", "program", "executableMD5")
+            or ""
+        ),
+        32,
+    )
+    candidate_sha256 = _normalize_digest(
+        str(
+            payload.get("executable_sha256")
+            or _payload_nested_value(payload, "program_info", "program", "executableSHA256")
+            or ""
+        ),
+        64,
+    )
+    candidate_image_base = str(
+        payload.get("image_base")
+        or _payload_nested_value(payload, "program_info", "program", "imageBase")
+        or ""
+    ).strip()
+
+    previous_path = shared.get("validated_sample_path")
+    if candidate_path:
+        if previous_path and previous_path != candidate_path:
+            _clear_validated_sample_metadata(shared)
+        shared["validated_sample_path"] = candidate_path
+        shared["validated_sample_path_source"] = "automation_payload"
+    if candidate_md5:
+        shared["validated_sample_md5"] = candidate_md5
+        shared["validated_sample_metadata_source"] = "automation_payload"
+    if candidate_sha256:
+        shared["validated_sample_sha256"] = candidate_sha256
+        shared["validated_sample_metadata_source"] = "automation_payload"
+    if candidate_image_base:
+        shared["validated_sample_image_base"] = candidate_image_base
+        shared["validated_sample_metadata_source"] = "automation_payload"
+
+    shared["automation_bootstrap_metadata"] = {
+        "program_name": str(
+            payload.get("program_name") or _payload_nested_value(payload, "program_info", "program", "name") or ""
+        ).strip(),
+        "ghidra_project_path": str(
+            payload.get("ghidra_project_path")
+            or _payload_nested_value(payload, "program_info", "program", "ghidraProjectPath")
+            or ""
+        ).strip(),
+        "language": str(
+            payload.get("language") or _payload_nested_value(payload, "program_info", "program", "language") or ""
+        ).strip(),
+        "compiler": str(
+            payload.get("compiler") or _payload_nested_value(payload, "program_info", "program", "compiler") or ""
+        ).strip(),
+        "image_base": candidate_image_base,
+        "entry_point": str(payload.get("entry_point") or "").strip(),
+        "section_summary": list(payload.get("section_summary") or []),
+        "import_summary": list(payload.get("import_summary") or []),
+        "export_summary": list(payload.get("export_summary") or []),
+        "root_functions": list(payload.get("root_functions") or []),
+        "counts": payload.get("counts") if isinstance(payload.get("counts"), dict) else {},
+        "auto_analysis_warnings": list(payload.get("auto_analysis_warnings") or []),
+        "auto_analysis_failures": list(payload.get("auto_analysis_failures") or []),
+    }
+    _store_ui_snapshot(state=state)
+
+
 def _clear_validated_sample_metadata(shared: Dict[str, Any]) -> None:
     shared["validated_sample_md5"] = ""
     shared["validated_sample_sha256"] = ""
@@ -851,6 +964,22 @@ def _new_shared_state() -> Dict[str, Any]:
         "available_sandbox_tools": [],
         "supports_dynamic_analysis": False,
         "supports_sandboxed_execution": False,
+        "automation_trigger_payload": {},
+        "automation_trigger_source": "",
+        "automation_program_key": "",
+        "automation_analysis_token": "",
+        "automation_rerun_reason": "",
+        "automation_bootstrap_metadata": {},
+        "auto_triage_pre_sweeps": {},
+        "auto_triage_pre_sweep_summary": "",
+        "auto_triage_report": "",
+        "auto_triage_context_summary": "",
+        "auto_triage_status": "",
+        "auto_triage_last_error": "",
+        "auto_triage_last_run_at": "",
+        "auto_triage_sample_path": "",
+        "auto_triage_sample_sha256": "",
+        "auto_triage_runs": [],
         "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": "default",
         "validation_retry_count": 0,
