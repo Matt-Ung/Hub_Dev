@@ -18,6 +18,8 @@ from .config import (
     PLANNER_WORK_ITEMS_START,
     VALIDATION_DECISION_END,
     VALIDATION_DECISION_START,
+    YARA_RULE_PROPOSALS_END,
+    YARA_RULE_PROPOSALS_START,
     get_stage_kind_metadata,
     stage_kind_flag,
     _normalize_shell_execution_mode,
@@ -28,14 +30,19 @@ from .runtime import (
     _ACTIVE_PIPELINE_STAGE,
     _ACTIVE_PIPELINE_STATE,
     _LIVE_TOOL_LOG_STATE,
+    _direct_mcp_tool_call_sync,
+    _find_mcp_server_by_marker,
+    _parse_jsonish_tool_result,
     build_host_worker_assignment_executor,
     build_stage_prompt,
     expand_architecture_slots,
     expand_architecture_names,
+    normalize_ghidra_change_proposal,
     prepare_ghidra_change_operation,
     run_deterministic_presweeps_sync,
 )
 from .shared_state import (
+    _annotate_unapproved_ghidra_aliases,
     _empty_parent_input,
     _make_parent_input_callback,
     _new_shared_state,
@@ -398,23 +405,24 @@ def extract_ghidra_change_proposals(text: str) -> Tuple[List[Dict[str, Any]], st
                 proposal_id = f"{proposal_id}_{idx}"
             seen_ids.add(proposal_id)
 
-            action = " ".join(str(raw_item.get("action") or "").split()).lower()
-            target_kind = " ".join(str(raw_item.get("target_kind") or "").split()).lower()
+            normalized_item = normalize_ghidra_change_proposal(raw_item)
+            action = " ".join(str(normalized_item.get("action") or "").split()).lower()
+            target_kind = " ".join(str(normalized_item.get("target_kind") or "").split()).lower()
             evidence = _normalize_string_list(raw_item.get("evidence") or raw_item.get("evidence_targets"))
             proposal = {
                 "id": proposal_id,
                 "action": action,
                 "target_kind": target_kind,
-                "function_address": " ".join(str(raw_item.get("function_address") or "").split()),
-                "function_name": " ".join(str(raw_item.get("function_name") or "").split()),
-                "address": " ".join(str(raw_item.get("address") or "").split()),
-                "current_name": " ".join(str(raw_item.get("current_name") or raw_item.get("old_name") or "").split()),
-                "proposed_name": " ".join(str(raw_item.get("proposed_name") or raw_item.get("new_name") or "").split()),
-                "variable_name": " ".join(str(raw_item.get("variable_name") or "").split()),
-                "current_type": " ".join(str(raw_item.get("current_type") or "").split()),
-                "proposed_type": " ".join(str(raw_item.get("proposed_type") or raw_item.get("new_type") or "").split()),
-                "prototype": str(raw_item.get("prototype") or raw_item.get("proposed_prototype") or "").strip(),
-                "comment": str(raw_item.get("comment") or raw_item.get("proposed_comment") or "").strip(),
+                "function_address": " ".join(str(normalized_item.get("function_address") or "").split()),
+                "function_name": " ".join(str(normalized_item.get("function_name") or "").split()),
+                "address": " ".join(str(normalized_item.get("address") or "").split()),
+                "current_name": " ".join(str(normalized_item.get("current_name") or "").split()),
+                "proposed_name": " ".join(str(normalized_item.get("proposed_name") or "").split()),
+                "variable_name": " ".join(str(normalized_item.get("variable_name") or "").split()),
+                "current_type": " ".join(str(normalized_item.get("current_type") or "").split()),
+                "proposed_type": " ".join(str(normalized_item.get("proposed_type") or "").split()),
+                "prototype": str(normalized_item.get("prototype") or "").strip(),
+                "comment": str(normalized_item.get("comment") or "").strip(),
                 "summary": " ".join(str(raw_item.get("summary") or raw_item.get("objective") or "").split()),
                 "rationale": " ".join(str(raw_item.get("rationale") or raw_item.get("reason") or "").split()),
                 "evidence": evidence,
@@ -566,11 +574,24 @@ def update_ghidra_change_proposals_from_stage_output(
         _store_ui_snapshot(state=state)
         return
 
-    existing = {
-        str(item.get("id") or ""): dict(item)
-        for item in (shared.get("ghidra_change_draft_proposals") or shared.get("ghidra_change_proposals") or [])
-        if isinstance(item, dict)
-    }
+    existing: Dict[str, Dict[str, Any]] = {}
+    dropped_existing = 0
+    for item in (shared.get("ghidra_change_draft_proposals") or shared.get("ghidra_change_proposals") or []):
+        if not isinstance(item, dict):
+            continue
+        normalized_existing = normalize_ghidra_change_proposal(item)
+        prepared_existing = prepare_ghidra_change_operation(normalized_existing)
+        if not prepared_existing.get("can_apply"):
+            dropped_existing += 1
+            continue
+        normalized_existing["can_apply"] = True
+        normalized_existing["apply_reason"] = str(prepared_existing.get("reason") or "")
+        normalized_existing["apply_tool_name"] = str(prepared_existing.get("tool_name") or "")
+        normalized_existing["apply_tool_args"] = dict(prepared_existing.get("tool_args") or {})
+        normalized_existing["summary"] = str(
+            normalized_existing.get("summary") or prepared_existing.get("summary") or normalized_existing.get("id") or "proposal"
+        )
+        existing[str(normalized_existing.get("id") or "")] = normalized_existing
     for item in existing.values():
         if "signature" not in item:
             item["signature"] = _proposal_semantic_signature(item)
@@ -587,9 +608,16 @@ def update_ghidra_change_proposals_from_stage_output(
         if str((item.get("conflict_signature") or _proposal_conflict_signature(item) or ""))
         and str(item.get("status") or "pending") == "pending"
     }
+    dropped_incoming: List[str] = []
     for proposal in proposals:
+        proposal = normalize_ghidra_change_proposal(proposal)
         proposal_id = str(proposal.get("id") or "")
         prepared = prepare_ghidra_change_operation(proposal)
+        if not prepared.get("can_apply"):
+            dropped_incoming.append(
+                f"{proposal_id or str(proposal.get('summary') or 'proposal')}: {str(prepared.get('reason') or 'not directly mappable to a supported Ghidra MCP edit')}"
+            )
+            continue
         proposal_signature = _proposal_semantic_signature(proposal)
         proposal_conflict_signature = _proposal_conflict_signature(proposal)
         resolved_id = proposal_id or ""
@@ -630,6 +658,19 @@ def update_ghidra_change_proposals_from_stage_output(
 
     merged_proposals = list(existing.values())
     shared["ghidra_change_draft_proposals"] = merged_proposals
+    if dropped_existing:
+        append_status(
+            state,
+            f"Pruned {dropped_existing} stale non-applicable Ghidra proposal(s) before updating the approval queue."
+        )
+    if dropped_incoming:
+        preview = "; ".join(dropped_incoming[:3])
+        if len(dropped_incoming) > 3:
+            preview += f"; +{len(dropped_incoming) - 3} more"
+        append_status(
+            state,
+            f"Dropped {len(dropped_incoming)} non-applicable Ghidra proposal(s) from {stage_name}: {preview}"
+        )
     if stage_meta["finalizes_report"]:
         shared["ghidra_change_proposals"] = merged_proposals
         shared["ghidra_change_queue_finalized"] = True
@@ -638,6 +679,151 @@ def update_ghidra_change_proposals_from_stage_output(
         shared["ghidra_change_queue_finalized"] = False
         shared["ghidra_change_proposals"] = []
         append_status(state, f"Ghidra change draft proposals parsed from {stage_name}: {len(proposals)}")
+    _store_ui_snapshot(state=state)
+
+
+def extract_yara_rule_proposals(text: str) -> Tuple[List[Dict[str, Any]], str, bool]:
+    payloads: List[str] = []
+    marker_re = re.compile(
+        rf"{re.escape(YARA_RULE_PROPOSALS_START)}\s*(.*?)\s*{re.escape(YARA_RULE_PROPOSALS_END)}",
+        flags=re.DOTALL,
+    )
+    for match in marker_re.finditer(text or ""):
+        payloads.append(match.group(1))
+
+    if not payloads:
+        return [], "", False
+
+    normalized: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for block_index, payload in enumerate(payloads, start=1):
+        payload = _strip_optional_json_fence(payload)
+        try:
+            parsed = json.loads(payload)
+        except Exception as e:
+            return [], f"yara rule JSON parse failed: {type(e).__name__}: {e}", True
+
+        if isinstance(parsed, dict):
+            parsed = parsed.get("rules") or parsed.get("proposals") or []
+        if not isinstance(parsed, list):
+            return [], "yara rule block must decode to a JSON array", True
+
+        for idx, raw_item in enumerate(parsed, start=1):
+            if not isinstance(raw_item, dict):
+                continue
+            proposal_id = " ".join(str(raw_item.get("id") or f"Y{block_index}_{idx}").split()) or f"Y{block_index}_{idx}"
+            while proposal_id in seen_ids:
+                proposal_id = f"{proposal_id}_{idx}"
+            seen_ids.add(proposal_id)
+
+            rule_text = str(raw_item.get("rule_text") or raw_item.get("text") or "").strip()
+            if not rule_text:
+                continue
+            normalized.append(
+                {
+                    "id": proposal_id,
+                    "summary": " ".join(str(raw_item.get("summary") or raw_item.get("name") or "Generated YARA rule").split()),
+                    "filename": " ".join(str(raw_item.get("filename") or "").split()),
+                    "rule_text": rule_text,
+                    "rationale": " ".join(str(raw_item.get("rationale") or raw_item.get("reason") or "").split()),
+                    "overwrite": bool(raw_item.get("overwrite")),
+                    "status": "pending",
+                }
+            )
+
+    if not normalized:
+        return [], "", True
+    return normalized, "", True
+
+
+def update_generated_yara_rules_from_stage_output(
+    state: Dict[str, Any],
+    runtime: MultiAgentRuntime,
+    stage_output: str,
+    *,
+    stage_name: str,
+    stage_kind: str,
+) -> None:
+    stage_meta = get_stage_kind_metadata(stage_kind)
+    if not stage_meta["finalizes_report"]:
+        return
+
+    proposals, error, found_block = extract_yara_rule_proposals(stage_output)
+    if not found_block and not error:
+        return
+
+    shared = state.setdefault("shared_state", _new_shared_state())
+    shared["generated_yara_rule_parse_error"] = error
+    if error:
+        append_status(state, f"YARA rule parse warning from {stage_name}: {error}")
+        _store_ui_snapshot(state=state)
+        return
+
+    existing = list(shared.get("generated_yara_rules") or [])
+    existing_signatures = {
+        "|".join(
+            [
+                " ".join(str(item.get("filename") or "").lower().split()),
+                " ".join(str(item.get("rule_text") or "").lower().split()),
+            ]
+        )
+        for item in existing
+        if isinstance(item, dict)
+    }
+
+    server_available = _find_mcp_server_by_marker(runtime, "yara") is not None
+    for proposal in proposals:
+        signature = "|".join(
+            [
+                " ".join(str(proposal.get("filename") or "").lower().split()),
+                " ".join(str(proposal.get("rule_text") or "").lower().split()),
+            ]
+        )
+        if signature in existing_signatures:
+            continue
+
+        record = dict(proposal)
+        record["source_stage"] = stage_name
+        if not server_available:
+            record["status"] = "failed"
+            record["error"] = "YARA MCP server is not configured."
+            existing.append(record)
+            continue
+
+        write_result = _direct_mcp_tool_call_sync(
+            runtime,
+            state,
+            stage_name=stage_name,
+            server_marker="yara",
+            tool_name="yaraWriteRule",
+            tool_args={
+                "rule_text": str(proposal.get("rule_text") or ""),
+                "filename": str(proposal.get("filename") or ""),
+                "overwrite": bool(proposal.get("overwrite")),
+                "validate": True,
+                "timeout_sec": 20,
+            },
+        )
+        parsed_result = _parse_jsonish_tool_result(write_result.get("result"))
+        if isinstance(parsed_result, dict) and parsed_result.get("ok"):
+            record["status"] = "written"
+            record["rule_path"] = str(parsed_result.get("rule_path") or "")
+            record["index_path"] = str(parsed_result.get("index_path") or "")
+            record["validation_warning"] = str(parsed_result.get("validation_warning") or "")
+            append_status(state, f"YARA rule written from {stage_name}: {record.get('rule_path') or record.get('summary')}")
+        else:
+            record["status"] = "failed"
+            record["error"] = str(
+                (parsed_result or {}).get("error")
+                if isinstance(parsed_result, dict)
+                else write_result.get("error")
+                or "YARA rule write failed."
+            ).strip()
+            append_status(state, f"YARA rule write failed from {stage_name}: {record['error']}")
+        existing.append(record)
+        existing_signatures.add(signature)
+
+    shared["generated_yara_rules"] = existing
     _store_ui_snapshot(state=state)
 
 
@@ -1094,6 +1280,138 @@ def render_validation_gate_panel(state: Dict[str, Any]) -> str:
         f"<div style='margin-top: 8px; color: #202124;'>{html.escape(detail)}</div>"
         f"<div style='margin-top: 6px; color: #5f6368; font-size: 12px;'>{html.escape(' | '.join(summary_lines))}</div>"
         + feedback_html
+        + history_html
+        + "</div>"
+    )
+
+
+def render_automation_status_panel(state: Dict[str, Any]) -> str:
+    shared = (state or {}).get("shared_state") or {}
+    status = str(shared.get("automation_status") or "").strip().lower() or "idle"
+    reason = str(shared.get("automation_last_reason") or shared.get("automation_rerun_reason") or "").strip()
+    source = str(shared.get("automation_last_source") or shared.get("automation_trigger_source") or "").strip()
+    program_key = str(shared.get("automation_last_program_key") or shared.get("automation_program_key") or "").strip()
+    detail = str(shared.get("automation_last_detail") or "").strip()
+    last_at = str(shared.get("automation_last_at") or "").strip()
+    auto_triage_status = str(shared.get("auto_triage_status") or "").strip().lower()
+    auto_triage_error = str(shared.get("auto_triage_last_error") or "").strip()
+    auto_triage_last_run_at = str(shared.get("auto_triage_last_run_at") or "").strip()
+    history = list(shared.get("automation_history") or [])
+
+    tone = "#5f6368"
+    badge_bg = "#f1f3f4"
+    headline = "Idle"
+    detail_line = "No automation triggers have been recorded in this server session yet."
+
+    if status in {"accepted", "running"}:
+        tone = "#0b57d0"
+        badge_bg = "#e8f0fe"
+        headline = "Trigger accepted"
+        detail_line = "Ghidra automation metadata was accepted and automated triage is queued or running."
+    elif status == "skipped":
+        tone = "#b06000"
+        badge_bg = "#fef7e0"
+        headline = "Trigger skipped"
+        detail_line = "The latest automation trigger was received but not run."
+    elif status == "busy":
+        tone = "#b06000"
+        badge_bg = "#fef7e0"
+        headline = "Trigger deferred"
+        detail_line = "A trigger arrived while another workflow was already active."
+    elif status == "succeeded":
+        tone = "#1b6e3a"
+        badge_bg = "#e6f4ea"
+        headline = "Auto-triage completed"
+        detail_line = "The latest accepted automation run completed successfully."
+    elif status == "failed":
+        tone = "#a61b29"
+        badge_bg = "#fce8e6"
+        headline = "Auto-triage failed"
+        detail_line = "The latest accepted automation run failed."
+    elif status == "canceled":
+        tone = "#8a3b12"
+        badge_bg = "#fff7e6"
+        headline = "Auto-triage canceled"
+        detail_line = "The latest accepted automation run was canceled or detached."
+
+    summary_bits: List[str] = []
+    if source:
+        summary_bits.append(f"source: {source}")
+    if program_key:
+        summary_bits.append(f"program: {program_key}")
+    if last_at:
+        summary_bits.append(f"last event: {last_at}")
+
+    auto_triage_html = ""
+    if auto_triage_status:
+        auto_triage_html = (
+            "<div style='margin-top: 10px;'>"
+            "<div style='font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #5f6368;'>"
+            "Latest auto-triage result</div>"
+            f"<div style='margin-top: 4px; color: #202124;'>status: {html.escape(auto_triage_status)}"
+            + (f" | finished: {html.escape(auto_triage_last_run_at)}" if auto_triage_last_run_at else "")
+            + "</div>"
+            + (
+                "<div style='margin-top: 4px; color: #a61b29; font-size: 12px;'>"
+                f"{html.escape(auto_triage_error)}</div>"
+                if auto_triage_error
+                else ""
+            )
+            + "</div>"
+        )
+
+    history_html = ""
+    if history:
+        rows: List[str] = []
+        for item in reversed(history[-4:]):
+            item_status = html.escape(str(item.get("status") or "unknown"))
+            item_reason = html.escape(str(item.get("reason") or ""))
+            item_detail = html.escape(str(item.get("detail") or ""))
+            item_at = html.escape(str(item.get("at") or ""))
+            rows.append(
+                "<div style='margin-top: 6px; padding-top: 6px; border-top: 1px solid #e0e3e7;'>"
+                f"<div style='font-size: 12px; color: #202124;'><strong>{item_status}</strong>"
+                + (f" - {item_reason}" if item_reason else "")
+                + (f" <span style='color: #5f6368;'>({item_at})</span>" if item_at else "")
+                + "</div>"
+                + (
+                    f"<div style='margin-top: 2px; color: #5f6368; font-size: 12px;'>{item_detail}</div>"
+                    if item_detail
+                    else ""
+                )
+                + "</div>"
+            )
+        history_html = (
+            "<div style='margin-top: 10px;'>"
+            "<div style='font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #5f6368;'>"
+            "Recent automation events</div>"
+            + "".join(rows)
+            + "</div>"
+        )
+
+    return (
+        "<div style='padding: 12px; border: 1px solid #d5d8dd; border-radius: 10px; background: #fbfbfc; margin-bottom: 12px;'>"
+        "<div style='display: flex; justify-content: space-between; gap: 12px; align-items: baseline;'>"
+        "<strong>Automation Status</strong>"
+        f"<span style='padding: 2px 8px; border-radius: 999px; background: {badge_bg}; color: {tone}; font-size: 12px;'>{html.escape(headline)}</span>"
+        "</div>"
+        f"<div style='margin-top: 8px; color: #202124;'>{html.escape(detail_line)}</div>"
+        + (
+            f"<div style='margin-top: 6px; color: #5f6368; font-size: 12px;'>{html.escape(' | '.join(summary_bits))}</div>"
+            if summary_bits
+            else ""
+        )
+        + (
+            f"<div style='margin-top: 6px; color: #202124; font-size: 12px;'><strong>reason:</strong> {html.escape(reason)}</div>"
+            if reason
+            else ""
+        )
+        + (
+            f"<div style='margin-top: 4px; color: #5f6368; font-size: 12px;'>{html.escape(detail)}</div>"
+            if detail
+            else ""
+        )
+        + auto_triage_html
         + history_html
         + "</div>"
     )
@@ -1779,6 +2097,8 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["ghidra_change_draft_proposals"] = []
     shared["ghidra_change_queue_finalized"] = False
     shared["ghidra_change_parse_error"] = ""
+    shared["generated_yara_rules"] = []
+    shared["generated_yara_rule_parse_error"] = ""
     shared["validation_retry_count"] = 0
     shared["validation_max_retries"] = MAX_VALIDATION_REPLAN_RETRIES
     shared["validation_last_decision"] = ""
@@ -1938,6 +2258,14 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 stage_name=stage.name,
                 stage_kind=stage.stage_kind,
             )
+        if stage_meta["finalizes_report"]:
+            update_generated_yara_rules_from_stage_output(
+                state,
+                runtime,
+                stage_output,
+                stage_name=stage.name,
+                stage_kind=stage.stage_kind,
+            )
         if not stage_meta["finalizes_report"]:
             update_validated_sample_path(
                 state,
@@ -1946,7 +2274,13 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 explicit_only=True,
             )
         prior_stage_outputs[stage.name] = stage_output
-        final_output = _sanitize_user_facing_output(stage_output) if stage_meta["finalizes_report"] else stage_output
+        if stage_meta["finalizes_report"]:
+            final_output = _annotate_unapproved_ghidra_aliases(
+                _sanitize_user_facing_output(stage_output),
+                state.get("shared_state"),
+            )
+        else:
+            final_output = stage_output
         if stage_meta["supports_parallel_assignments"] and not (
             HOST_PARALLEL_WORKER_EXECUTION and (state.get("shared_state") or {}).get("planned_work_items")
         ):

@@ -55,6 +55,8 @@ from .config import (
     get_stage_kind_metadata,
     TOOL_RESULT_CACHE_SERVER_MARKERS,
     VALIDATOR_REVIEW_LEVEL_LABELS,
+    YARA_RULE_PROPOSALS_END,
+    YARA_RULE_PROPOSALS_START,
     _normalize_shell_execution_mode,
     _normalize_validator_review_level,
     _resolve_repo_relative_path,
@@ -62,8 +64,10 @@ from .config import (
 )
 from .shared_state import (
     _append_tool_log_entries,
+    _annotate_unapproved_ghidra_aliases,
     _LIVE_TOOL_LOG_STATE,
     _json_safe,
+    _sanitize_user_facing_output,
     _shorten,
     _wait_for_parent_input_response,
     append_status,
@@ -77,6 +81,8 @@ _PIPELINE_ROUTER_AGENT: Agent | None = None
 _ARCHITECTURE_ROUTER_AGENT: Agent | None = None
 _AUTO_TRIAGE_HASHDB_ALGORITHMS = ("crc32", "fnv1a32", "djb2", "sdbm")
 _HASHLIKE_STRING_RE = re.compile(r"(?i)\b(?:0x)?([0-9a-f]{8,16})\b")
+_AUTO_TRIAGE_UPX_OUTPUT_DIR = REPO_ROOT / ".deep" / "auto_triage_unpack"
+_FUNCTION_NAME_LIKE_RE = re.compile(r"^(?:FUN_|sub_|LAB_|thunk_)?[A-Za-z_~?][A-Za-z0-9_@$?~:<>\.-]*$")
 
 
 def load_mcp_servers(path: str) -> List[MCPServerStdio]:
@@ -133,7 +139,7 @@ def load_mcp_servers(path: str) -> List[MCPServerStdio]:
 def partition_toolsets(toolsets: List[MCPServerStdio]) -> Tuple[List[MCPServerStdio], List[MCPServerStdio]]:
     """
     Heuristic split:
-    - static: ghidra/strings/floss/hashdb/capa (if static)
+    - static: ghidra/strings/floss/hashdb/capa/binwalk/upx/yara (if static)
     - dynamic: vm/procmon/wireshark/sandbox/run/execute
     """
     static_tools: List[MCPServerStdio] = []
@@ -141,7 +147,7 @@ def partition_toolsets(toolsets: List[MCPServerStdio]) -> Tuple[List[MCPServerSt
 
     for s in toolsets:
         sid = (s.id or "").lower()
-        if any(k in sid for k in ["ghidra", "string", "floss", "hashdb", "capa"]):
+        if any(k in sid for k in ["ghidra", "string", "floss", "hashdb", "capa", "binwalk", "upx", "yara"]):
             static_tools.append(s)
         elif any(k in sid for k in ["vm", "procmon", "wireshark", "sandbox", "run", "exec"]):
             dynamic_tools.append(s)
@@ -366,7 +372,7 @@ def _toolsets_for_domain(
         preferred = [
             tool
             for tool in static_tools
-            if any(marker in (tool.id or "").lower() for marker in ("ghidra", "string", "hashdb"))
+            if any(marker in (tool.id or "").lower() for marker in ("ghidra", "string", "hashdb", "upx"))
         ]
         return preferred or static_tools
     if tool_domain == "static":
@@ -391,6 +397,158 @@ def _string_or_empty(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_ghidra_target_kind(value: Any) -> str:
+    raw = _string_or_empty(value).lower().replace("-", "_").replace(" ", "_")
+    mapping = {
+        "func": "function",
+        "function": "function",
+        "procedure": "function",
+        "method": "function",
+        "prototype": "function",
+        "local": "variable",
+        "localvar": "variable",
+        "local_variable": "variable",
+        "stack_variable": "variable",
+        "var": "variable",
+        "variable": "variable",
+        "parameter": "variable",
+        "param": "variable",
+        "type": "variable",
+        "data": "data",
+        "global": "data",
+        "global_data": "data",
+        "label": "data",
+        "string": "data",
+        "comment": "decompiler_comment",
+        "decompiler_comment": "decompiler_comment",
+        "disassembly_comment": "disassembly_comment",
+        "struct": "struct",
+        "struct_definition": "struct",
+        "enum": "enum",
+    }
+    return mapping.get(raw, raw)
+
+
+def _looks_like_function_name(value: str) -> bool:
+    candidate = _string_or_empty(value)
+    if not candidate:
+        return False
+    return bool(_FUNCTION_NAME_LIKE_RE.match(candidate))
+
+
+def normalize_ghidra_change_proposal(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(proposal or {})
+    raw_action = _string_or_empty(
+        normalized.get("action")
+        or normalized.get("operation")
+        or normalized.get("change_type")
+        or normalized.get("kind")
+    ).lower().replace("-", "_").replace(" ", "_")
+    target_kind = _normalize_ghidra_target_kind(
+        normalized.get("target_kind")
+        or normalized.get("target")
+        or normalized.get("entity_kind")
+        or normalized.get("subject")
+    )
+
+    function_address = _string_or_empty(
+        normalized.get("function_address")
+        or normalized.get("target_address")
+        or normalized.get("address")
+    )
+    function_name = _string_or_empty(
+        normalized.get("function_name")
+        or normalized.get("parent_function_name")
+        or normalized.get("function")
+    )
+    current_name = _string_or_empty(normalized.get("current_name") or normalized.get("old_name") or normalized.get("current"))
+    proposed_name = _string_or_empty(normalized.get("proposed_name") or normalized.get("new_name") or normalized.get("proposed"))
+    variable_name = _string_or_empty(normalized.get("variable_name") or normalized.get("local_name") or normalized.get("var_name"))
+    current_type = _string_or_empty(normalized.get("current_type") or normalized.get("old_type"))
+    proposed_type = _string_or_empty(normalized.get("proposed_type") or normalized.get("new_type"))
+    prototype = _string_or_empty(normalized.get("prototype") or normalized.get("proposed_prototype"))
+    comment = str(normalized.get("comment") or normalized.get("proposed_comment") or "").strip()
+
+    if not target_kind or target_kind == "unknown":
+        if prototype or function_address or (function_name and not variable_name):
+            target_kind = "function"
+        elif proposed_type and (function_address or function_name):
+            target_kind = "variable"
+        elif variable_name:
+            target_kind = "variable"
+        elif function_address and proposed_name:
+            target_kind = "function"
+        elif current_name and proposed_name and _looks_like_function_name(current_name):
+            target_kind = "function"
+        elif comment and function_address:
+            target_kind = "decompiler_comment"
+        elif proposed_name and normalized.get("address"):
+            target_kind = "data"
+
+    if not function_name and target_kind == "function" and _looks_like_function_name(current_name):
+        function_name = current_name
+    if not current_name and target_kind == "function":
+        current_name = function_name
+    if not variable_name and target_kind == "variable":
+        variable_name = current_name
+    if not current_name and target_kind == "variable":
+        current_name = variable_name
+
+    action_aliases = {
+        "set_prototype": "set_function_prototype",
+        "update_prototype": "set_function_prototype",
+        "change_prototype": "set_function_prototype",
+        "prototype": "set_function_prototype",
+        "set_type": "set_local_variable_type",
+        "update_type": "set_local_variable_type",
+        "change_type": "set_local_variable_type",
+        "retype": "set_local_variable_type",
+        "retype_variable": "set_local_variable_type",
+        "set_comment": "set_decompiler_comment",
+        "add_comment": "set_decompiler_comment",
+        "annotate": "set_decompiler_comment",
+        "comment": "set_decompiler_comment",
+        "decompiler_comment": "set_decompiler_comment",
+        "disassembly_comment": "set_disassembly_comment",
+        "rename_data_label": "rename_data",
+        "create_struct": "create_struct_definition",
+        "struct_definition": "suggest_struct_definition",
+        "suggest_struct": "suggest_struct_definition",
+        "enum_definition": "suggest_enum_definition",
+    }
+    if raw_action in action_aliases:
+        raw_action = action_aliases[raw_action]
+
+    if raw_action in {"", "unknown", "rename", "rename_symbol", "rename_name", "rename_identifier"}:
+        if proposed_name:
+            if target_kind == "function" and (function_address or current_name or function_name):
+                raw_action = "rename_function_by_address" if function_address else "rename_function"
+            elif target_kind == "variable" and (variable_name or current_name) and (function_name or function_address):
+                raw_action = "rename_variable"
+            elif target_kind == "data" and _string_or_empty(normalized.get("address")):
+                raw_action = "rename_data"
+        elif prototype and function_address:
+            raw_action = "set_function_prototype"
+        elif proposed_type and function_address and (variable_name or current_name):
+            raw_action = "set_local_variable_type"
+        elif comment and _string_or_empty(normalized.get("address") or function_address):
+            raw_action = "set_disassembly_comment" if target_kind == "disassembly_comment" else "set_decompiler_comment"
+
+    normalized["action"] = raw_action
+    normalized["target_kind"] = target_kind
+    normalized["function_address"] = function_address
+    normalized["function_name"] = function_name
+    normalized["current_name"] = current_name
+    normalized["proposed_name"] = proposed_name
+    normalized["variable_name"] = variable_name
+    normalized["current_type"] = current_type
+    normalized["proposed_type"] = proposed_type
+    normalized["prototype"] = prototype
+    normalized["comment"] = comment
+    normalized["address"] = _string_or_empty(normalized.get("address") or function_address)
+    return normalized
+
+
 def _coerce_direct_tool_result_text(result: Any) -> str:
     if result is None:
         return ""
@@ -407,7 +565,7 @@ def _coerce_direct_tool_result_text(result: Any) -> str:
 
 
 def prepare_ghidra_change_operation(proposal: Dict[str, Any]) -> Dict[str, Any]:
-    proposal = dict(proposal or {})
+    proposal = normalize_ghidra_change_proposal(proposal)
     action = _string_or_empty(proposal.get("action")).lower()
     target_kind = _string_or_empty(proposal.get("target_kind")).lower()
     function_address = _string_or_empty(proposal.get("function_address") or proposal.get("address"))
@@ -944,8 +1102,9 @@ def build_stage_prompt(
             sections.extend(
                 [
                     "- Treat the deterministic pre-sweep bundle as already collected evidence.",
-                    "- Plan only the smallest follow-on work needed to synthesize or clarify program purpose, key control-flow, capabilities, obfuscation, or naming opportunities from that bundle.",
+                    "- Plan only the smallest follow-on work needed to synthesize or clarify program purpose, key control-flow, capabilities, obfuscation, packed-binary indicators, known-malware context, hashed-API opportunities, and naming/type opportunities from that bundle.",
                     "- Do not create work items that merely repeat the same bootstrap sweeps unless a sweep explicitly failed or the prior result was insufficient for the user-facing triage.",
+                    "- If the pre-sweep bundle suggests likely packing, unpacking opportunities, meaningful function renames, variable renames, local type improvements, or candidate struct definitions, plan those as bounded follow-on items rather than leaving them implicit.",
                 ]
             )
         elif stage_kind == "workers":
@@ -953,7 +1112,9 @@ def build_stage_prompt(
                 [
                     "- Use the deterministic pre-sweep bundle and automation bootstrap metadata as the primary starting point.",
                     "- Do not rerun full strings/FLOSS/capa/YARA/binwalk sweeps unless the stage context shows that one of them failed, was unavailable, or is materially insufficient.",
-                    "- If you identify useful rename/type suggestions, keep them proposal-only and secondary to the initial triage artifact.",
+                    "- Explicitly assess whether the sample appears packed, whether any unpacked output from the deterministic stage materially changes interpretation, whether the sample seems previously encountered from the available hash/intel context, and whether hashed APIs or encoded strings deserve follow-up.",
+                    "- If you identify useful rename/type suggestions, candidate struct declarations, function names, or variable names, keep them evidence-backed and proposal-first.",
+                    "- When the evidence is strong enough to justify analyst review, emit those naming/type/struct improvements as approval-queue proposals rather than burying them in prose.",
                 ]
             )
         elif stage_kind == "reporter":
@@ -961,6 +1122,8 @@ def build_stage_prompt(
                 [
                     "- Produce an initial triage artifact that can be reused by later interactive queries.",
                     "- Keep the report analyst-facing, concise, and forward-looking about the highest-value next pivots.",
+                    "- If the run yielded strong, bounded rename/type/struct suggestions, finalize them into approval-ready Ghidra proposals instead of dropping them.",
+                    "- If the run yielded a high-signal detection idea with stable strings/imports/behavioral pivots, emit a concise YARA rule proposal block so the host can write it through yaraMCP.",
                 ]
             )
         if auto_triage_pre_sweep_summary:
@@ -1072,17 +1235,35 @@ def build_stage_prompt(
                 "- The JSON payload must be an array of proposal objects.",
                 "- Proposal object keys should include: `id`, `action`, `target_kind`, `summary`, `rationale`, `evidence`, and the action-specific fields needed to apply the change.",
                 "- Supported auto-apply actions are: `rename_function`, `rename_function_by_address`, `rename_data`, `rename_variable`, `set_function_prototype`, `set_local_variable_type`, `set_decompiler_comment`, and `set_disassembly_comment`.",
-                "- Proposal-only actions such as new struct definitions or unsupported binary patches may still be included, but must use a distinct `action` and should not claim the change was applied.",
+                "- Only include proposals in this machine-readable block if they map directly to one of those supported actions and contain the exact fields needed for the corresponding MCP tool call.",
+                "- Unsupported ideas such as new struct definitions, enum creation, or binary patch concepts must stay in normal prose, not in the machine-readable approval queue block.",
                 "- If there are no concrete proposals for approval, emit an empty array in the machine-readable block rather than omitting the block.",
+                "- Naming rule: unless a proposal is explicitly marked as applied, do not speak as though the rename already exists in Ghidra. In prose, refer to the current canonical symbol/address and optionally show the suggested alias in parentheses.",
             ]
         )
         if selected_pipeline_name == "auto_triage":
-            sections.append("- Auto-triage edit rule: do not populate the Ghidra approval queue unless the original request explicitly asked for naming or type-improvement proposals.")
+            sections.append("- Auto-triage edit rule: bounded, evidence-backed naming/type/struct proposals are allowed when they materially improve future analysis, but keep them conservative and approval-first.")
+
+    if stage_meta["supports_parallel_assignments"] or stage_meta["finalizes_report"]:
+        sections.extend(
+            [
+                "",
+                "YARA rule proposal contract:",
+                "- If this run yields a strong, specific detection idea, include exactly one machine-readable JSON block between "
+                f"`{YARA_RULE_PROPOSALS_START}` and `{YARA_RULE_PROPOSALS_END}`.",
+                "- The JSON payload must be an array of rule proposal objects.",
+                "- Rule proposal keys should include: `id`, `summary`, `filename`, `rule_text`, and `rationale`.",
+                "- Only emit rules when they are specific, evidence-backed, and likely useful. Prefer no rule over a weak or overbroad rule.",
+                "- Do not emit placeholder or pseudo-YARA syntax.",
+            ]
+        )
 
     if prior_stage_outputs:
         sections.extend(["", "Prior stage outputs:"])
         for prev_name, prev_output in prior_stage_outputs.items():
-            sections.extend([f"## {prev_name}", (prev_output or "").strip()])
+            sanitized_prev_output = _sanitize_user_facing_output(prev_output or "")
+            sanitized_prev_output = _annotate_unapproved_ghidra_aliases(sanitized_prev_output, shared)
+            sections.extend([f"## {prev_name}", sanitized_prev_output.strip()])
 
     return "\n".join(sections).strip()
 
@@ -1575,6 +1756,55 @@ def _compact_binwalk_summary(parsed: Any) -> Dict[str, Any]:
     }
 
 
+def _derive_packed_binary_assessment(
+    *,
+    binwalk_section: Dict[str, Any],
+    capa_section: Dict[str, Any],
+    raw_strings_section: Dict[str, Any],
+    floss_section: Dict[str, Any],
+    ghidra_strings_section: Dict[str, Any],
+) -> Dict[str, Any]:
+    indicators: List[str] = []
+    likely_packer = ""
+
+    signature_text = " ".join(str(item) for item in (binwalk_section.get("signatures") or []))
+    top_rules_text = " ".join(str(item) for item in (capa_section.get("top_rules") or []))
+    raw_preview = str(raw_strings_section.get("preview") or "")
+    floss_preview = str(floss_section.get("preview") or "")
+    ghidra_values = " ".join(
+        str(item.get("value") or "")
+        for item in (ghidra_strings_section.get("items") or [])
+        if isinstance(item, dict)
+    )
+    combined = " ".join([signature_text, top_rules_text, raw_preview, floss_preview, ghidra_values]).lower()
+
+    if "upx" in combined:
+        likely_packer = "upx"
+        indicators.append("UPX-related signatures or strings were observed across presweep artifacts.")
+    if any(token in combined for token in ("packed", "packer", "compressed", "runtime modified", "self-extracting")):
+        indicators.append("Static artifacts suggest packing or compression behavior.")
+    if "section" in signature_text.lower() and "entropy" in str(binwalk_section.get("stderr") or "").lower():
+        indicators.append("Binwalk entropy output is available for manual packer review.")
+
+    packed_likely = bool(indicators)
+    return {
+        "available": True,
+        "packed_likely": packed_likely,
+        "likely_packer": likely_packer,
+        "should_try_upx": packed_likely and likely_packer == "upx",
+        "indicators": indicators[:8],
+    }
+
+
+def _default_upx_unpack_output_path(validated_sample_path: str, sample_sha256: str) -> str:
+    source = Path(validated_sample_path)
+    stem = source.stem or "sample"
+    suffix = source.suffix or ".bin"
+    digest = (sample_sha256 or "sample").strip()[:12] or "sample"
+    _AUTO_TRIAGE_UPX_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    return str((_AUTO_TRIAGE_UPX_OUTPUT_DIR / f"{stem}_{digest}_upx_unpacked{suffix}").resolve())
+
+
 def _build_auto_triage_presweep_summary(bundle: Dict[str, Any]) -> str:
     summary_lines: List[str] = ["Deterministic pre-sweep bundle"]
     sample_path = str(bundle.get("validated_sample_path") or "").strip()
@@ -1635,7 +1865,7 @@ def _build_auto_triage_presweep_summary(bundle: Dict[str, Any]) -> str:
             if value:
                 summary_lines.append(f"  - {address}: {value}" if address else f"  - {value}")
 
-    for label in ("raw_strings", "floss", "capa", "hashdb", "entropy_packer", "baseline_yara"):
+    for label in ("raw_strings", "floss", "capa", "hashdb", "entropy_packer", "packed_binary_assessment", "upx_unpack", "baseline_yara"):
         section = bundle.get(label)
         if not section:
             continue
@@ -1894,6 +2124,44 @@ def run_deterministic_presweeps_sync(runtime: "MultiAgentRuntime", state: Dict[s
             tool_args={"target_path": validated_sample_path, "recursive": False, "show_strings": False, "timeout_sec": 180},
         )
         bundle["baseline_yara"] = _compact_yara_summary(yara_result.get("result"))
+
+        bundle["packed_binary_assessment"] = _derive_packed_binary_assessment(
+            binwalk_section=bundle.get("entropy_packer") if isinstance(bundle.get("entropy_packer"), dict) else {},
+            capa_section=bundle.get("capa") if isinstance(bundle.get("capa"), dict) else {},
+            raw_strings_section=bundle.get("raw_strings") if isinstance(bundle.get("raw_strings"), dict) else {},
+            floss_section=bundle.get("floss") if isinstance(bundle.get("floss"), dict) else {},
+            ghidra_strings_section=bundle.get("ghidra_strings") if isinstance(bundle.get("ghidra_strings"), dict) else {},
+        )
+        packed_assessment = bundle["packed_binary_assessment"] if isinstance(bundle.get("packed_binary_assessment"), dict) else {}
+        if packed_assessment.get("should_try_upx") and _find_mcp_server_by_marker(runtime, "upx"):
+            unpack_path = _default_upx_unpack_output_path(validated_sample_path, validated_sample_sha256)
+            upx_result = _direct_mcp_tool_call_sync(
+                runtime,
+                state,
+                stage_name=stage_name,
+                server_marker="upx",
+                tool_name="upxUnpack",
+                tool_args={"file_path": validated_sample_path, "output_path": unpack_path, "force": True, "timeout_sec": 180},
+            )
+            parsed_upx = _parse_jsonish_tool_result(upx_result.get("result"))
+            if isinstance(parsed_upx, dict):
+                bundle["upx_unpack"] = _json_safe(parsed_upx)
+            else:
+                bundle["upx_unpack"] = {
+                    "ok": False,
+                    "error": str(upx_result.get("error") or "Unable to parse UPX unpack result.").strip(),
+                    "output_path": unpack_path,
+                }
+        elif packed_assessment.get("should_try_upx"):
+            bundle["upx_unpack"] = {
+                "ok": False,
+                "error": "UPX indicators were present, but no UPX MCP server is configured.",
+            }
+        else:
+            bundle["upx_unpack"] = {
+                "ok": False,
+                "error": "No strong UPX indicators were found during deterministic presweeps.",
+            }
     else:
         bundle["raw_strings"] = {
             "available": False,
@@ -1914,6 +2182,14 @@ def run_deterministic_presweeps_sync(runtime: "MultiAgentRuntime", state: Dict[s
         bundle["baseline_yara"] = {
             "available": False,
             "error": "Validated sample path was unavailable for baseline YARA sweep.",
+        }
+        bundle["packed_binary_assessment"] = {
+            "available": False,
+            "error": "Validated sample path was unavailable for packer assessment.",
+        }
+        bundle["upx_unpack"] = {
+            "ok": False,
+            "error": "Validated sample path was unavailable for UPX unpack attempt.",
         }
 
     hash_candidates = _extract_hashdb_candidates_from_strings(

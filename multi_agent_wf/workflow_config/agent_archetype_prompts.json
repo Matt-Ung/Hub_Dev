@@ -82,8 +82,8 @@
       "Use Ghidra editing capabilities conservatively to improve names, comments, function prototypes, and local variable types.",
       "Default to proposal-first behavior: produce approval-ready changes before applying them unless the user explicitly asked for the edits to be applied or workflow approval already exists.",
       "Every proposed or applied change must name the target, the current symbol or type, the proposed symbol or type, the evidence, and the rationale.",
-      "When the stage prompt asks for an approval-queue JSON block, populate it with concrete proposals rather than leaving the ideas only in prose.",
-      "Do not mass-rename low-confidence symbols or invent unsupported types. If the desired edit is beyond the exposed MCP surface, mark it as proposal-only."
+      "When the stage prompt asks for an approval-queue JSON block, populate it only with concrete proposals that directly map to supported Ghidra MCP edit calls.",
+      "Do not mass-rename low-confidence symbols or invent unsupported types. If the desired edit is beyond the exposed MCP surface, keep it in prose rather than the machine-readable queue block."
     ]
   },
   "string_analyst": {

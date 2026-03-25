@@ -35,6 +35,9 @@
 (() => {
   if (window.__wfTodoTimerInstalled) return;
   window.__wfTodoTimerInstalled = true;
+  const automationStatusUrl = "__AUTOMATION_STATUS_URL__";
+  let automationStatusPollInFlight = false;
+  let lastAutomationHtml = null;
 
   function formatElapsed(totalSeconds) {
     if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "--:--";
@@ -103,11 +106,43 @@
     updateGhidraQueueAlert();
   }
 
-  window.setInterval(refreshUiAffordances, 1000);
+  async function pollAutomationStatus() {
+    if (!automationStatusUrl || automationStatusPollInFlight) return;
+    const panel = document.getElementById("automation-status-panel");
+    if (!panel) return;
+    automationStatusPollInFlight = true;
+    try {
+      const response = await fetch(automationStatusUrl, { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = await response.json();
+      if (!payload || typeof payload.html !== "string") return;
+      if (payload.html === lastAutomationHtml) return;
+      panel.innerHTML = payload.html;
+      lastAutomationHtml = payload.html;
+      refreshUiAffordances();
+    } catch (_err) {
+      // Ignore transient polling failures; the next poll can recover.
+    } finally {
+      automationStatusPollInFlight = false;
+    }
+  }
+
+  window.setInterval(() => {
+    refreshUiAffordances();
+    pollAutomationStatus();
+  }, 1000);
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", refreshUiAffordances, { once: true });
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        refreshUiAffordances();
+        pollAutomationStatus();
+      },
+      { once: true }
+    );
   } else {
     refreshUiAffordances();
+    pollAutomationStatus();
   }
 })();
 </script>

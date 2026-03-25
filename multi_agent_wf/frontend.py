@@ -39,6 +39,7 @@ from .pipeline import (
     _stage_progress_from_pipeline_definition,
     get_pending_ghidra_change_count,
     get_pending_ghidra_change_proposal,
+    render_automation_status_panel,
     render_pipeline_todo_board,
     render_ghidra_change_queue_panel,
     render_planned_work_items_panel,
@@ -66,7 +67,9 @@ from .shared_state import (
     _store_ui_snapshot,
     apply_automation_payload_to_state,
     append_status,
+    preserved_automation_shared_state,
     render_parent_input_panel,
+    record_automation_event,
 )
 
 _AUTOMATION_TRIGGER_SERVER: ThreadingHTTPServer | None = None
@@ -74,6 +77,7 @@ _AUTOMATION_TRIGGER_LOCK = Lock()
 _AUTOMATION_TRIGGER_PENDING = False
 _AUTOMATION_RUN_HISTORY: Dict[str, Dict[str, Any]] = {}
 _FRONTEND_HEAD_PATH = Path(__file__).resolve().parent / "assets" / "frontend_head.html"
+_AUTOMATION_STATUS_PATH = "/automation/status"
 
 _PIPELINE_PRESET_CHOICES = [("DYNAMIC (agent chooses)", "dynamic")] + [
     (name, name) for name in DEEP_AGENT_PIPELINE_PRESETS.keys()
@@ -85,7 +89,13 @@ _ARCHITECTURE_PRESET_CHOICES = [("DYNAMIC (agent chooses)", "dynamic")] + [
 
 def _load_frontend_head() -> str:
     try:
-        return _FRONTEND_HEAD_PATH.read_text(encoding="utf-8")
+        content = _FRONTEND_HEAD_PATH.read_text(encoding="utf-8")
+        status_url = (
+            f"http://{AUTOMATION_TRIGGER_HOST}:{AUTOMATION_TRIGGER_PORT}{_AUTOMATION_STATUS_PATH}"
+            if AUTOMATION_TRIGGER_ENABLED
+            else ""
+        )
+        return content.replace("__AUTOMATION_STATUS_URL__", status_url)
     except FileNotFoundError:
         return ""
 
@@ -178,6 +188,19 @@ def _planned_work_items_board(state: Dict[str, Any]):
 
 def _validation_gate_board(state: Dict[str, Any]):
     return gr.update(value=render_validation_gate_panel(state), visible=True)
+
+
+def _has_validation_gate(state: Dict[str, Any]) -> bool:
+    progress = ((state or {}).get("shared_state") or {}).get("pipeline_stage_progress") or []
+    return any(bool(item.get("runs_validation_gate")) for item in progress if isinstance(item, dict))
+
+
+def _validation_gate_container(state: Dict[str, Any]):
+    return gr.update(visible=_has_validation_gate(state))
+
+
+def _automation_status_board(state: Dict[str, Any]):
+    return gr.update(value=render_automation_status_panel(state), visible=True)
 
 
 def _ghidra_change_queue_board(state: Dict[str, Any]):
@@ -275,6 +298,8 @@ def _ui_updates(
     parent_response_update: Any,
     parent_submit_update: Any,
     parent_decline_update: Any,
+    automation_status_update: Any,
+    validation_gate_container_update: Any,
     validation_gate_update: Any,
     planned_work_items_update: Any,
     ghidra_change_queue_update: Any,
@@ -299,6 +324,8 @@ def _ui_updates(
         parent_response_update,
         parent_submit_update,
         parent_decline_update,
+        automation_status_update,
+        validation_gate_container_update,
         validation_gate_update,
         planned_work_items_update,
         ghidra_change_queue_update,
@@ -370,6 +397,8 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
         parent_response_update,
         parent_submit_update,
         parent_decline_update,
+        _automation_status_board(state),
+        _validation_gate_container(state),
         _validation_gate_board(state),
         _planned_work_items_board(state),
         _ghidra_change_queue_board(state),
@@ -399,6 +428,8 @@ def poll_active_ui_snapshot():
     snapshot = _get_ui_snapshot()
     if not snapshot.get("run_active"):
         return (
+            gr.skip(),
+            gr.skip(),
             gr.skip(),
             gr.skip(),
             gr.skip(),
@@ -461,6 +492,8 @@ def chat_turn(
             parent_response_update,
             parent_submit_update,
             parent_decline_update,
+            _automation_status_board(state),
+            _validation_gate_container(state),
             _validation_gate_board(state),
             _planned_work_items_board(state),
             _ghidra_change_queue_board(state),
@@ -544,6 +577,8 @@ def chat_turn(
             parent_response_update,
             parent_submit_update,
             parent_decline_update,
+            _automation_status_board(state),
+            _validation_gate_container(state),
             _validation_gate_board(state),
             _planned_work_items_board(state),
             _ghidra_change_queue_board(state),
@@ -667,6 +702,8 @@ def chat_turn(
         parent_response_update,
         parent_submit_update,
         parent_decline_update,
+        _automation_status_board(state),
+        _validation_gate_container(state),
         _validation_gate_board(state),
         _planned_work_items_board(state),
         _ghidra_change_queue_board(state),
@@ -809,6 +846,8 @@ def chat_turn(
                 parent_response_update,
                 parent_submit_update,
                 parent_decline_update,
+                _automation_status_board(state),
+                _validation_gate_container(state),
                 gr.update(value=validation_now, visible=True),
                 gr.update(value=planned_now, visible=True),
                 _ghidra_change_queue_board(state),
@@ -848,6 +887,8 @@ def chat_turn(
         parent_response_update,
         parent_submit_update,
         parent_decline_update,
+        _automation_status_board(state),
+        _validation_gate_container(state),
         _validation_gate_board(state),
         _planned_work_items_board(state),
         _ghidra_change_queue_board(state),
@@ -1183,6 +1224,7 @@ def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
     append_status(state, "Cancellation requested by user")
 
     fresh_shared_state = _new_shared_state()
+    fresh_shared_state.update(preserved_automation_shared_state((state.get("shared_state") or {})))
     fresh_state = {
         "role_histories": {},
         "tool_log": "",
@@ -1249,6 +1291,8 @@ def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
         parent_response_update,
         parent_submit_update,
         parent_decline_update,
+        _automation_status_board(fresh_state),
+        _validation_gate_container(fresh_state),
         _validation_gate_board(fresh_state),
         _planned_work_items_board(fresh_state),
         _ghidra_change_queue_board(fresh_state),
@@ -1262,7 +1306,10 @@ def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
 
 
 def reset():
+    prior_snapshot = _get_ui_snapshot()
+    prior_state = prior_snapshot.get("state") if isinstance(prior_snapshot.get("state"), dict) else {}
     fresh_shared_state = _new_shared_state()
+    fresh_shared_state.update(preserved_automation_shared_state((prior_state or {}).get("shared_state") or {}))
     fresh_state = {
         "role_histories": {},
         "tool_log": "",
@@ -1311,6 +1358,8 @@ def reset():
         parent_response_update,
         parent_submit_update,
         parent_decline_update,
+        _automation_status_board(fresh_state),
+        _validation_gate_container(fresh_state),
         _validation_gate_board(fresh_state),
         _planned_work_items_board(fresh_state),
         _ghidra_change_queue_board(fresh_state),
@@ -1326,6 +1375,41 @@ def reset():
 def _automation_run_busy() -> bool:
     snapshot = _get_ui_snapshot()
     return bool(snapshot.get("run_active"))
+
+
+def _mark_automation_snapshot_event(
+    payload: Optional[Dict[str, Any]],
+    *,
+    status: str,
+    source: str = "",
+    program_key: str = "",
+    reason: str = "",
+    detail: str = "",
+) -> None:
+    snapshot = _get_ui_snapshot()
+    state = snapshot.get("state")
+    if not isinstance(state, dict):
+        state = _snapshot_state_default()
+    if isinstance(payload, dict):
+        apply_automation_payload_to_state(state, payload)
+    record_automation_event(
+        state,
+        status=status,
+        source=source,
+        program_key=program_key,
+        reason=reason,
+        detail=detail,
+    )
+    _store_ui_snapshot(
+        chat_history=snapshot.get("chat_history") if isinstance(snapshot.get("chat_history"), list) else [],
+        state=state,
+        run_active=bool(snapshot.get("run_active")),
+        composer_visible=bool(snapshot.get("composer_visible", True)),
+        send_visible=bool(snapshot.get("send_visible", True)),
+        clear_visible=bool(snapshot.get("clear_visible", True)),
+        todo_visible=bool(snapshot.get("todo_visible", False)),
+        force=True,
+    )
 
 
 def _automation_program_key_from_payload(payload: Dict[str, Any]) -> str:
@@ -1394,6 +1478,14 @@ def _register_automation_run_start(payload: Dict[str, Any], rerun_reason: str) -
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "source": str(payload.get("source") or "").strip(),
     }
+    _mark_automation_snapshot_event(
+        payload,
+        status="accepted",
+        source=str(payload.get("source") or "").strip(),
+        program_key=program_key,
+        reason=rerun_reason,
+        detail="Trigger accepted and auto-triage queued.",
+    )
     return program_key
 
 
@@ -1413,6 +1505,24 @@ def _register_automation_run_finish(
         "source": str(payload.get("source") or "").strip(),
         "error": error,
     }
+    detail = error.strip()
+    if not detail:
+        if status == "succeeded":
+            detail = "Automated triage completed successfully."
+        elif status == "failed":
+            detail = "Automated triage failed."
+        elif status == "canceled":
+            detail = "Automated triage was canceled or detached."
+        else:
+            detail = f"Automated triage finished with status {status}."
+    _mark_automation_snapshot_event(
+        payload,
+        status=status,
+        source=str(payload.get("source") or "").strip(),
+        program_key=program_key,
+        reason=str(payload.get("rerun_reason") or payload.get("trigger_reason") or "").strip(),
+        detail=detail,
+    )
 
 
 def _automation_prompt_from_payload(payload: Dict[str, Any]) -> str:
@@ -1490,6 +1600,14 @@ def _run_automation_trigger(user_text: str, source: str, payload: Dict[str, Any]
             chat_history = []
 
         apply_automation_payload_to_state(state, payload)
+        _mark_automation_snapshot_event(
+            payload,
+            status="running",
+            source=source,
+            program_key=program_key,
+            reason=str(payload.get("rerun_reason") or "").strip(),
+            detail="Automated triage is running.",
+        )
         shell_execution_mode = "none"
         validator_review_level = _normalize_validator_review_level(
             state.get("validator_review_level", DEFAULT_VALIDATOR_REVIEW_LEVEL)
@@ -1541,10 +1659,24 @@ class _AutomationTriggerHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self) -> None:
+        if self.path.rstrip("/") == _AUTOMATION_STATUS_PATH.rstrip("/"):
+            snapshot = _get_ui_snapshot()
+            state = snapshot.get("state") if isinstance(snapshot.get("state"), dict) else _snapshot_state_default()
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "html": render_automation_status_panel(state),
+                },
+            )
+            return
+
         if self.path.rstrip("/") != AUTOMATION_TRIGGER_HEALTH_PATH.rstrip("/"):
             self._send_json(404, {"ok": False, "error": "not found"})
             return
@@ -1587,6 +1719,14 @@ class _AutomationTriggerHandler(BaseHTTPRequestHandler):
 
         accept_trigger, rerun_reason, program_key = _should_accept_automation_trigger(payload)
         if not accept_trigger:
+            _mark_automation_snapshot_event(
+                payload,
+                status="skipped",
+                source=source,
+                program_key=program_key,
+                reason=rerun_reason,
+                detail="Trigger skipped because no rerun condition was met.",
+            )
             self._send_json(
                 200,
                 {
@@ -1603,6 +1743,14 @@ class _AutomationTriggerHandler(BaseHTTPRequestHandler):
         global _AUTOMATION_TRIGGER_PENDING
         with _AUTOMATION_TRIGGER_LOCK:
             if _AUTOMATION_TRIGGER_PENDING or _automation_run_busy():
+                _mark_automation_snapshot_event(
+                    payload,
+                    status="busy",
+                    source=source,
+                    program_key=program_key,
+                    reason="workflow_already_running",
+                    detail="Trigger received while another workflow was active.",
+                )
                 self._send_json(
                     409,
                     {
@@ -1787,10 +1935,15 @@ class WorkflowUI:
                         clear = gr.Button("Reset")
 
                 with gr.Column(scale=2):
+                    automation_status_panel = gr.HTML(
+                        value=render_automation_status_panel(initial_state),
+                        elem_id="automation-status-panel",
+                    )
                     with gr.Accordion("Planned Work Items", open=False):
                         planned_work_items_panel = gr.HTML(value=render_planned_work_items_panel(initial_state))
-                    with gr.Accordion("Validation Gate", open=False):
-                        validation_gate_panel = gr.HTML(value=render_validation_gate_panel(initial_state))
+                    with gr.Group(visible=_has_validation_gate(initial_state)) as validation_gate_group:
+                        with gr.Accordion("Validation Gate", open=False):
+                            validation_gate_panel = gr.HTML(value=render_validation_gate_panel(initial_state))
                     with gr.Accordion("Ghidra Change Queue", open=False, elem_id="ghidra-change-queue-accordion"):
                         ghidra_change_queue_panel = gr.HTML(
                             value=render_ghidra_change_queue_panel(initial_state),
@@ -1831,6 +1984,8 @@ class WorkflowUI:
                 parent_response,
                 parent_submit,
                 parent_decline,
+                automation_status_panel,
+                validation_gate_group,
                 validation_gate_panel,
                 planned_work_items_panel,
                 ghidra_change_queue_panel,

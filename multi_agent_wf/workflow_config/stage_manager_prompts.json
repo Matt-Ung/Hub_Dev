@@ -19,7 +19,8 @@
     "- This stage is for bounded, deterministic bootstrap collection only.",
     "- Prioritize reusable artifacts over open-ended interpretation.",
     "- Collect a compact sweep bundle from the currently loaded sample using available static tools.",
-    "- Favor canonical Ghidra metadata, strings, FLOSS, capa, HashDB candidate checks, entropy/packer heuristics, and baseline YARA when those tools are available.",
+    "- Favor canonical Ghidra metadata, strings, FLOSS, capa, HashDB candidate checks, entropy/packer heuristics, bounded unpacking opportunities such as UPX, and baseline YARA when those tools are available.",
+    "- Explicitly assess packed-binary indicators and record whether unpacking was attempted, succeeded, failed, or was not justified.",
     "- If a sweep is unavailable, fails, or is out of scope, record that clearly instead of guessing.",
     "- Do not perform broad exploratory reverse engineering, deep xref chasing, final reporting, or validator-style review in this stage.",
     "- Keep the bundle compact and reusable by later planner, worker, and reporter stages."
@@ -71,7 +72,10 @@
     "- Route struct, enum, typedef, prototype, and field-name recovery to `type_recovery_analyst` when available.",
     "- Route rename, comment, prototype, or local-type cleanup requests to `ghidra_refactor_analyst` when available.",
     "- For Ghidra edit tasks, default to an approval-ready proposal bundle rather than silently mutating the program unless the user explicitly asked for changes to be applied and the evidence is strong.",
-    "- If the current Ghidra MCP surface cannot perform a desired edit such as creating a brand-new struct type or arbitrary binary patching, record it as proposal-only rather than pretending it was applied.",
+    "- In auto-triage or sweep-driven runs, it is acceptable to emit conservative approval-ready rename/type/comment/prototype proposals when they materially improve later analysis, even if the original request was not phrased as an edit request.",
+    "- If the current Ghidra MCP surface cannot perform a desired edit such as creating a brand-new struct type or arbitrary binary patching, keep that idea in normal prose rather than placing it in the machine-readable approval queue block.",
+    "- Until a rename is actually applied, keep using the current canonical function/address in prose and treat the suggested name only as an alias or recommendation.",
+    "- When the evidence supports a narrow, high-signal detection rule, include a concise YARA rule proposal block rather than burying the rule idea in prose.",
     "- If dynamic validation is proposed, require a concrete sandbox procedure with exact steps, monitoring points, and rollback controls; otherwise label it as a recommendation rather than completed evidence.",
     "- Route xref-heavy relevance questions to `ghidra_analyst` when available and treat them as bounded relevance checks, not exhaustive graph walks.",
     "- Collapse startup/runtime scaffolding and tiny wrappers into a short omission note unless they are directly relevant."
@@ -100,6 +104,9 @@
     "- Produce the final answer using validated findings only.",
     "- This stage is synthesis-only. Do not perform fresh tool calls or new technical discovery.",
     "- Preserve concrete technical specificity.",
+    "- Do not speak as though a proposed rename already exists in Ghidra unless it was actually applied. Use the current canonical symbol/address and optionally note the suggested alias.",
+    "- If earlier stages produced strong, bounded rename/type/struct suggestions, finalize them into approval-ready proposals rather than leaving them as vague notes.",
+    "- If the run supports a strong, specific detection rule, emit a machine-readable YARA rule proposal block so the host can write it through yaraMCP.",
     "- Exclude generic executable primers, startup scaffolding, and trivial wrapper discussion unless directly relevant.",
     "- Clearly separate confirmed findings from remaining unknowns."
   ]

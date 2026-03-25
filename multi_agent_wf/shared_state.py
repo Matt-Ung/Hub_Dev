@@ -377,6 +377,62 @@ def _sanitize_user_facing_output(text: str) -> str:
     return output
 
 
+def _annotate_unapproved_ghidra_aliases(text: str, shared_state: Optional[Dict[str, Any]]) -> str:
+    output = str(text or "")
+    shared = shared_state or {}
+    if not output:
+        return output
+
+    proposals = list(shared.get("ghidra_change_draft_proposals") or shared.get("ghidra_change_proposals") or [])
+    if not proposals:
+        return output
+
+    replacements: List[Tuple[str, str]] = []
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            continue
+        status = str(proposal.get("status") or "").strip().lower()
+        if status == "applied":
+            continue
+        action = str(proposal.get("action") or "").strip().lower()
+        if action not in {"rename_function", "rename_function_by_address"}:
+            continue
+        proposed_name = str(proposal.get("proposed_name") or "").strip()
+        current_name = str(
+            proposal.get("current_name")
+            or proposal.get("function_name")
+            or proposal.get("function_address")
+            or ""
+        ).strip()
+        if not proposed_name or not current_name or proposed_name == current_name:
+            continue
+        replacements.append((proposed_name, current_name))
+
+    if not replacements:
+        return output
+
+    replacements.sort(key=lambda item: len(item[0]), reverse=True)
+    for proposed_name, current_name in replacements:
+        replacement_text = f"{current_name} (proposed alias: {proposed_name})"
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(proposed_name)}(?![A-Za-z0-9_])"
+        )
+
+        def _replace(match: re.Match[str]) -> str:
+            start, end = match.span()
+            window = output[max(0, start - 120): min(len(output), end + 120)]
+            lowered_window = window.lower()
+            if "proposed alias:" in lowered_window:
+                return match.group(0)
+            if current_name in window:
+                return match.group(0)
+            return replacement_text
+
+        output = pattern.sub(_replace, output)
+
+    return output
+
+
 # ----------------------------
 # Multi-agent shared state helpers
 # ----------------------------
@@ -449,9 +505,15 @@ def compact_shared_state(state: Dict[str, Any]) -> None:
     outputs = shared.get("task_outputs", []) or []
     if len(outputs) > MAX_TASK_OUTPUTS:
         shared["task_outputs"] = outputs[-MAX_TASK_OUTPUTS:]
+    automation_history = shared.get("automation_history", []) or []
+    if len(automation_history) > 8:
+        shared["automation_history"] = automation_history[-8:]
     auto_triage_runs = shared.get("auto_triage_runs", []) or []
     if len(auto_triage_runs) > 6:
         shared["auto_triage_runs"] = auto_triage_runs[-6:]
+    generated_yara_rules = shared.get("generated_yara_rules", []) or []
+    if len(generated_yara_rules) > 12:
+        shared["generated_yara_rules"] = generated_yara_rules[-12:]
 
 
 def _pending_parent_input(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -859,6 +921,75 @@ def apply_automation_payload_to_state(state: Dict[str, Any], payload: Dict[str, 
     _store_ui_snapshot(state=state)
 
 
+def record_automation_event(
+    state: Dict[str, Any],
+    *,
+    status: str,
+    source: str = "",
+    program_key: str = "",
+    reason: str = "",
+    detail: str = "",
+) -> None:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    normalized_status = str(status or "").strip() or "unknown"
+    normalized_source = str(source or shared.get("automation_trigger_source") or "").strip()
+    normalized_program_key = str(program_key or shared.get("automation_program_key") or "").strip()
+    normalized_reason = str(reason or "").strip()
+    normalized_detail = str(detail or "").strip()
+
+    shared["automation_status"] = normalized_status
+    shared["automation_last_source"] = normalized_source
+    shared["automation_last_program_key"] = normalized_program_key
+    shared["automation_last_reason"] = normalized_reason
+    shared["automation_last_detail"] = normalized_detail
+    shared["automation_last_at"] = timestamp
+
+    history = shared.setdefault("automation_history", [])
+    history.append(
+        {
+            "at": timestamp,
+            "status": normalized_status,
+            "source": normalized_source,
+            "program_key": normalized_program_key,
+            "reason": normalized_reason,
+            "detail": normalized_detail,
+        }
+    )
+    if len(history) > 8:
+        shared["automation_history"] = history[-8:]
+
+    _store_ui_snapshot(state=state)
+
+
+def preserved_automation_shared_state(shared: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(shared, dict):
+        return {}
+    keys = (
+        "automation_trigger_payload",
+        "automation_trigger_source",
+        "automation_program_key",
+        "automation_analysis_token",
+        "automation_rerun_reason",
+        "automation_bootstrap_metadata",
+        "automation_status",
+        "automation_last_reason",
+        "automation_last_source",
+        "automation_last_program_key",
+        "automation_last_at",
+        "automation_last_detail",
+        "automation_history",
+        "auto_triage_status",
+        "auto_triage_last_error",
+        "auto_triage_last_run_at",
+    )
+    preserved: Dict[str, Any] = {}
+    for key in keys:
+        if key in shared:
+            preserved[key] = _json_safe(shared.get(key))
+    return preserved
+
+
 def _clear_validated_sample_metadata(shared: Dict[str, Any]) -> None:
     shared["validated_sample_md5"] = ""
     shared["validated_sample_sha256"] = ""
@@ -957,6 +1088,8 @@ def _new_shared_state() -> Dict[str, Any]:
         "ghidra_change_draft_proposals": [],
         "ghidra_change_queue_finalized": False,
         "ghidra_change_parse_error": "",
+        "generated_yara_rules": [],
+        "generated_yara_rule_parse_error": "",
         "pipeline_stage_outputs": [],
         "pipeline_stage_progress": [],
         "available_static_tools": [],
@@ -970,6 +1103,13 @@ def _new_shared_state() -> Dict[str, Any]:
         "automation_analysis_token": "",
         "automation_rerun_reason": "",
         "automation_bootstrap_metadata": {},
+        "automation_status": "",
+        "automation_last_reason": "",
+        "automation_last_source": "",
+        "automation_last_program_key": "",
+        "automation_last_at": "",
+        "automation_last_detail": "",
+        "automation_history": [],
         "auto_triage_pre_sweeps": {},
         "auto_triage_pre_sweep_summary": "",
         "auto_triage_report": "",
