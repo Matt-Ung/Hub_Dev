@@ -1,189 +1,298 @@
 {
-  "preflight_planner_workers_reporter": [
-    {
-      "name": "preflight",
-      "stage_kind": "preflight",
-      "architecture": [["preflight_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-4o-mini"
-    },
-    {
-      "name": "planner",
-      "stage_kind": "planner",
-      "architecture": [],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "workers",
-      "stage_kind": "workers",
-      "architecture": [],
-      "use_worker_architecture": true,
-      "model": "openai:gpt-4o-mini"
-    },
-    {
-      "name": "reporter",
-      "stage_kind": "reporter",
-      "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-4o-mini"
-    }
-  ],
-  "preflight_planner_workers_validators_reporter": [
-    {
-      "name": "preflight",
-      "stage_kind": "preflight",
-      "architecture": [["preflight_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-4o-mini"
-    },
-    {
-      "name": "planner",
-      "stage_kind": "planner",
-      "architecture": [],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "workers",
-      "stage_kind": "workers",
-      "architecture": [],
-      "use_worker_architecture": true,
-      "model": "openai:gpt-4o-mini"
-    },
-    {
-      "name": "validators",
-      "stage_kind": "validators",
-      "architecture": [["evidence_validator", 2]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "reporter",
-      "stage_kind": "reporter",
-      "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-4o-mini"
-    }
-  ],
-  "preflight_planner_workers_dual_validators_reporter": [
-    {
-      "name": "preflight",
-      "stage_kind": "preflight",
-      "architecture": [["preflight_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-4o-mini"
-    },
-    {
-      "name": "planner",
-      "stage_kind": "planner",
-      "architecture": [],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "workers",
-      "stage_kind": "workers",
-      "architecture": [],
-      "use_worker_architecture": true,
-      "model": "openai:gpt-4o-mini"
-    },
-    {
-      "name": "validators",
-      "stage_kind": "validators",
-      "architecture": [["evidence_validator", 1], ["triage_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "reporter",
-      "stage_kind": "reporter",
-      "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-4o-mini"
-    }
-  ],
-  "planner_workers_reporter": [
-    {
-      "name": "planner",
-      "stage_kind": "planner",
-      "architecture": [],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "workers",
-      "stage_kind": "workers",
-      "architecture": [],
-      "use_worker_architecture": true,
-      "model": "openai:gpt-4o-mini"
-    },
-    {
-      "name": "reporter",
-      "stage_kind": "reporter",
-      "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-4o-mini"
-    }
-  ],
-  "planner_workers_validators_reporter": [
-    {
-      "name": "planner",
-      "stage_kind": "planner",
-      "architecture": [],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "workers",
-      "stage_kind": "workers",
-      "architecture": [],
-      "use_worker_architecture": true,
-      "model": "openai:gpt-4o-mini"
-    },
-    {
-      "name": "validators",
-      "stage_kind": "validators",
-      "architecture": [["evidence_validator", 2]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "reporter",
-      "stage_kind": "reporter",
-      "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-4o-mini"
-    }
-  ],
-  "planner_workers_dual_validators_reporter": [
-    {
-      "name": "planner",
-      "stage_kind": "planner",
-      "architecture": [],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "workers",
-      "stage_kind": "workers",
-      "architecture": [],
-      "use_worker_architecture": true,
-      "model": "openai:gpt-4o-mini"
-    },
-    {
-      "name": "validators",
-      "stage_kind": "validators",
-      "architecture": [["evidence_validator", 1], ["triage_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-5-mini"
-    },
-    {
-      "name": "reporter",
-      "stage_kind": "reporter",
-      "architecture": [["reporting_analyst", 1]],
-      "use_worker_architecture": false,
-      "model": "openai:gpt-4o-mini"
-    }
-  ]
+  "preflight_direct_answer": {
+    "description": [
+      "Best for short, direct lookup questions where the user wants a concise factual answer from readily available metadata.",
+      "Use for requests like executable name, path, hashes, architecture, image base, or other simple program-info questions.",
+      "Do not use when the user wants deeper analysis, evidence gathering, explanation of behavior, or any edits/renames in Ghidra."
+    ],
+    "stages": [
+      {
+        "name": "preflight",
+        "stage_kind": "preflight",
+        "architecture": [["preflight_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      }
+    ]
+  },
+  "auto_triage": {
+    "description": [
+      "Best for automated bootstrap triage immediately after Ghidra auto-analysis settles.",
+      "Uses bounded preflight plus deterministic pre-sweeps before planning, worker synthesis, and reporting.",
+      "This pipeline is for reusable initial malware triage artifacts, not validator-heavy review or automatic edit application."
+    ],
+    "stages": [
+      {
+        "name": "preflight",
+        "stage_kind": "preflight",
+        "architecture": [["preflight_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "presweeps",
+        "stage_kind": "deterministic_presweeps",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      }
+    ]
+  },
+  "preflight_planner_workers_reporter": {
+    "description": [
+      "Best default for normal static-analysis requests that need real investigation but do not need strict validation gates.",
+      "Use for behavior explanation, control-flow walkthroughs, function identification, capability triage, C/C++ reconstruction, or Ghidra refactor proposals.",
+      "This is the preferred routing target for rename/retype/comment/edit requests when the user wants suggested changes or approval-ready proposals."
+    ],
+    "stages": [
+      {
+        "name": "preflight",
+        "stage_kind": "preflight",
+        "architecture": [["preflight_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      }
+    ]
+  },
+  "preflight_planner_workers_validators_reporter": {
+    "description": [
+      "Best for deep, evidence-heavy malware-analysis requests where claims should be checked before final reporting.",
+      "Use for technical reports, high-confidence reverse engineering, artifact-backed explanations, or cases where validation rigor matters.",
+      "Choose this when the user is implicitly asking for stronger proof, careful review, or a more defensible final output."
+    ],
+    "stages": [
+      {
+        "name": "preflight",
+        "stage_kind": "preflight",
+        "architecture": [["preflight_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "validators",
+        "stage_kind": "validators",
+        "architecture": [["evidence_validator", 2]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      }
+    ]
+  },
+  "preflight_planner_workers_dual_validators_reporter": {
+    "description": [
+      "Best for deep analysis where you want two different validation perspectives before reporting.",
+      "Use when independent validation viewpoints are useful, for example evidence review plus a broader technical sanity check.",
+      "This is more expensive and slower than the standard validator pipeline and should be reserved for tougher or higher-stakes requests."
+    ],
+    "stages": [
+      {
+        "name": "preflight",
+        "stage_kind": "preflight",
+        "architecture": [["preflight_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "validators",
+        "stage_kind": "validators",
+        "architecture": [["evidence_validator", 1], ["triage_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      }
+    ]
+  },
+  "planner_workers_reporter": {
+    "description": [
+      "Best for normal analysis when preflight context is already known or not needed.",
+      "Use when the sample is already validated and the query is focused on analysis rather than setup or metadata discovery.",
+      "This is a leaner variant of the standard worker pipeline."
+    ],
+    "stages": [
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      }
+    ]
+  },
+  "planner_workers_validators_reporter": {
+    "description": [
+      "Best for validated analysis when preflight is unnecessary but review rigor is still desired.",
+      "Use when the sample context is already known and the main need is analysis plus validation.",
+      "This is the no-preflight counterpart to the standard validator pipeline."
+    ],
+    "stages": [
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "validators",
+        "stage_kind": "validators",
+        "architecture": [["evidence_validator", 2]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      }
+    ]
+  },
+  "planner_workers_dual_validators_reporter": {
+    "description": [
+      "Best for no-preflight analysis runs that still want two different validator viewpoints.",
+      "Use only when you already have trusted sample context and want extra review diversity before reporting.",
+      "This is the most review-heavy no-preflight option."
+    ],
+    "stages": [
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-4o-mini"
+      },
+      {
+        "name": "validators",
+        "stage_kind": "validators",
+        "architecture": [["evidence_validator", 1], ["triage_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-4o-mini"
+      }
+    ]
+  }
 }

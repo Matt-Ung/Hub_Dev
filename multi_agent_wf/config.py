@@ -14,6 +14,10 @@ PLANNER_WORK_ITEMS_START = "WORK_ITEMS_JSON_START"
 PLANNER_WORK_ITEMS_END = "WORK_ITEMS_JSON_END"
 VALIDATION_DECISION_START = "VALIDATION_GATE_JSON_START"
 VALIDATION_DECISION_END = "VALIDATION_GATE_JSON_END"
+GHIDRA_CHANGE_PROPOSALS_START = "GHIDRA_CHANGE_PROPOSALS_JSON_START"
+GHIDRA_CHANGE_PROPOSALS_END = "GHIDRA_CHANGE_PROPOSALS_JSON_END"
+YARA_RULE_PROPOSALS_START = "YARA_RULE_PROPOSALS_JSON_START"
+YARA_RULE_PROPOSALS_END = "YARA_RULE_PROPOSALS_JSON_END"
 
 VALIDATOR_REVIEW_LEVEL_CHOICES = [
     ("easy (Business Manager)", "easy"),
@@ -53,6 +57,13 @@ GHIDRA_EXECUTABLE_SHA256_RE = re.compile(r"(?im)^Executable SHA256:\s*([0-9a-fA-
 GHIDRA_IMAGE_BASE_RE = re.compile(r"(?im)^Image Base:\s*(.+?)\s*$")
 
 _CONFIG_BOOTSTRAPPED = False
+_STAGE_KIND_METADATA_KEYS = (
+    "tool_free",
+    "supports_parallel_assignments",
+    "finalizes_report",
+    "parses_planner_work_items",
+    "runs_validation_gate",
+)
 
 
 def _env_flag_from(env: Mapping[str, str], name: str, default: bool) -> bool:
@@ -117,6 +128,21 @@ def resolve_pipeline_definition(
             stage["architecture"] = list(stage.get("architecture") or [])
         resolved.append(stage)
     return resolved
+
+
+def _pipeline_log_slots_from_presets(
+    pipeline_presets: Mapping[str, List[Dict[str, Any]]],
+) -> List[Tuple[str, str]]:
+    ordered: List[Tuple[str, str]] = []
+    seen: set[Tuple[str, str]] = set()
+    for pipeline in pipeline_presets.values():
+        for stage in pipeline:
+            slot = (str(stage["name"]), str(stage["stage_kind"]))
+            if slot in seen:
+                continue
+            seen.add(slot)
+            ordered.append(slot)
+    return ordered
 
 
 def _load_dotenv_if_present(dotenv_path: Optional[str] = None) -> Optional[Path]:
@@ -212,8 +238,30 @@ def _load_workflow_config_with_placeholders() -> Dict[str, Any]:
             "PLANNER_WORK_ITEMS_END": PLANNER_WORK_ITEMS_END,
             "VALIDATION_DECISION_START": VALIDATION_DECISION_START,
             "VALIDATION_DECISION_END": VALIDATION_DECISION_END,
+            "GHIDRA_CHANGE_PROPOSALS_START": GHIDRA_CHANGE_PROPOSALS_START,
+            "GHIDRA_CHANGE_PROPOSALS_END": GHIDRA_CHANGE_PROPOSALS_END,
+            "YARA_RULE_PROPOSALS_START": YARA_RULE_PROPOSALS_START,
+            "YARA_RULE_PROPOSALS_END": YARA_RULE_PROPOSALS_END,
         },
     )
+
+
+def get_stage_kind_metadata(stage_kind: str) -> Dict[str, bool]:
+    normalized_kind = str(stage_kind or "").strip()
+    metadata = globals().get("STAGE_KIND_METADATA", {})
+    entry = metadata.get(normalized_kind)
+    if not isinstance(entry, dict):
+        raise RuntimeError(f"Unknown stage kind metadata for {normalized_kind!r}")
+    return {
+        key: bool(entry.get(key, False))
+        for key in _STAGE_KIND_METADATA_KEYS
+    }
+
+
+def stage_kind_flag(stage_kind: str, flag: str) -> bool:
+    if flag not in _STAGE_KIND_METADATA_KEYS:
+        raise RuntimeError(f"Unknown stage kind metadata flag: {flag!r}")
+    return bool(get_stage_kind_metadata(stage_kind).get(flag))
 
 
 def _build_runtime_settings(
@@ -225,23 +273,38 @@ def _build_runtime_settings(
 ) -> Dict[str, Any]:
     current_workflow_config = workflow_config or _load_workflow_config_with_placeholders()
     architecture_presets = current_workflow_config["architecture_presets"]
+    architecture_preset_descriptions = current_workflow_config["architecture_preset_descriptions"]
+    stage_kind_metadata = current_workflow_config["stage_kind_metadata"]
     pipeline_presets = current_workflow_config["pipeline_presets"]
+    pipeline_preset_descriptions = current_workflow_config["pipeline_preset_descriptions"]
 
-    architecture_name = (env.get("DEEP_AGENT_ARCHITECTURE_NAME") or "aws_collaboration").strip()
-    if architecture_name not in architecture_presets:
+    raw_architecture_name = (env.get("DEEP_AGENT_ARCHITECTURE_NAME") or "aws_collaboration").strip()
+    if raw_architecture_name.lower() in {"auto", "dynamic"}:
+        architecture_name = "dynamic"
+        architecture_fallback_name = "aws_collaboration"
+    else:
+        architecture_name = raw_architecture_name
+        architecture_fallback_name = architecture_name
+    if architecture_fallback_name not in architecture_presets:
         raise RuntimeError(
             f"Unknown DEEP_AGENT_ARCHITECTURE_NAME={architecture_name!r}. "
             f"Available presets: {', '.join(sorted(architecture_presets))}"
         )
 
-    pipeline_name = (env.get("DEEP_AGENT_PIPELINE_NAME") or "preflight_planner_workers_validators_reporter").strip()
+    raw_pipeline_name = (env.get("DEEP_AGENT_PIPELINE_NAME") or "preflight_planner_workers_validators_reporter").strip()
+    auto_select_pipeline = raw_pipeline_name.lower() in {"auto", "dynamic"}
+    if auto_select_pipeline:
+        auto_select_pipeline = True
+        pipeline_name = "preflight_planner_workers_validators_reporter"
+    else:
+        pipeline_name = raw_pipeline_name
     if pipeline_name not in pipeline_presets:
         raise RuntimeError(
             f"Unknown DEEP_AGENT_PIPELINE_NAME={pipeline_name!r}. "
             f"Available presets: {', '.join(sorted(pipeline_presets))}"
         )
 
-    architecture = list(architecture_presets[architecture_name])
+    architecture = list(architecture_presets[architecture_fallback_name])
     pipeline = resolve_pipeline_definition(pipeline_presets[pipeline_name], architecture)
 
     return {
@@ -280,6 +343,8 @@ def _build_runtime_settings(
         "MAX_STATUS_LOG_LINES": int(env.get("MAX_STATUS_LOG_LINES", "400")),
         "STATUS_LOG_STDOUT": _env_flag_from(env, "STATUS_LOG_STDOUT", True),
         "DEEP_AGENT_RETRIES": int(env.get("DEEP_AGENT_RETRIES", "4")),
+        "DEEP_AGENT_AUTO_SELECT_PIPELINE": auto_select_pipeline,
+        "DEEP_AGENT_PIPELINE_ROUTER_MODEL": env.get("DEEP_AGENT_PIPELINE_ROUTER_MODEL", "openai:gpt-4o-mini"),
         "DEFAULT_ALLOW_PARENT_INPUT": _env_flag_from(env, "DEFAULT_ALLOW_PARENT_INPUT", False),
         "DEFAULT_VALIDATOR_REVIEW_LEVEL": _normalize_validator_review_level(
             env.get("DEFAULT_VALIDATOR_REVIEW_LEVEL", "default")
@@ -312,19 +377,21 @@ def _build_runtime_settings(
             ),
         ),
         "WORKFLOW_CONFIG": current_workflow_config,
+        "STAGE_KIND_METADATA": stage_kind_metadata,
         "AGENT_ARCHETYPE_PROMPTS": current_workflow_config["agent_archetype_prompts"],
         "PIPELINE_STAGE_MANAGER_PROMPTS": current_workflow_config["stage_manager_prompts"],
         "DEEP_AGENT_ARCHITECTURE_PRESETS": architecture_presets,
+        "DEEP_AGENT_ARCHITECTURE_DESCRIPTIONS": architecture_preset_descriptions,
         "DEEP_AGENT_PIPELINE_PRESETS": pipeline_presets,
+        "DEEP_AGENT_PIPELINE_DESCRIPTIONS": pipeline_preset_descriptions,
         "AGENT_ARCHETYPE_SPECS": current_workflow_config["agent_archetype_specs"],
         "PIPELINE_STAGE_OUTPUT_CONTRACTS": current_workflow_config["stage_output_contracts"],
         "DEEP_AGENT_ARCHITECTURE_NAME": architecture_name,
+        "DEEP_AGENT_ARCHITECTURE_FALLBACK_NAME": architecture_fallback_name,
         "DEEP_AGENT_ARCHITECTURE": architecture,
         "DEEP_AGENT_PIPELINE_NAME": pipeline_name,
         "DEEP_AGENT_PIPELINE": pipeline,
-        "PIPELINE_LOG_SLOTS": [
-            (str(stage["name"]), str(stage["stage_kind"])) for stage in pipeline
-        ],
+        "PIPELINE_LOG_SLOTS": _pipeline_log_slots_from_presets(pipeline_presets),
         "launch_kwargs": _build_launch_kwargs(env, extra_launch_kwargs),
     }
 

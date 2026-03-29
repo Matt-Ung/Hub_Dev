@@ -17,6 +17,8 @@ flare-capa
 gradio
 pydantic
 pydantic-ai
+pydantic-ai-backend
+python-dotenv
 
 # Required deep-agent orchestration support in multi_agent_wf/main.py
 pydantic-deep
@@ -25,3 +27,10 @@ pydantic-deep
 langchain
 langchain-openai
 langchain-mcp-adapters
+
+# Optional in-progress Ghidra scripting server
+pyghidra
+
+# Optional helper dependencies for bundled/vendored maintenance scripts
+PyYAML
+PyGithub

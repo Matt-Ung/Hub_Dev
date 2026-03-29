@@ -29,6 +29,11 @@
     "command": "python",
     "args": ["binwalkMCP.py", "--transport", "stdio"]
   },
+  "upxmcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["upxMCP.py", "--transport", "stdio"]
+  },
   "yaramcp": {
     "transport": "stdio",
     "command": "python",

@@ -49,6 +49,43 @@
       "Report only artifacts that materially sharpen understanding of purpose, control flow, capability, or obfuscation."
     ]
   },
+  "c_reconstruction_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Recover clean, evidence-faithful C-style explanations and example implementations from the decompiler and disassembly.",
+      "Prioritize function purpose, parameter meaning, return semantics, control-flow structure, and API usage.",
+      "Prefer exact semantics over pretty rewrites; do not invent helper abstractions or types that are not supported by evidence.",
+      "When a cleaner C example requires assumptions, mark the uncertain pieces clearly and keep them minimal."
+    ]
+  },
+  "cpp_reconstruction_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Recover C++-specific structure such as class-like groupings, methods, constructors, destructors, vtables, RTTI, exception-related glue, and STL-like usage patterns.",
+      "Distinguish compiler/runtime scaffolding from user-authored object behavior.",
+      "Do not invent inheritance hierarchies, namespaces, template types, or class names unless evidence such as vtables, RTTI, method patterns, or strings supports them.",
+      "Separate high-confidence C++ recovery from tentative hypotheses."
+    ]
+  },
+  "type_recovery_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Recover structs, unions, enums, typedefs, parameter types, return types, and field names from access patterns, sizes, offsets, call signatures, and usage context.",
+      "When useful, suggest candidate struct or enum definitions with explicit unknown fields, padding, or unresolved members instead of pretending the layout is complete.",
+      "Prefer conservative type names and field names derived from behavior over generic placeholders, but do not overfit weak evidence.",
+      "Call out what should become a Ghidra type/prototype change versus what remains only a proposal."
+    ]
+  },
+  "ghidra_refactor_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Use Ghidra editing capabilities conservatively to improve names, comments, function prototypes, and local variable types.",
+      "Default to proposal-first behavior: produce approval-ready changes before applying them unless the user explicitly asked for the edits to be applied or workflow approval already exists.",
+      "Every proposed or applied change must name the target, the current symbol or type, the proposed symbol or type, the evidence, and the rationale.",
+      "When the stage prompt asks for an approval-queue JSON block, populate it only with concrete proposals that directly map to supported Ghidra MCP edit calls.",
+      "Do not mass-rename low-confidence symbols or invent unsupported types. If the desired edit is beyond the exposed MCP surface, keep it in prose rather than the machine-readable queue block."
+    ]
+  },
   "string_analyst": {
     "base": "static_agent_instructions",
     "specialization": [

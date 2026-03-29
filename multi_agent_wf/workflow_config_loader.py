@@ -58,12 +58,25 @@ def _normalize_architecture(value: Any, label: str) -> List[Tuple[str, int]]:
     return normalized
 
 
-def _load_architecture_presets(config_dir: Path) -> Dict[str, List[Tuple[str, int]]]:
+def _load_architecture_presets(config_dir: Path) -> tuple[Dict[str, List[Tuple[str, int]]], Dict[str, str]]:
     raw = _expect_mapping(_load_json_file(config_dir, "architecture_presets.json"), "architecture_presets.json")
-    return {
-        name: _normalize_architecture(value, f"architecture_presets.json::{name}")
-        for name, value in raw.items()
-    }
+    presets: Dict[str, List[Tuple[str, int]]] = {}
+    descriptions: Dict[str, str] = {}
+    for preset_name, value in raw.items():
+        description = ""
+        slots = value
+        if isinstance(value, dict):
+            description_value = value.get("description")
+            if description_value is not None:
+                description = _render_text_block(
+                    description_value,
+                    f"architecture_presets.json::{preset_name}.description",
+                    {},
+                ).strip()
+            slots = value.get("slots")
+        presets[preset_name] = _normalize_architecture(slots, f"architecture_presets.json::{preset_name}")
+        descriptions[preset_name] = description
+    return presets, descriptions
 
 
 def _normalize_pipeline_stage(raw_stage: Any, label: str) -> Dict[str, Any]:
@@ -94,17 +107,29 @@ def _normalize_pipeline_stage(raw_stage: Any, label: str) -> Dict[str, Any]:
     return normalized
 
 
-def _load_pipeline_presets(config_dir: Path) -> Dict[str, List[Dict[str, Any]]]:
+def _load_pipeline_presets(config_dir: Path) -> tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
     raw = _expect_mapping(_load_json_file(config_dir, "pipeline_presets.json"), "pipeline_presets.json")
     presets: Dict[str, List[Dict[str, Any]]] = {}
+    descriptions: Dict[str, str] = {}
     for preset_name, stages in raw.items():
+        description = ""
+        if isinstance(stages, dict):
+            description_value = stages.get("description")
+            if description_value is not None:
+                description = _render_text_block(
+                    description_value,
+                    f"pipeline_presets.json::{preset_name}.description",
+                    {},
+                ).strip()
+            stages = stages.get("stages")
         if not isinstance(stages, list):
-            raise RuntimeError(f"pipeline_presets.json::{preset_name} must be a list")
+            raise RuntimeError(f"pipeline_presets.json::{preset_name} must be a list or an object with a stages list")
         presets[preset_name] = [
             _normalize_pipeline_stage(stage, f"pipeline_presets.json::{preset_name}[{idx}]")
             for idx, stage in enumerate(stages, start=1)
         ]
-    return presets
+        descriptions[preset_name] = description
+    return presets, descriptions
 
 
 def _load_agent_archetype_specs(config_dir: Path) -> Dict[str, Dict[str, str]]:
@@ -134,6 +159,28 @@ def _load_text_map(config_dir: Path, filename: str, placeholders: Dict[str, str]
         name: _render_text_block(value, f"{filename}::{name}", placeholders)
         for name, value in raw.items()
     }
+
+
+def _load_stage_kind_metadata(config_dir: Path) -> Dict[str, Dict[str, bool]]:
+    raw = _expect_mapping(_load_json_file(config_dir, "stage_kind_metadata.json"), "stage_kind_metadata.json")
+    required_keys = (
+        "tool_free",
+        "supports_parallel_assignments",
+        "finalizes_report",
+        "parses_planner_work_items",
+        "runs_validation_gate",
+    )
+    normalized: Dict[str, Dict[str, bool]] = {}
+    for name, value in raw.items():
+        entry = _expect_mapping(value, f"stage_kind_metadata.json::{name}")
+        normalized_entry: Dict[str, bool] = {}
+        for key in required_keys:
+            raw_field = entry.get(key)
+            if not isinstance(raw_field, bool):
+                raise RuntimeError(f"stage_kind_metadata.json::{name}.{key} must be a boolean")
+            normalized_entry[key] = raw_field
+        normalized[name] = normalized_entry
+    return normalized
 
 
 def _load_base_prompts(config_dir: Path, placeholders: Dict[str, str]) -> Dict[str, str]:
@@ -170,9 +217,14 @@ def _load_agent_archetype_prompts(
 
 def load_workflow_config(config_dir: Path, placeholders: Dict[str, str]) -> Dict[str, Any]:
     base_prompts = _load_base_prompts(config_dir, placeholders)
+    architecture_presets, architecture_preset_descriptions = _load_architecture_presets(config_dir)
+    pipeline_presets, pipeline_preset_descriptions = _load_pipeline_presets(config_dir)
     return {
-        "architecture_presets": _load_architecture_presets(config_dir),
-        "pipeline_presets": _load_pipeline_presets(config_dir),
+        "architecture_presets": architecture_presets,
+        "architecture_preset_descriptions": architecture_preset_descriptions,
+        "stage_kind_metadata": _load_stage_kind_metadata(config_dir),
+        "pipeline_presets": pipeline_presets,
+        "pipeline_preset_descriptions": pipeline_preset_descriptions,
         "agent_archetype_specs": _load_agent_archetype_specs(config_dir),
         "stage_output_contracts": _load_text_map(config_dir, "stage_output_contracts.json", placeholders),
         "stage_manager_prompts": _load_text_map(config_dir, "stage_manager_prompts.json", placeholders),

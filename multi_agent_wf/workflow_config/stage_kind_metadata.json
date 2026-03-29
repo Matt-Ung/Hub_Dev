@@ -1,0 +1,44 @@
+{
+  "preflight": {
+    "tool_free": false,
+    "supports_parallel_assignments": false,
+    "finalizes_report": false,
+    "parses_planner_work_items": false,
+    "runs_validation_gate": false
+  },
+  "deterministic_presweeps": {
+    "tool_free": false,
+    "supports_parallel_assignments": false,
+    "finalizes_report": false,
+    "parses_planner_work_items": false,
+    "runs_validation_gate": false
+  },
+  "planner": {
+    "tool_free": true,
+    "supports_parallel_assignments": false,
+    "finalizes_report": false,
+    "parses_planner_work_items": true,
+    "runs_validation_gate": false
+  },
+  "workers": {
+    "tool_free": false,
+    "supports_parallel_assignments": true,
+    "finalizes_report": false,
+    "parses_planner_work_items": false,
+    "runs_validation_gate": false
+  },
+  "validators": {
+    "tool_free": true,
+    "supports_parallel_assignments": false,
+    "finalizes_report": false,
+    "parses_planner_work_items": false,
+    "runs_validation_gate": true
+  },
+  "reporter": {
+    "tool_free": true,
+    "supports_parallel_assignments": false,
+    "finalizes_report": true,
+    "parses_planner_work_items": false,
+    "runs_validation_gate": false
+  }
+}

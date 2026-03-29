@@ -23,9 +23,14 @@ from pydantic_ai.messages import (
 )
 
 from .config import (
+    DEEP_AGENT_ARCHITECTURE_NAME,
+    DEEP_AGENT_AUTO_SELECT_PIPELINE,
+    DEEP_AGENT_PIPELINE_NAME,
     DEFAULT_ALLOW_PARENT_INPUT,
     DEFAULT_SHELL_EXECUTION_MODE,
     DEFAULT_VALIDATOR_REVIEW_LEVEL,
+    GHIDRA_CHANGE_PROPOSALS_END,
+    GHIDRA_CHANGE_PROPOSALS_START,
     GHIDRA_EXECUTABLE_MD5_RE,
     GHIDRA_EXECUTABLE_PATH_RE,
     GHIDRA_EXECUTABLE_SHA256_RE,
@@ -36,6 +41,7 @@ from .config import (
     MAX_TOOL_LOG_CHARS,
     MAX_VALIDATION_REPLAN_RETRIES,
     PATH_HANDOFF_LINE_PREFIX,
+    REPO_ROOT,
     SAMPLE_PATH_POSIX_RE,
     SAMPLE_PATH_QUOTED_RE,
     SAMPLE_PATH_WINDOWS_RE,
@@ -49,6 +55,10 @@ _LIVE_TOOL_LOG_STATE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
 _STATE_MUTATION_LOCK = Lock()
 _PARENT_INPUT_LOCK = Lock()
 _PARENT_INPUT_REQUESTS: Dict[str, Dict[str, Any]] = {}
+_SERVER_RUN_TOOL_LOG_LOCK = Lock()
+_SERVER_RUN_TOOL_LOG_DIR: Optional[Path] = None
+_SERVER_RUN_TOOL_LOG_STAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+_SERVER_RUN_TOOL_LOG_ANNOUNCED = False
 
 # ----------------------------
 # Tool log extraction (best-effort)
@@ -172,6 +182,50 @@ def _tool_log_dedupe_key(entry: Dict[str, Any]) -> str:
     return json.dumps(stable, sort_keys=True, ensure_ascii=False, default=str)
 
 
+def _stage_log_filename(stage_name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(stage_name or "").strip()).strip("._")
+    return f"{safe or 'unknown'}.log"
+
+
+def _server_run_tool_log_dir() -> Path:
+    global _SERVER_RUN_TOOL_LOG_DIR, _SERVER_RUN_TOOL_LOG_ANNOUNCED
+    with _SERVER_RUN_TOOL_LOG_LOCK:
+        if _SERVER_RUN_TOOL_LOG_DIR is None:
+            run_dir = (REPO_ROOT / "logs" / f"agentToolBench_{_SERVER_RUN_TOOL_LOG_STAMP}").resolve()
+            run_dir.mkdir(parents=True, exist_ok=True)
+            _SERVER_RUN_TOOL_LOG_DIR = run_dir
+        if not _SERVER_RUN_TOOL_LOG_ANNOUNCED:
+            print(f"[tool log files] writing stage logs to {_SERVER_RUN_TOOL_LOG_DIR}", flush=True)
+            _SERVER_RUN_TOOL_LOG_ANNOUNCED = True
+        return _SERVER_RUN_TOOL_LOG_DIR
+
+
+def _append_tool_log_file_entries(
+    state: Dict[str, Any],
+    stage_name: str,
+    rendered_entries: List[str],
+) -> None:
+    if not rendered_entries:
+        return
+
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    run_id = str(state.get("active_run_id") or "").strip() or "server"
+    log_path = _server_run_tool_log_dir() / _stage_log_filename(stage_name)
+    chunks: List[str] = []
+    for rendered in rendered_entries:
+        chunks.append(f"[{timestamp}] run_id={run_id} stage={stage_name}")
+        chunks.append(rendered)
+        chunks.append("")
+    payload = "\n".join(chunks)
+
+    try:
+        with _SERVER_RUN_TOOL_LOG_LOCK:
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(payload)
+    except Exception as exc:
+        print(f"[tool log files] warning: failed to append {log_path}: {exc}", flush=True)
+
+
 def _append_tool_log_entries(
     state: Dict[str, Any],
     stage_name: str,
@@ -208,6 +262,7 @@ def _append_tool_log_entries(
         if len(merged_section) > MAX_TOOL_LOG_CHARS:
             merged_section = merged_section[-MAX_TOOL_LOG_CHARS:]
         sections[stage_name] = merged_section
+    _append_tool_log_file_entries(state, stage_name, rendered_entries)
     _store_ui_snapshot(state=state)
 
 
@@ -283,8 +338,14 @@ def append_tool_log_delta(
 
 
 def _sanitize_user_facing_output(text: str) -> str:
+    output = re.sub(
+        rf"{re.escape(GHIDRA_CHANGE_PROPOSALS_START)}[\s\S]*?{re.escape(GHIDRA_CHANGE_PROPOSALS_END)}",
+        "",
+        text or "",
+        flags=re.DOTALL,
+    )
     cleaned: List[str] = []
-    for raw_line in (text or "").splitlines():
+    for raw_line in output.splitlines():
         stripped = raw_line.strip()
         lowered = stripped.lower()
         if lowered.startswith(PATH_HANDOFF_LINE_PREFIX.lower()):
@@ -313,6 +374,62 @@ def _sanitize_user_facing_output(text: str) -> str:
 
     output = "\n".join(cleaned)
     output = re.sub(r"\n{3,}", "\n\n", output).strip()
+    return output
+
+
+def _annotate_unapproved_ghidra_aliases(text: str, shared_state: Optional[Dict[str, Any]]) -> str:
+    output = str(text or "")
+    shared = shared_state or {}
+    if not output:
+        return output
+
+    proposals = list(shared.get("ghidra_change_draft_proposals") or shared.get("ghidra_change_proposals") or [])
+    if not proposals:
+        return output
+
+    replacements: List[Tuple[str, str]] = []
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            continue
+        status = str(proposal.get("status") or "").strip().lower()
+        if status == "applied":
+            continue
+        action = str(proposal.get("action") or "").strip().lower()
+        if action not in {"rename_function", "rename_function_by_address"}:
+            continue
+        proposed_name = str(proposal.get("proposed_name") or "").strip()
+        current_name = str(
+            proposal.get("current_name")
+            or proposal.get("function_name")
+            or proposal.get("function_address")
+            or ""
+        ).strip()
+        if not proposed_name or not current_name or proposed_name == current_name:
+            continue
+        replacements.append((proposed_name, current_name))
+
+    if not replacements:
+        return output
+
+    replacements.sort(key=lambda item: len(item[0]), reverse=True)
+    for proposed_name, current_name in replacements:
+        replacement_text = f"{current_name} (proposed alias: {proposed_name})"
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(proposed_name)}(?![A-Za-z0-9_])"
+        )
+
+        def _replace(match: re.Match[str]) -> str:
+            start, end = match.span()
+            window = output[max(0, start - 120): min(len(output), end + 120)]
+            lowered_window = window.lower()
+            if "proposed alias:" in lowered_window:
+                return match.group(0)
+            if current_name in window:
+                return match.group(0)
+            return replacement_text
+
+        output = pattern.sub(_replace, output)
+
     return output
 
 
@@ -388,6 +505,15 @@ def compact_shared_state(state: Dict[str, Any]) -> None:
     outputs = shared.get("task_outputs", []) or []
     if len(outputs) > MAX_TASK_OUTPUTS:
         shared["task_outputs"] = outputs[-MAX_TASK_OUTPUTS:]
+    automation_history = shared.get("automation_history", []) or []
+    if len(automation_history) > 8:
+        shared["automation_history"] = automation_history[-8:]
+    auto_triage_runs = shared.get("auto_triage_runs", []) or []
+    if len(auto_triage_runs) > 6:
+        shared["auto_triage_runs"] = auto_triage_runs[-6:]
+    generated_yara_rules = shared.get("generated_yara_rules", []) or []
+    if len(generated_yara_rules) > 12:
+        shared["generated_yara_rules"] = generated_yara_rules[-12:]
 
 
 def _pending_parent_input(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -508,6 +634,8 @@ def _wait_for_parent_input_response(
 
 def _make_parent_input_callback(state: Dict[str, Any], source: str):
     async def _callback(question: str, options: List[Dict[str, str]]) -> str:
+        if bool(state.get("cancel_requested")):
+            return "Error: Pipeline canceled by user"
         if not bool(state.get("allow_parent_input")):
             return "Error: Parent input is disabled for this run"
         normalized_options: List[Dict[str, str]] = []
@@ -683,6 +811,185 @@ def _extract_ghidra_program_metadata(text: str) -> Dict[str, str]:
     return metadata
 
 
+def _payload_nested_value(payload: Dict[str, Any], *keys: str) -> Any:
+    current: Any = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def apply_automation_payload_to_state(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    shared = state.setdefault("shared_state", _new_shared_state())
+    normalized_payload = _json_safe(payload)
+    shared["automation_trigger_payload"] = normalized_payload
+    shared["automation_trigger_source"] = str(payload.get("source") or "").strip()
+    shared["automation_program_key"] = str(
+        payload.get("automation_program_key")
+        or payload.get("program_key")
+        or payload.get("ghidra_project_path")
+        or payload.get("executable_path")
+        or payload.get("program_name")
+        or ""
+    ).strip()
+    shared["automation_analysis_token"] = str(
+        payload.get("analysis_token")
+        or payload.get("automation_signature")
+        or payload.get("analysis_completed_at_epoch_ms")
+        or ""
+    ).strip()
+    shared["automation_rerun_reason"] = str(
+        payload.get("rerun_reason")
+        or payload.get("trigger_reason")
+        or ""
+    ).strip()
+
+    candidate_path = _validate_existing_sample_path(
+        str(
+            payload.get("executable_path")
+            or _payload_nested_value(payload, "program_info", "program", "executablePath")
+            or ""
+        )
+    )
+    candidate_md5 = _normalize_digest(
+        str(
+            payload.get("executable_md5")
+            or _payload_nested_value(payload, "program_info", "program", "executableMD5")
+            or ""
+        ),
+        32,
+    )
+    candidate_sha256 = _normalize_digest(
+        str(
+            payload.get("executable_sha256")
+            or _payload_nested_value(payload, "program_info", "program", "executableSHA256")
+            or ""
+        ),
+        64,
+    )
+    candidate_image_base = str(
+        payload.get("image_base")
+        or _payload_nested_value(payload, "program_info", "program", "imageBase")
+        or ""
+    ).strip()
+
+    previous_path = shared.get("validated_sample_path")
+    if candidate_path:
+        if previous_path and previous_path != candidate_path:
+            _clear_validated_sample_metadata(shared)
+        shared["validated_sample_path"] = candidate_path
+        shared["validated_sample_path_source"] = "automation_payload"
+    if candidate_md5:
+        shared["validated_sample_md5"] = candidate_md5
+        shared["validated_sample_metadata_source"] = "automation_payload"
+    if candidate_sha256:
+        shared["validated_sample_sha256"] = candidate_sha256
+        shared["validated_sample_metadata_source"] = "automation_payload"
+    if candidate_image_base:
+        shared["validated_sample_image_base"] = candidate_image_base
+        shared["validated_sample_metadata_source"] = "automation_payload"
+
+    shared["automation_bootstrap_metadata"] = {
+        "program_name": str(
+            payload.get("program_name") or _payload_nested_value(payload, "program_info", "program", "name") or ""
+        ).strip(),
+        "ghidra_project_path": str(
+            payload.get("ghidra_project_path")
+            or _payload_nested_value(payload, "program_info", "program", "ghidraProjectPath")
+            or ""
+        ).strip(),
+        "language": str(
+            payload.get("language") or _payload_nested_value(payload, "program_info", "program", "language") or ""
+        ).strip(),
+        "compiler": str(
+            payload.get("compiler") or _payload_nested_value(payload, "program_info", "program", "compiler") or ""
+        ).strip(),
+        "image_base": candidate_image_base,
+        "entry_point": str(payload.get("entry_point") or "").strip(),
+        "section_summary": list(payload.get("section_summary") or []),
+        "import_summary": list(payload.get("import_summary") or []),
+        "export_summary": list(payload.get("export_summary") or []),
+        "root_functions": list(payload.get("root_functions") or []),
+        "counts": payload.get("counts") if isinstance(payload.get("counts"), dict) else {},
+        "auto_analysis_warnings": list(payload.get("auto_analysis_warnings") or []),
+        "auto_analysis_failures": list(payload.get("auto_analysis_failures") or []),
+    }
+    _store_ui_snapshot(state=state)
+
+
+def record_automation_event(
+    state: Dict[str, Any],
+    *,
+    status: str,
+    source: str = "",
+    program_key: str = "",
+    reason: str = "",
+    detail: str = "",
+) -> None:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    normalized_status = str(status or "").strip() or "unknown"
+    normalized_source = str(source or shared.get("automation_trigger_source") or "").strip()
+    normalized_program_key = str(program_key or shared.get("automation_program_key") or "").strip()
+    normalized_reason = str(reason or "").strip()
+    normalized_detail = str(detail or "").strip()
+
+    shared["automation_status"] = normalized_status
+    shared["automation_last_source"] = normalized_source
+    shared["automation_last_program_key"] = normalized_program_key
+    shared["automation_last_reason"] = normalized_reason
+    shared["automation_last_detail"] = normalized_detail
+    shared["automation_last_at"] = timestamp
+
+    history = shared.setdefault("automation_history", [])
+    history.append(
+        {
+            "at": timestamp,
+            "status": normalized_status,
+            "source": normalized_source,
+            "program_key": normalized_program_key,
+            "reason": normalized_reason,
+            "detail": normalized_detail,
+        }
+    )
+    if len(history) > 8:
+        shared["automation_history"] = history[-8:]
+
+    _store_ui_snapshot(state=state)
+
+
+def preserved_automation_shared_state(shared: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(shared, dict):
+        return {}
+    keys = (
+        "automation_trigger_payload",
+        "automation_trigger_source",
+        "automation_program_key",
+        "automation_analysis_token",
+        "automation_rerun_reason",
+        "automation_bootstrap_metadata",
+        "automation_status",
+        "automation_last_reason",
+        "automation_last_source",
+        "automation_last_program_key",
+        "automation_last_at",
+        "automation_last_detail",
+        "automation_history",
+        "auto_triage_status",
+        "auto_triage_last_error",
+        "auto_triage_last_run_at",
+    )
+    preserved: Dict[str, Any] = {}
+    for key in keys:
+        if key in shared:
+            preserved[key] = _json_safe(shared.get(key))
+    return preserved
+
+
 def _clear_validated_sample_metadata(shared: Dict[str, Any]) -> None:
     shared["validated_sample_md5"] = ""
     shared["validated_sample_sha256"] = ""
@@ -775,7 +1082,14 @@ def _new_shared_state() -> Dict[str, Any]:
         "validated_sample_image_base": "",
         "validated_sample_metadata_source": "",
         "planned_work_items": [],
+        "planned_work_item_status": {},
         "planned_work_items_parse_error": "",
+        "ghidra_change_proposals": [],
+        "ghidra_change_draft_proposals": [],
+        "ghidra_change_queue_finalized": False,
+        "ghidra_change_parse_error": "",
+        "generated_yara_rules": [],
+        "generated_yara_rule_parse_error": "",
         "pipeline_stage_outputs": [],
         "pipeline_stage_progress": [],
         "available_static_tools": [],
@@ -783,6 +1097,29 @@ def _new_shared_state() -> Dict[str, Any]:
         "available_sandbox_tools": [],
         "supports_dynamic_analysis": False,
         "supports_sandboxed_execution": False,
+        "automation_trigger_payload": {},
+        "automation_trigger_source": "",
+        "automation_program_key": "",
+        "automation_analysis_token": "",
+        "automation_rerun_reason": "",
+        "automation_bootstrap_metadata": {},
+        "automation_status": "",
+        "automation_last_reason": "",
+        "automation_last_source": "",
+        "automation_last_program_key": "",
+        "automation_last_at": "",
+        "automation_last_detail": "",
+        "automation_history": [],
+        "auto_triage_pre_sweeps": {},
+        "auto_triage_pre_sweep_summary": "",
+        "auto_triage_report": "",
+        "auto_triage_context_summary": "",
+        "auto_triage_status": "",
+        "auto_triage_last_error": "",
+        "auto_triage_last_run_at": "",
+        "auto_triage_sample_path": "",
+        "auto_triage_sample_sha256": "",
+        "auto_triage_runs": [],
         "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": "default",
         "validation_retry_count": 0,
@@ -815,6 +1152,8 @@ _UI_SNAPSHOT: Dict[str, Any] = {
         "_tool_log_seen_keys": {},
         "tool_result_cache": {},
         "status_log": "",
+        "active_run_id": "",
+        "cancel_requested": False,
         "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
         "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
@@ -828,10 +1167,12 @@ _UI_SNAPSHOT: Dict[str, Any] = {
     "clear_visible": True,
     "todo_visible": False,
     "tool_log_visible": False,
+    "snapshot_version": 0,
 }
 
 
 def _snapshot_state_default() -> Dict[str, Any]:
+    default_pipeline_selector_value = "dynamic" if DEEP_AGENT_AUTO_SELECT_PIPELINE else DEEP_AGENT_PIPELINE_NAME
     return {
         "role_histories": {},
         "tool_log": "",
@@ -839,9 +1180,14 @@ def _snapshot_state_default() -> Dict[str, Any]:
         "_tool_log_seen_keys": {},
         "tool_result_cache": {},
         "status_log": "",
+        "active_run_id": "",
+        "cancel_requested": False,
         "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
         "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
+        "deep_agent_auto_select_pipeline": DEEP_AGENT_AUTO_SELECT_PIPELINE,
+        "deep_agent_architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,
+        "deep_agent_pipeline_name": default_pipeline_selector_value,
         "pending_parent_input": _empty_parent_input(),
         "shared_state": _new_shared_state(),
     }
@@ -857,8 +1203,19 @@ def _store_ui_snapshot(
     clear_visible: Optional[bool] = None,
     todo_visible: Optional[bool] = None,
     tool_log_visible: Optional[bool] = None,
+    force: bool = False,
 ) -> None:
     with _UI_SNAPSHOT_LOCK:
+        current_state = _UI_SNAPSHOT.get("state") or {}
+        current_run_id = str((current_state or {}).get("active_run_id") or "").strip()
+        incoming_run_id = str((state or {}).get("active_run_id") or "").strip()
+        if (
+            not force
+            and current_run_id
+            and incoming_run_id
+            and current_run_id != incoming_run_id
+        ):
+            return
         if chat_history is not None:
             _UI_SNAPSHOT["chat_history"] = chat_history
         if state is not None:
@@ -876,6 +1233,7 @@ def _store_ui_snapshot(
             _UI_SNAPSHOT["todo_visible"] = todo_visible
         if tool_log_visible is not None:
             _UI_SNAPSHOT["tool_log_visible"] = tool_log_visible
+        _UI_SNAPSHOT["snapshot_version"] = int(_UI_SNAPSHOT.get("snapshot_version") or 0) + 1
 
 
 def _get_ui_snapshot() -> Dict[str, Any]:
