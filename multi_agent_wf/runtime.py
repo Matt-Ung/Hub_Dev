@@ -44,6 +44,7 @@ from .config import (
     GHIDRA_CHANGE_PROPOSALS_START,
     MAX_TOOL_RESULT_CACHE_ENTRIES,
     MAX_VALIDATION_REPLAN_RETRIES,
+    MCP_SERVER_MANIFEST_PATH,
     OPENAI_MODEL_ID,
     PATH_HANDOFF_LINE_PREFIX,
     PIPELINE_STAGE_MANAGER_PROMPTS,
@@ -147,7 +148,7 @@ def partition_toolsets(toolsets: List[MCPServerStdio]) -> Tuple[List[MCPServerSt
 
     for s in toolsets:
         sid = (s.id or "").lower()
-        if any(k in sid for k in ["ghidra", "string", "floss", "hashdb", "capa", "binwalk", "upx", "yara"]):
+        if any(k in sid for k in ["ghidra", "string", "floss", "hashdb", "capa", "binwalk", "upx", "yara", "modelgateway", "altmodel", "inference", "artifact"]):
             static_tools.append(s)
         elif any(k in sid for k in ["vm", "procmon", "wireshark", "sandbox", "run", "exec"]):
             dynamic_tools.append(s)
@@ -1103,6 +1104,7 @@ def build_stage_prompt(
                 [
                     "- Treat the deterministic pre-sweep bundle as already collected evidence.",
                     "- Plan only the smallest follow-on work needed to synthesize or clarify program purpose, key control-flow, capabilities, obfuscation, packed-binary indicators, known-malware context, hashed-API opportunities, and naming/type opportunities from that bundle.",
+                    "- If the bundle includes capa-derived analysis leads or matched capability rules, convert the strongest ones into bounded work items with explicit evidence targets instead of leaving them as background context.",
                     "- Do not create work items that merely repeat the same bootstrap sweeps unless a sweep explicitly failed or the prior result was insufficient for the user-facing triage.",
                     "- If the pre-sweep bundle suggests likely packing, unpacking opportunities, meaningful function renames, variable renames, local type improvements, or candidate struct definitions, plan those as bounded follow-on items rather than leaving them implicit.",
                 ]
@@ -1112,9 +1114,11 @@ def build_stage_prompt(
                 [
                     "- Use the deterministic pre-sweep bundle and automation bootstrap metadata as the primary starting point.",
                     "- Do not rerun full strings/FLOSS/capa/YARA/binwalk sweeps unless the stage context shows that one of them failed, was unavailable, or is materially insufficient.",
+                    "- Treat capa-derived analysis leads as concrete hypotheses to confirm or narrow in code, not as mere labels to repeat back.",
                     "- Explicitly assess whether the sample appears packed, whether any unpacked output from the deterministic stage materially changes interpretation, whether the sample seems previously encountered from the available hash/intel context, and whether hashed APIs or encoded strings deserve follow-up.",
                     "- If you identify useful rename/type suggestions, candidate struct declarations, function names, or variable names, keep them evidence-backed and proposal-first.",
                     "- When the evidence is strong enough to justify analyst review, emit those naming/type/struct improvements as approval-queue proposals rather than burying them in prose.",
+                    "- If you emit a YARA proposal, anchor it to the distinct combination of behaviors, strings, constants, imports, or decode logic confirmed during analysis rather than generic PE/CRT/startup patterns.",
                 ]
             )
         elif stage_kind == "reporter":
@@ -1124,6 +1128,7 @@ def build_stage_prompt(
                     "- Keep the report analyst-facing, concise, and forward-looking about the highest-value next pivots.",
                     "- If the run yielded strong, bounded rename/type/struct suggestions, finalize them into approval-ready Ghidra proposals instead of dropping them.",
                     "- If the run yielded a high-signal detection idea with stable strings/imports/behavioral pivots, emit a concise YARA rule proposal block so the host can write it through yaraMCP.",
+                    "- Do not propose a YARA rule that mainly keys on generic starter code, DOS stub text, CRT/runtime scaffolding, or other broad compiler boilerplate.",
                 ]
             )
         if auto_triage_pre_sweep_summary:
@@ -1254,6 +1259,8 @@ def build_stage_prompt(
                 "- The JSON payload must be an array of rule proposal objects.",
                 "- Rule proposal keys should include: `id`, `summary`, `filename`, `rule_text`, and `rationale`.",
                 "- Only emit rules when they are specific, evidence-backed, and likely useful. Prefer no rule over a weak or overbroad rule.",
+                "- Distinct rules should key on unique combinations of decoded strings, constants, imports, structural markers, or behavior-specific pivots confirmed during analysis.",
+                "- Do not emit rules that mainly match DOS stub text, generic CRT/startup scaffolding, broad PE header checks, or other compiler boilerplate.",
                 "- Do not emit placeholder or pseudo-YARA syntax.",
             ]
         )
@@ -1722,6 +1729,50 @@ def _compact_capa_summary(parsed: Any) -> Dict[str, Any]:
     }
 
 
+def _derive_capa_analysis_leads(capa_section: Dict[str, Any]) -> List[Dict[str, str]]:
+    rules = [str(item).strip() for item in (capa_section.get("top_rules") or []) if str(item).strip()]
+    if not rules:
+        return []
+
+    leads: List[Dict[str, str]] = []
+    seen_focus: set[str] = set()
+    heuristic_map = [
+        (("packed", "packer", "upx", "compressed"), "packing", "Validate packer behavior, unpacking opportunities, and whether unpacked content changes interpretation."),
+        (("resolve function", "runtime linking", "hash", "getprocaddress", "loadlibrary"), "api_resolution", "Trace the concrete resolver path, hashed APIs, or runtime-linked imports behind the rule match."),
+        (("screenshot", "dib", "bitblt", "capture"), "screen_capture", "Confirm screenshot or display-capture behavior and recover output format and filenames."),
+        (("terminate process", "openprocess", "process", "kill"), "process_manipulation", "Verify process-targeting behavior, required arguments, and the real call chain to the termination path."),
+        (("encrypt", "decrypt", "decode", "xor", "base64"), "encoding_or_crypto", "Recover encoded or encrypted material and identify the decode/decrypt entry points."),
+        (("registry", "service", "autorun", "startup"), "persistence", "Check for persistence-related writes, keys, or service-install flows tied to the rule."),
+        (("http", "dns", "socket", "connect", "download", "upload"), "networking", "Find the concrete network setup logic, endpoints, and protocol artifacts behind the capability."),
+        (("debugger", "sandbox", "vm", "anti-analysis"), "anti_analysis", "Corroborate anti-analysis logic with the controlling branches, strings, and API calls."),
+        (("inject", "shellcode", "thread", "memory permission"), "code_injection", "Locate the real allocation/write/execute path and identify what payload or region is being staged."),
+        (("file", "writefile", "createfile", "drop"), "file_activity", "Confirm file-system side effects, written filenames/paths, and whether the file is a payload or an output artifact."),
+    ]
+
+    for rule_name in rules[:10]:
+        lower = rule_name.lower()
+        matched = False
+        for tokens, focus, follow_up in heuristic_map:
+            if focus in seen_focus:
+                continue
+            if any(token in lower for token in tokens):
+                leads.append({"rule": rule_name, "focus": focus, "follow_up": follow_up})
+                seen_focus.add(focus)
+                matched = True
+                break
+        if not matched and rule_name not in {lead["rule"] for lead in leads}:
+            leads.append(
+                {
+                    "rule": rule_name,
+                    "focus": "capability_follow_up",
+                    "follow_up": "Use this capa match as a bounded lead and confirm the concrete implementation path in Ghidra before treating it as a core finding.",
+                }
+            )
+        if len(leads) >= 6:
+            break
+    return leads
+
+
 def _compact_yara_summary(parsed: Any) -> Dict[str, Any]:
     if not isinstance(parsed, dict):
         return {"available": False, "error": "Unable to parse YARA output."}
@@ -1885,6 +1936,19 @@ def _build_auto_triage_presweep_summary(bundle: Dict[str, Any]) -> str:
                 summary_lines.append(f"- {label}: {compact}")
         else:
             summary_lines.append(f"- {label}: {section}")
+
+    capa_leads = list(bundle.get("capa_analysis_leads") or [])
+    if capa_leads:
+        summary_lines.append("- capa_analysis_leads:")
+        for item in capa_leads[:6]:
+            if not isinstance(item, dict):
+                continue
+            rule_name = str(item.get("rule") or "").strip()
+            focus = str(item.get("focus") or "").strip()
+            follow_up = str(item.get("follow_up") or "").strip()
+            bits = [bit for bit in [rule_name, f"focus={focus}" if focus else "", follow_up] if bit]
+            if bits:
+                summary_lines.append(f"  - {' | '.join(bits)}")
 
     return "\n".join(summary_lines).strip()
 
@@ -2104,6 +2168,9 @@ def run_deterministic_presweeps_sync(runtime: "MultiAgentRuntime", state: Dict[s
             },
         )
         bundle["capa"] = _compact_capa_summary(_parse_jsonish_tool_result(capa_result.get("result")))
+        bundle["capa_analysis_leads"] = _derive_capa_analysis_leads(
+            bundle.get("capa") if isinstance(bundle.get("capa"), dict) else {}
+        )
 
         binwalk_result = _direct_mcp_tool_call_sync(
             runtime,
@@ -2175,6 +2242,7 @@ def run_deterministic_presweeps_sync(runtime: "MultiAgentRuntime", state: Dict[s
             "available": False,
             "error": "Validated sample path was unavailable for capa sweep.",
         }
+        bundle["capa_analysis_leads"] = []
         bundle["entropy_packer"] = {
             "available": False,
             "error": "Validated sample path was unavailable for binwalk entropy sweep.",
@@ -2666,7 +2734,7 @@ def _get_runtime_shared_assets_sync() -> RuntimeSharedAssets:
     if _RUNTIME_SHARED_ASSETS is not None:
         return _RUNTIME_SHARED_ASSETS
 
-    toolsets = load_mcp_servers(str(REPO_ROOT / "MCPServers" / "servers.json"))
+    toolsets = load_mcp_servers(str(MCP_SERVER_MANIFEST_PATH))
     static_tools, dynamic_tools = partition_toolsets(toolsets)
     skill_directories = _build_skill_directories()
     deep_backend = _build_deep_backend()

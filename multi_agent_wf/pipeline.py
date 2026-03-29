@@ -62,6 +62,67 @@ class PipelineCancelled(RuntimeError):
     pass
 
 
+_GENERIC_YARA_STRINGS = {
+    "this program cannot be run in dos mode",
+    ".text",
+    ".rdata",
+    ".data",
+    "rich",
+    "mz",
+    "pe",
+    "error",
+    "help",
+}
+
+
+def _extract_yara_section(rule_text: str, section_name: str) -> str:
+    pattern = re.compile(
+        rf"(?ims)^\s*{re.escape(section_name)}\s*:\s*(.*?)(?=^\s*(?:meta|strings|condition)\s*:|\Z)"
+    )
+    match = pattern.search(str(rule_text or ""))
+    return match.group(1) if match else ""
+
+
+def _assess_yara_rule_specificity(rule_text: str) -> Tuple[bool, str]:
+    text = str(rule_text or "")
+    lower = text.lower()
+    if "condition:" not in lower:
+        return False, "rule is missing a condition section"
+
+    strings_body = _extract_yara_section(text, "strings")
+    condition_body = _extract_yara_section(text, "condition").lower()
+    quoted_strings = [match.group(1) for match in re.finditer(r'"((?:\\.|[^"\\])*)"', strings_body)]
+    hex_patterns = re.findall(r"\{[^}]+\}", strings_body)
+    import_calls = re.findall(r"pe\.(?:imports?|imphash)\s*\(", condition_body)
+
+    meaningful_strings = []
+    for raw_value in quoted_strings:
+        value = raw_value.encode("utf-8", "ignore").decode("unicode_escape", "ignore").strip().lower()
+        if len(value) < 5:
+            continue
+        if value in _GENERIC_YARA_STRINGS:
+            continue
+        if "dos mode" in value:
+            continue
+        meaningful_strings.append(value)
+
+    generic_condition_markers = [
+        "uint16(0) == 0x5a4d",
+        "uint32(0) == 0x464c457f",
+        "pe.number_of_sections",
+        "pe.entry_point",
+        "pe.machine",
+    ]
+    generic_condition_hits = sum(1 for marker in generic_condition_markers if marker in condition_body)
+    signal_count = len(meaningful_strings) + len(hex_patterns) + len(import_calls)
+
+    if signal_count < 2:
+        return False, "rule is too generic; expected at least two distinct behavior anchors such as unique strings, hex patterns, or import-based conditions"
+    if generic_condition_hits and signal_count <= generic_condition_hits:
+        return False, "rule is dominated by generic PE/startup checks rather than sample-specific behavior anchors"
+    return True, ""
+
+
 def _check_cancel_requested(state: Dict[str, Any], *, location: str = "") -> None:
     if bool((state or {}).get("cancel_requested")):
         detail = f" ({location})" if location else ""
@@ -788,6 +849,15 @@ def update_generated_yara_rules_from_stage_output(
             record["status"] = "failed"
             record["error"] = "YARA MCP server is not configured."
             existing.append(record)
+            continue
+
+        specificity_ok, specificity_error = _assess_yara_rule_specificity(str(proposal.get("rule_text") or ""))
+        if not specificity_ok:
+            record["status"] = "failed"
+            record["error"] = specificity_error
+            append_status(state, f"YARA rule rejected from {stage_name}: {specificity_error}")
+            existing.append(record)
+            existing_signatures.add(signature)
             continue
 
         write_result = _direct_mcp_tool_call_sync(

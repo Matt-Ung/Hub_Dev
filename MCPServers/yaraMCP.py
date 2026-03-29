@@ -21,13 +21,24 @@ from typing import Any, Optional
 
 from fastmcp import FastMCP
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from artifact_paths import (
+    get_base_yara_rules_dir,
+    get_agent_artifact_dir,
+    list_agent_artifact_dirs,
+)
+
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform.startswith("win")
 _DRIVE_RE = re.compile(r"^/([A-Za-z]):/")
 _MNT_RE = re.compile(r"^/mnt/([A-Za-z])/(.*)")
 
-DEFAULT_RULES_DIR = Path(os.environ.get("YARA_RULES_DIR", str(Path.cwd() / "MCPServers" / "yara_rules")))
+BASE_RULES_DIR = get_base_yara_rules_dir()
+GENERATED_RULES_DIR = get_agent_artifact_dir("yara")
 RULE_NAME_RE = re.compile(r"(?mi)^\s*rule\s+([A-Za-z_][A-Za-z0-9_]*)\b")
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 mcp = FastMCP(
@@ -115,22 +126,53 @@ def _parse_yara_output(output: str) -> list[dict[str, Any]]:
     return matches
 
 
-def _resolve_rules_path(rules_path: Optional[str]) -> str:
+def _iter_rule_files(rules_dir: Path) -> list[Path]:
+    files: list[Path] = []
+    if not rules_dir.is_dir():
+        return files
+    for pattern in ("*.yar", "*.yara"):
+        for path in sorted(rules_dir.rglob(pattern)):
+            if path.name.lower() == "index.yar":
+                continue
+            files.append(path)
+    return files
+
+
+def _build_composite_rules_file(rule_paths: list[Path]) -> str:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yar", delete=False, encoding="utf-8") as handle:
+        for path in rule_paths:
+            handle.write(f"// source: {path}\n")
+            handle.write(path.read_text(encoding="utf-8", errors="replace"))
+            handle.write("\n\n")
+        return handle.name
+
+
+def _resolve_rules_path(rules_path: Optional[str]) -> tuple[str, list[str], dict[str, Any]]:
     if rules_path:
-        return ensure_existing_path(rules_path)
+        return ensure_existing_path(rules_path), [], {"source": "explicit"}
 
-    if DEFAULT_RULES_DIR.is_dir():
-        index_file = DEFAULT_RULES_DIR / "index.yar"
-        if index_file.exists():
-            return str(index_file)
-        for suffix in ("*.yar", "*.yara"):
-            first = next(DEFAULT_RULES_DIR.rglob(suffix), None)
-            if first is not None:
-                return str(first)
+    base_rule_files = _iter_rule_files(BASE_RULES_DIR)
+    generated_rule_files = _iter_rule_files(GENERATED_RULES_DIR)
+    all_rule_files = [*base_rule_files, *generated_rule_files]
+    if not all_rule_files:
+        raise FileNotFoundError(
+            "no YARA rules found. Provide rules_path or create rules under "
+            f"{BASE_RULES_DIR} or {GENERATED_RULES_DIR}"
+        )
 
-    raise FileNotFoundError(
-        f"no YARA rules found. Provide rules_path or create rules under {DEFAULT_RULES_DIR}"
-    )
+    metadata = {
+        "source": "default_combined",
+        "base_rules_dir": str(BASE_RULES_DIR),
+        "generated_rules_dir": str(GENERATED_RULES_DIR),
+        "base_rule_count": len(base_rule_files),
+        "generated_rule_count": len(generated_rule_files),
+        "total_rule_count": len(all_rule_files),
+    }
+    if len(all_rule_files) == 1:
+        return str(all_rule_files[0]), [], metadata
+
+    composite_path = _build_composite_rules_file(all_rule_files)
+    return composite_path, [composite_path], metadata
 
 
 def _extract_rule_name(rule_text: str) -> str:
@@ -259,17 +301,23 @@ def yaraScan(
 ) -> dict[str, Any]:
     """Scan a file or directory with YARA rules."""
     try:
-        rules_arg = _resolve_rules_path(rules_path.strip() or None)
+        rules_arg, cleanup_paths, rules_meta = _resolve_rules_path(rules_path.strip() or None)
         return _run_yara_scan(
             target_path=target_path,
             rules_arg=rules_arg,
             recursive=recursive,
             timeout_sec=timeout_sec,
             show_strings=show_strings,
-        )
+        ) | rules_meta
     except Exception as e:
         logger.exception("yaraScan failed")
         return {"ok": False, "error": str(e)}
+    finally:
+        for temp_path in locals().get("cleanup_paths", []):
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 @mcp.tool()
@@ -310,20 +358,31 @@ def yaraScanInline(
 @mcp.tool()
 def yaraListRules(max_rules: int = 200) -> dict[str, Any]:
     """List available rule files under the configured rules directory."""
+    entries: list[dict[str, str]] = []
     rules: list[str] = []
-    if DEFAULT_RULES_DIR.is_dir():
-        for pattern in ("*.yar", "*.yara"):
-            for path in DEFAULT_RULES_DIR.rglob(pattern):
-                rules.append(str(path.relative_to(DEFAULT_RULES_DIR)))
-                if len(rules) >= max_rules:
-                    break
-            if len(rules) >= max_rules:
+    for source_name, rules_dir in (("base", BASE_RULES_DIR), ("generated", GENERATED_RULES_DIR)):
+        for path in _iter_rule_files(rules_dir):
+            relative_path = str(path.relative_to(rules_dir))
+            entries.append(
+                {
+                    "source": source_name,
+                    "relative_path": relative_path,
+                    "absolute_path": str(path),
+                }
+            )
+            rules.append(f"{source_name}:{relative_path}")
+            if len(entries) >= max_rules:
                 break
+        if len(entries) >= max_rules:
+            break
     return {
         "ok": True,
-        "rules_dir": str(DEFAULT_RULES_DIR),
+        "rules_dir": str(BASE_RULES_DIR),
+        "generated_rules_dir": str(GENERATED_RULES_DIR),
+        "artifact_dirs": list_agent_artifact_dirs(),
         "rules": sorted(rules),
-        "count": len(rules),
+        "rule_entries": entries,
+        "count": len(entries),
     }
 
 
@@ -343,7 +402,7 @@ def yaraWriteRule(
     try:
         rule_name = _extract_rule_name(text)
         normalized_name = _normalize_rule_filename(filename, rule_name)
-        rules_dir = DEFAULT_RULES_DIR.resolve()
+        rules_dir = GENERATED_RULES_DIR.resolve()
         rules_dir.mkdir(parents=True, exist_ok=True)
         rule_path = rules_dir / normalized_name
         existed_before_write = rule_path.exists()
@@ -377,6 +436,7 @@ def yaraWriteRule(
             "rule_name": rule_name,
             "rule_path": str(rule_path),
             "rules_dir": str(rules_dir),
+            "base_rules_dir": str(BASE_RULES_DIR),
             "index_path": str(index_path),
             "overwrote_existing": existed_before_write and overwrite,
             "validated": bool(validation.get("validated")),
@@ -392,7 +452,15 @@ def yaraWriteRule(
 @mcp.tool()
 def yaraHelp(timeout_sec: int = 5) -> str:
     """Return `yara --help` output."""
-    return run_help_command("yara", timeout_sec=timeout_sec)
+    dirs = list_agent_artifact_dirs()
+    return (
+        run_help_command("yara", timeout_sec=timeout_sec)
+        + "\n\n"
+        + "Configured rule directories:\n"
+        + f"- base rules: {BASE_RULES_DIR}\n"
+        + f"- generated rules: {GENERATED_RULES_DIR}\n"
+        + f"- artifact root: {dirs['root']}"
+    )
 
 
 def main() -> None:

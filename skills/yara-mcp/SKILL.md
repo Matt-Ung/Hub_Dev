@@ -1,6 +1,6 @@
 ---
 name: yara-mcp
-description: Use when a task needs the local YARA MCP tools `yaraScan`, `yaraScanInline`, `yaraWriteRule`, `yaraListRules`, or `yaraHelp`, including choosing whether to scan with a saved rule file, inline rule text, or persist a rule into the repository rule directory.
+description: Use when a task needs the local YARA MCP tools `yaraScan`, `yaraScanInline`, `yaraWriteRule`, `yaraListRules`, or `yaraHelp`, including choosing whether to scan with a saved rule file, inline rule text, or persist a rule into the standardized generated-artifact YARA directory.
 ---
 
 # YARA MCP
@@ -19,14 +19,14 @@ Use this skill for structured YARA scanning through the local MCP server.
 
 - Use `yaraScan` when you already have a saved `.yar` or `.yara` rule file.
 - Use `yaraScanInline` for one-off rule text that should not be persisted.
-- Use `yaraWriteRule` when you want to persist a rule into the repository rule directory and make it available to default YARA scans.
-- Use `yaraListRules` to inspect the current rule directory.
+- Use `yaraWriteRule` when you want to persist a rule into the standardized generated-artifact YARA directory and make it available to default YARA scans.
+- Use `yaraListRules` to inspect both the base YARA rules and the generated YARA rules.
 - Use `yaraHelp` when you need raw CLI help output.
 
 ## Argument Guidance
 
 - `target_path`: file or directory to scan.
-- `rules_path`: optional saved rule file; omit it to use the default rule directory.
+- `rules_path`: optional saved rule file; omit it to use the default combined base-plus-generated rule set.
 - `recursive`: mainly matters for directory targets.
 - `show_strings=True`: include string match details when the task needs them.
 - `filename`: optional simple file name for `yaraWriteRule`; otherwise the first rule name is used.
@@ -34,5 +34,6 @@ Use this skill for structured YARA scanning through the local MCP server.
 
 ## Notes
 
-- `yaraWriteRule` refreshes `index.yar`, so default rule-directory scans can pick up newly written rules.
+- Base rules still live under the configured `YARA_RULES_DIR`, while generated rules default to `AGENT_ARTIFACT_DIR/yara`.
+- `yaraWriteRule` refreshes `index.yar` in the generated-rules directory, and default scans include both the base rules and generated rules when `rules_path` is omitted.
 - Prefer concise, specific rules over broad noisy conditions.

@@ -5,7 +5,7 @@
 | Folder | Purpose |
 |---|---|
 | `GhidraMCP/` | Java/Maven Ghidra extension that exposes analysis data over HTTP for the bridge MCP server. |
-| `MCPServers/` | Python FastMCP wrappers for capa, FLOSS, strings, YARA, HashDB, Ghidra bridge, binwalk, gitleaks, searchsploit, trivy. |
+| `MCPServers/` | Python FastMCP wrappers for capa, FLOSS, strings, YARA, HashDB, the Ghidra bridge, binwalk, UPX, bounded binary patching, alternate model backends, gitleaks, searchsploit, and trivy. |
 | `multi_agent_wf/` | Main deep-agent workflow app: config loading, runtime, pipeline orchestration, Gradio frontend, and JSON workflow configuration. |
 | `skills/` | Repo-local skill definitions that teach agents safe command construction and tool usage patterns. |
 | `Testing/Prototype_Test_Executables/` | Original regression sample corpus: 8 Windows PE samples covering static analysis, string obfuscation, API hashing, anti-debug, and control-flow flattening. Build scripts and Makefile included. |
@@ -42,6 +42,7 @@ pip install -r requirements.txt
 - `gradio` — Gradio UI in `frontend.py`.
 - `PyYAML`, `PyGithub` — used by maintenance scripts under `MCPServers/capa-rules/.github/scripts`.
 - External CLI tools (`capa`, `floss`, `strings`, `yara`, `binwalk`, `gitleaks`, `searchsploit`, `trivy`) must be on `PATH` separately — they are not Python packages.
+- The alternate-model MCP server uses `requests` only; no extra Python dependency is required beyond `requirements.txt`.
 
 ---
 
@@ -77,6 +78,20 @@ DEEP_SKILL_DIRS=USR_PATH/Hub_Dev/skills
 # Max tokens of context passed to the deep-agent backend per agent
 DEEP_CONTEXT_MAX_TOKENS=18000
 
+# ── Generated agent artifacts ─────────────────────────────────────────────────
+# Root for generated YARA rules, helper scripts, reports, and Ghidra-supporting files
+AGENT_ARTIFACT_DIR=./agent_artifacts
+
+# Optional per-type overrides. Leave blank to use AGENT_ARTIFACT_DIR/<type>
+AGENT_YARA_ARTIFACT_DIR=
+AGENT_PYTHON_ARTIFACT_DIR=
+AGENT_JAVA_ARTIFACT_DIR=
+AGENT_REPORT_ARTIFACT_DIR=
+AGENT_GHIDRA_ARTIFACT_DIR=
+
+# Base YARA corpus used for scan-time rule loading
+YARA_RULES_DIR=
+
 # ── Defaults (overridable from UI) ─────────────────────────────────────────────
 # easy | default | intermediate | strict
 DEFAULT_VALIDATOR_REVIEW_LEVEL=default
@@ -93,6 +108,34 @@ GRADIO_SERVER_PORT=7860
 AUTOMATION_TRIGGER_ENABLED=false
 AUTOMATION_TRIGGER_HOST=127.0.0.1
 AUTOMATION_TRIGGER_PORT=7861
+
+# ── Alternate model MCP defaults ───────────────────────────────────────────────
+# openai_compatible | huggingface_inference
+ALT_MODEL_DEFAULT_PROVIDER=openai_compatible
+
+# Global fallback alternate model and endpoint. Leave blank if you prefer
+# provider-specific values below.
+ALT_MODEL_DEFAULT_MODEL=
+ALT_MODEL_DEFAULT_ENDPOINT=
+
+# Generation defaults for alternate-model tool calls.
+ALT_MODEL_DEFAULT_TIMEOUT_SEC=90
+ALT_MODEL_DEFAULT_MAX_TOKENS=768
+ALT_MODEL_DEFAULT_TEMPERATURE=0.2
+ALT_MODEL_DEFAULT_TOP_P=1.0
+
+# Hugging Face hosted inference settings
+HF_MODEL_ID=
+HF_INFERENCE_ENDPOINT=
+HF_INFERENCE_API_TOKEN=
+
+# OpenAI-compatible inference settings for vLLM / llama.cpp / Runpod / similar
+OPENAI_COMPAT_MODEL_ID=
+OPENAI_COMPAT_BASE_URL=
+OPENAI_COMPAT_API_KEY=
+
+# Generic fallback token if you do not want to use provider-specific token vars
+ALT_MODEL_AUTH_TOKEN=
 ```
 
 **Validator review level effects:**
@@ -105,6 +148,16 @@ AUTOMATION_TRIGGER_PORT=7861
 - `none` — no shell access for agents; safest.
 - `ask` — agents can request shell access; a UI modal prompts you to approve each command.
 - `full` — agents execute shell commands without prompting.
+
+**Alternate model MCP notes:**
+- `openai_compatible` is the best fit for self-hosted vLLM, llama.cpp HTTP servers, or Runpod/OpenAI-compatible GPU deployments.
+- `huggingface_inference` is the best fit for Hugging Face hosted Inference API calls.
+- Provider-specific values override the generic `ALT_MODEL_DEFAULT_*` values when supplied.
+
+**Generated artifact path notes:**
+- `AGENT_ARTIFACT_DIR` is the shared root for agent-generated files.
+- If a per-type override is blank, the repo defaults to `AGENT_ARTIFACT_DIR/yara`, `python`, `java`, `reports`, and `ghidra`.
+- `YARA_RULES_DIR` remains the base rule corpus for scanning. Generated YARA rules are written into the generated-artifact YARA directory instead of the base corpus.
 
 ---
 
@@ -150,6 +203,32 @@ find yara-rules-community -type f \( -name '*.yar' -o -name '*.yara' \) -exec cp
 - `Neo23x0/signature-base` includes rules that use external LOKI/THOR variables. If plain `yara` reports undefined identifiers, remove or isolate those files.
 - Combining corpora introduces duplicate rule names. Start with the curated baseline, then add breadth once scans are stable.
 
+### Generated Agent Artifacts
+
+Generated helper files and generated YARA rules now use a standardized root instead of ad hoc tool-local paths.
+
+Default layout:
+
+```text
+agent_artifacts/
+  yara/
+  python/
+  java/
+  reports/
+  ghidra/
+```
+
+This is controlled by `artifact_paths.py` plus the `AGENT_ARTIFACT_DIR` / `AGENT_*_ARTIFACT_DIR` environment variables.
+
+Practical division:
+
+- `MCPServers/yara_rules/` or your configured `YARA_RULES_DIR` = curated base YARA corpus for scanning
+- `agent_artifacts/yara/` = generated YARA rules written by `yaraWriteRule(...)`
+- `agent_artifacts/python/` = Python helpers such as XOR decoders or custom unpackers
+- `agent_artifacts/java/` = Java helpers
+- `agent_artifacts/ghidra/` = Ghidra-supporting scripts or snippets
+- `agent_artifacts/reports/` = future reusable reports or note artifacts
+
 ---
 
 ## MCP Server Configuration
@@ -169,6 +248,154 @@ find yara-rules-community -type f \( -name '*.yar' -o -name '*.yara' \) -exec cp
 Server IDs containing `ghidra` are treated as requiring serial (non-concurrent) tool calls. Server IDs listed in the tool result cache allow-list will have their responses cached by the runtime.
 
 Script paths in `args` are resolved relative to the location of `servers.json`.
+
+### Ghidra MCP Fallback
+
+`MCPServers/bridge_mcp_ghidra.py` can now fall back to an artifact bundle when the live Ghidra plugin is unavailable.
+
+Relevant env vars:
+
+```dotenv
+GHIDRA_MCP_FALLBACK_MODE=artifact_if_unavailable
+GHIDRA_ARTIFACT_BUNDLE_DIR=USR_PATH/Hub_Dev/Testing/generated/experimental_analysis/<sample_slug>
+```
+
+Modes:
+
+- `live_only` — require live Ghidra. If the plugin is down or no program is loaded, `ghidramcp` returns the normal live-tool errors.
+- `artifact_if_unavailable` — use live Ghidra first, but fall back to the configured artifact bundle when the live bridge reports request-failed or no-program-loaded conditions.
+- `artifact_only` — skip the live bridge entirely and always serve from the artifact bundle.
+
+This keeps the `ghidramcp` server ID stable for the rest of the workflow. The main limitation is that artifact-backed mode is read-only: rename/comment/type mutation tools will return read-only errors instead of applying changes.
+
+### Alternate Model MCP
+
+`MCPServers/modelGatewayMCP.py` adds a model-tooling lane that is separate from the main agent model provider. This lets the agent call:
+
+- Hugging Face hosted models
+- self-hosted or remote OpenAI-compatible endpoints
+- GPU-hosted inference endpoints such as Runpod deployments that expose an OpenAI-compatible API
+
+Available tools:
+
+- `listAltModelBackends()`
+- `generateWithAltModel(...)`
+- `classifyWithAltModel(...)`
+- `compareModelOutputs(...)`
+- `recoverDecompilationWithAltModel(...)`
+
+Use this lane when you want:
+
+- a second opinion from an open-weight or specialized model
+- malware-family or style classification
+- comparison between two competing interpretations
+- decompiler cleanup, naming hints, or type suggestions inspired by neural decompilation work such as IDIOMS
+
+Do not treat alternate-model output as direct evidence. It should be cross-checked against Ghidra, strings, FLOSS, capa, imports, xrefs, and other concrete artifacts.
+
+Example configurations:
+
+```dotenv
+# Hugging Face hosted inference
+ALT_MODEL_DEFAULT_PROVIDER=huggingface_inference
+HF_MODEL_ID=bigcode/starcoder2-15b
+HF_INFERENCE_API_TOKEN=hf_xxx
+```
+
+```dotenv
+# Runpod / vLLM / OpenAI-compatible
+ALT_MODEL_DEFAULT_PROVIDER=openai_compatible
+OPENAI_COMPAT_MODEL_ID=Qwen/Qwen2.5-Coder-7B-Instruct
+OPENAI_COMPAT_BASE_URL=https://your-endpoint.example.com/v1
+OPENAI_COMPAT_API_KEY=sk-xxx
+```
+
+Example usage idea inside the agent workflow:
+
+- use normal Ghidra/static tools to extract a decompiled function and surrounding evidence
+- call `recoverDecompilationWithAltModel(...)` for better name/type hypotheses
+- validate or reject those suggestions against deterministic artifacts before turning them into findings or Ghidra change proposals
+
+### Agent Artifacts MCP
+
+`MCPServers/agentArtifactsMCP.py` provides a standardized write path for reusable helper files.
+
+Available tools:
+
+- `agentArtifactPaths()`
+- `writeTextArtifact(...)`
+- `writePythonArtifact(...)`
+- `writeJavaArtifact(...)`
+- `listAgentArtifacts(...)`
+- `agentArtifactHelp()`
+
+Use this lane when you want:
+
+- Python deobfuscation helpers
+- Java support utilities
+- Ghidra-supporting scripts
+- reusable report-like artifacts written to disk
+
+Example Python helper write:
+
+```python
+writePythonArtifact(
+    content=\"\"\"def xor_bytes(data: bytes, key: int) -> bytes:
+    return bytes(b ^ key for b in data)
+\"\"\",
+    filename="xor_helper.py",
+    subdir="labos",
+    description="Single-byte XOR helper derived from recovered logic.",
+)
+```
+
+Example generated YARA write:
+
+```python
+yaraWriteRule(
+    rule_text=\"\"\"rule labos_screen_capture {
+  strings:
+    $s1 = "Available Commands:"
+    $s2 = "Invalid command"
+  condition:
+    all of them
+}\"\"\",
+    filename="labos_screen_capture.yar",
+    overwrite=False,
+    validate=True,
+)
+```
+
+`yaraWriteRule(...)` now writes generated rules into the generated-artifact YARA directory while `yaraScan(...)` defaults to scanning both the base corpus and generated rules when `rules_path` is omitted.
+
+### Binary Patch MCP
+
+`MCPServers/binaryPatchMCP.py` adds a separate patch-emission lane for writing patched output binaries.
+
+Dependencies:
+
+```bash
+pip install lief keystone-engine
+```
+
+Available tools:
+
+- `binaryPatchHelp()`
+- `binaryPatchInspect(...)`
+- `binaryPatchBytes(...)`
+- `binaryPatchAssemble(...)`
+
+Use this lane when you want:
+
+- a copied patched binary written to disk
+- a short instruction patch assembled from text
+- a deterministic byte patch at a file offset, RVA, or VA
+
+Do not use this lane as a substitute for Ghidra analysis. The intended workflow is:
+
+- use Ghidra/static tools to decide what to patch
+- use `binaryPatchInspect(...)` if you need format/layout confirmation
+- use `binaryPatchBytes(...)` or `binaryPatchAssemble(...)` to emit a patched copy
 
 ---
 

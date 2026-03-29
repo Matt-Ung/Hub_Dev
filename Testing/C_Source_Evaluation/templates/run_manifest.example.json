@@ -1,0 +1,26 @@
+{
+  "run_id": "2026-03-29_source_eval_baseline_v1",
+  "benchmark_release": "c_source_eval_r1",
+  "prompt_versions": {
+    "agent": "c_source_eval_v1",
+    "judge": "c_source_eval_judge_v1"
+  },
+  "condition": {
+    "model": "openai:gpt-5-mini",
+    "architecture": "minimal",
+    "pipeline": "source_eval_manual",
+    "temperature": 0.2
+  },
+  "tasks": [
+    {
+      "program_id": "example_crc_parser",
+      "task_name": "program_behavior_summary",
+      "input_paths": [
+        "datasets/example_crc_parser/source/main.c",
+        "datasets/example_crc_parser/reference/annotations.json"
+      ],
+      "output_path": "runs/2026-03-29_source_eval_baseline_v1/outputs/example_crc_parser/program_behavior_summary/agent_output.md",
+      "judge_scorecard_path": "runs/2026-03-29_source_eval_baseline_v1/outputs/example_crc_parser/program_behavior_summary/judge_score.json"
+    }
+  ]
+}

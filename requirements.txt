@@ -6,6 +6,8 @@
 fastmcp
 mcp>=1.5.0
 requests>=2,<3
+lief
+keystone-engine
 
 # FLOSS/capa command dependencies used by MCP tools
 flare-floss

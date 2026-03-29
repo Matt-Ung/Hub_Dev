@@ -7,6 +7,8 @@ This plan covers two concerns:
 1. **Functional validation** — confirming the hub produces correct, evidence-grounded output across the test corpus.
 2. **Experimental evaluation** — quantifying how different system variables (agent topology, pipeline configuration, prompting strategy, tool access, model selection) affect analysis quality. This supports thesis findings.
 
+For a source-code-centric benchmark and rubric set, see `Testing/C_Source_Evaluation/README.md`.
+
 ---
 
 ## 2. System Overview (Current Architecture)

@@ -361,6 +361,9 @@ def _build_runtime_settings(
         "AUTOMATION_TRIGGER_HEALTH_PATH": (
             (env.get("AUTOMATION_TRIGGER_HEALTH_PATH") or "/automation/health").strip() or "/automation/health"
         ),
+        "MCP_SERVER_MANIFEST_PATH": str(
+            _resolve_repo_relative_path(env.get("MCP_SERVER_MANIFEST_PATH", "MCPServers/servers.json"))
+        ),
         "AUTOMATION_DEFAULT_PROMPT_TEMPLATE": env.get(
             "AUTOMATION_DEFAULT_PROMPT_TEMPLATE",
             (

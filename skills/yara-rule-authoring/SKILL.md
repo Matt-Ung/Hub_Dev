@@ -1,6 +1,6 @@
 ---
 name: yara-rule-authoring
-description: Use when writing, reviewing, or explaining YARA rule syntax, or when preparing `rule_text` for `yaraScanInline` or a future tool that saves YARA rules into the repository rule directory.
+description: Use when writing, reviewing, or explaining YARA rule syntax, or when preparing `rule_text` for `yaraScanInline` or `yaraWriteRule` so the rule can be saved into the standardized generated-artifact YARA directory.
 ---
 
 # YARA Rule Authoring
@@ -26,5 +26,5 @@ Read [references/quick-syntax.md](references/quick-syntax.md) for the skeletons 
 ## Repository Context
 
 - This repository already has `yaraScanInline(...)` for one-off scans.
-- This repository now also has `yaraWriteRule(...)` for persisting validated rule text into the YARA rules directory.
+- This repository now also has `yaraWriteRule(...)` for persisting validated rule text into the standardized generated-artifact YARA directory.
 - The same rule text should work for both inline scans and persistent rule files.

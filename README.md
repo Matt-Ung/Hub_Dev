@@ -1,5 +1,11 @@
 # Progress Log
 
+## Evaluation Docs
+
+- Binary- and workflow-oriented testing plan: `Testing/TESTING_PLAN.md`
+- Source-code evaluation framework: `Testing/C_Source_Evaluation/README.md`
+- Source-eval prompt library: `Testing/C_Source_Evaluation/prompt_library/`
+
 ## Work from Feb 5–11
 ### Gradio integration
 - Integrated Gradio (baseline wiring / UI scaffold)

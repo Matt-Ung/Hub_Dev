@@ -6,6 +6,16 @@
 # Required for all OpenAI model calls.
 OPENAI_API_KEY=""
 
+# Optional Hugging Face hosted inference token.
+HF_INFERENCE_API_TOKEN=""
+
+# Optional API key for OpenAI-compatible inference endpoints
+# such as vLLM, llama.cpp servers, or Runpod-hosted OpenAI-compatible deployments.
+OPENAI_COMPAT_API_KEY=""
+
+# Optional generic fallback token for alternate-model providers.
+ALT_MODEL_AUTH_TOKEN=""
+
 ## Recommended to Play Around With
 # false = agents cannot pause a run to ask you for clarification.
 # true  = agents may request one follow-up during a run; better for ambiguous requests, slower for uninterrupted runs.
@@ -53,6 +63,46 @@ DEEP_AGENT_PIPELINE_NAME=preflight_planner_workers_validators_reporter
 
 # Lightweight router model used only when auto pipeline selection needs an LLM decision.
 DEEP_AGENT_PIPELINE_ROUTER_MODEL=openai:gpt-4o-mini
+
+# Root directory for reusable generated artifacts such as generated YARA rules,
+# Python deobfuscation helpers, Java helpers, reports, and Ghidra-supporting scripts.
+# If left blank, the repo default is `Hub_Dev/agent_artifacts`.
+AGENT_ARTIFACT_DIR=./agent_artifacts
+
+# Optional per-type overrides. Leave blank to use `AGENT_ARTIFACT_DIR/<type>`.
+AGENT_YARA_ARTIFACT_DIR=
+AGENT_PYTHON_ARTIFACT_DIR=
+AGENT_JAVA_ARTIFACT_DIR=
+AGENT_REPORT_ARTIFACT_DIR=
+AGENT_GHIDRA_ARTIFACT_DIR=
+
+# Base YARA corpus directory used for scanning foundation rules.
+# Generated YARA rules are written to the generated-artifact YARA directory above.
+YARA_RULES_DIR=
+
+# Alternate-model MCP defaults.
+# Provider options:
+#   openai_compatible     = vLLM / llama.cpp / Runpod OpenAI-compatible / similar chat-completions APIs
+#   huggingface_inference = Hugging Face hosted Inference API or HF-style generation endpoints
+ALT_MODEL_DEFAULT_PROVIDER=openai_compatible
+
+# Default alternate-model target. Override per provider below if preferred.
+ALT_MODEL_DEFAULT_MODEL=
+
+# Default alternate-model endpoint. Leave blank to use provider-specific defaults.
+ALT_MODEL_DEFAULT_ENDPOINT=
+
+# Generation defaults for alternate-model MCP calls.
+ALT_MODEL_DEFAULT_TIMEOUT_SEC=90
+ALT_MODEL_DEFAULT_MAX_TOKENS=768
+ALT_MODEL_DEFAULT_TEMPERATURE=0.2
+ALT_MODEL_DEFAULT_TOP_P=1.0
+
+# Provider-specific defaults.
+HF_MODEL_ID=
+HF_INFERENCE_ENDPOINT=
+OPENAI_COMPAT_MODEL_ID=
+OPENAI_COMPAT_BASE_URL=
 
 # false = keep worker execution mostly serialized behind the stage manager.
 # true  = host can fan out independent worker items in parallel; faster, but higher TPM/cost and more backend contention.
@@ -128,6 +178,16 @@ AUTOMATION_TRIGGER_HOST=127.0.0.1
 AUTOMATION_TRIGGER_PORT=7861
 AUTOMATION_TRIGGER_PATH=/automation/ghidra-load
 AUTOMATION_TRIGGER_HEALTH_PATH=/automation/health
+
+# Ghidra MCP fallback behavior:
+#   live_only              = require live Ghidra plugin; return tool errors if unavailable
+#   artifact_if_unavailable = use live Ghidra when available, else fall back to an artifact bundle
+#   artifact_only          = always use the artifact bundle and skip live Ghidra
+GHIDRA_MCP_FALLBACK_MODE=live_only
+
+# Optional artifact bundle dir for ghidramcp fallback mode.
+# Point this at a directory containing ghidra_analysis.json from the headless/export workflow.
+GHIDRA_ARTIFACT_BUNDLE_DIR=
 
 # Internal caps that mainly protect UI/state size.
 MAX_TASK_OUTPUTS=32
