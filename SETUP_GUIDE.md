@@ -2,23 +2,21 @@
 
 ## Repo Overview
 
-This repository is organized around five main areas:
-
 | Folder | Purpose |
-| --- | --- |
-| `GhidraMCP/` | Java/Maven-based Ghidra extension packaging for the Ghidra-side MCP snapshot/plugin. |
-| `MCPServers/` | Python FastMCP wrappers for capa, FLOSS, strings, YARA, HashDB, Ghidra bridge, and other analysis tools. |
+|---|---|
+| `GhidraMCP/` | Java/Maven Ghidra extension that exposes analysis data over HTTP for the bridge MCP server. |
+| `MCPServers/` | Python FastMCP wrappers for capa, FLOSS, strings, YARA, HashDB, Ghidra bridge, binwalk, gitleaks, searchsploit, trivy. |
 | `multi_agent_wf/` | Main deep-agent workflow app: config loading, runtime, pipeline orchestration, Gradio frontend, and JSON workflow configuration. |
-| `skills/` | Repo-local skill definitions used by deep agents to explain safe command construction and tool usage patterns. |
-| `Test_Executables/` | Synthetic and collected executable samples, build scripts, manifests, and Makefile-driven test corpus generation. |
+| `skills/` | Repo-local skill definitions that teach agents safe command construction and tool usage patterns. |
+| `Testing/Prototype_Test_Executables/` | Original regression sample corpus: 8 Windows PE samples covering static analysis, string obfuscation, API hashing, anti-debug, and control-flow flattening. Build scripts and Makefile included. |
+| `Testing/Experimental_Test_Executables/` | 8 new samples stratified by difficulty (easy / medium / hard). Designed to cover the full MCP server surface including binwalk, hashdb, YARA, and UPX. |
+| `Testing/` | `TESTING_PLAN.md`, `Testing_Documentation/`, and evidence from prior runs. |
+
+---
 
 ## Python Environment Setup
 
-In the command examples below, replace `USR_PATH` with the parent directory where you cloned this repository, so the repo root becomes `USR_PATH/Hub_Dev`.
-
-The root [requirements.txt](requirements.txt) is the main dependency file for this repo.
-
-Create and activate a virtual environment:
+Replace `USR_PATH` with the parent directory where you cloned this repo, so the root becomes `USR_PATH/Hub_Dev`.
 
 ```bash
 cd "USR_PATH/Hub_Dev"
@@ -38,25 +36,93 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Notes:
+**Dependency notes:**
+- `python-dotenv` — `config.py` loads `.env` on startup.
+- `pydantic-ai` / `pydantic-ai-backend` — agent runtime; `runtime.py` imports `pydantic_ai_backends`.
+- `gradio` — Gradio UI in `frontend.py`.
+- `PyYAML`, `PyGithub` — used by maintenance scripts under `MCPServers/capa-rules/.github/scripts`.
+- External CLI tools (`capa`, `floss`, `strings`, `yara`, `binwalk`, `gitleaks`, `searchsploit`, `trivy`) must be on `PATH` separately — they are not Python packages.
 
-- The root `requirements.txt` covers the main `multi_agent_wf` app, the current MCP servers, optional LangChain experiments under `In_Progress/`, and the optional `pyghidra` work-in-progress server.
-- `python-dotenv` is required because `multi_agent_wf/config.py` loads `.env`.
-- `pydantic-ai-backend` is required because `multi_agent_wf/runtime.py` imports `pydantic_ai_backends`.
-- `PyYAML` and `PyGithub` are included to cover bundled maintenance scripts under `MCPServers/capa-rules/.github/scripts`.
-- `GhidraMCP/requirements.txt` exists for the narrow Ghidra bridge case, but the root `requirements.txt` is the primary install path for this repo.
-- External command-line tools used by the MCP wrappers are separate from Python package installation. You still need the underlying binaries on `PATH` for tools such as `capa`, `floss`, `strings`, `yara`, `binwalk`, `gitleaks`, `searchsploit`, and `trivy`.
+---
+
+## Environment Configuration (`.env`)
+
+Create a `.env` file in the repo root. All fields are optional unless marked required.
+
+```dotenv
+# ── Model ─────────────────────────────────────────────────────────────────────
+# Model ID in pydantic-ai format (provider:model-name)
+OPENAI_MODEL_ID=openai:gpt-4o-mini
+
+# ── Agent runtime ──────────────────────────────────────────────────────────────
+# Max messages kept in each agent's rolling chat history
+MAX_ROLE_HISTORY_MESSAGES=16
+
+# Max worker agents running in parallel
+MAX_PARALLEL_WORKERS=2
+
+# Max retries if the validation gate rejects worker output
+MAX_VALIDATION_REPLAN_RETRIES=1
+
+# ── Deep-agent features ────────────────────────────────────────────────────────
+# Enable persistent agent memory across turns
+DEEP_ENABLE_MEMORY=true
+
+# Enable agent skill loading from skill directories
+DEEP_ENABLE_SKILLS=true
+
+# Colon-separated list of skill directories
+DEEP_SKILL_DIRS=USR_PATH/Hub_Dev/skills
+
+# Max tokens of context passed to the deep-agent backend per agent
+DEEP_CONTEXT_MAX_TOKENS=18000
+
+# ── Defaults (overridable from UI) ─────────────────────────────────────────────
+# easy | default | intermediate | strict
+DEFAULT_VALIDATOR_REVIEW_LEVEL=default
+
+# none | ask | full
+DEFAULT_SHELL_EXECUTION_MODE=none
+
+# ── Gradio UI ─────────────────────────────────────────────────────────────────
+GRADIO_SERVER_NAME=0.0.0.0
+GRADIO_SERVER_PORT=7860
+
+# ── Automation trigger HTTP server ─────────────────────────────────────────────
+# Set to true to enable the HTTP endpoint that Ghidra can POST to
+AUTOMATION_TRIGGER_ENABLED=false
+AUTOMATION_TRIGGER_HOST=127.0.0.1
+AUTOMATION_TRIGGER_PORT=7861
+```
+
+**Validator review level effects:**
+- `easy` — passes most outputs; use for exploration.
+- `default` — balanced; recommended for normal runs.
+- `intermediate` — stricter evidence requirements; rejects weak claims.
+- `strict` — highest evidence bar; expect more replanning.
+
+**Shell execution mode effects:**
+- `none` — no shell access for agents; safest.
+- `ask` — agents can request shell access; a UI modal prompts you to approve each command.
+- `full` — agents execute shell commands without prompting.
+
+---
+
+## Running the App
+
+```bash
+cd "USR_PATH/Hub_Dev"
+source .venv/bin/activate
+python multi_agent_wf/main.py
+```
+
+The Gradio UI opens at `http://localhost:7860` (or the port set in `.env`).
+
+---
 
 ## Rule Sources for capa and YARA
 
 ### capa
-
-The repo currently expects the standard upstream capa content:
-
-- signatures source: `https://github.com/mandiant/capa`
-- rules source: `https://github.com/mandiant/capa-rules`
-
-Typical local layout:
 
 ```bash
 cd "USR_PATH/Hub_Dev/MCPServers"
@@ -66,24 +132,9 @@ mkdir -p capa-sigs
 cp -R capa-src/sigs/* capa-sigs/
 ```
 
-That gives you:
-
-- `MCPServers/capa-rules/` for rule content
-- `MCPServers/capa-sigs/` for signature content copied from the upstream `capa` repo
+This gives you `MCPServers/capa-rules/` and `MCPServers/capa-sigs/` in the layout `capaMCP.py` expects.
 
 ### YARA
-
-There is no single universally best public baseline, so the safest recommendation is:
-
-1. start with `Neo23x0/signature-base` for a more curated, lower-noise foundation
-2. optionally layer `Yara-Rules/rules` on top for broader community coverage
-
-Suggested upstream repos:
-
-- curated baseline: `https://github.com/Neo23x0/signature-base`
-- broader community corpus: `https://github.com/Yara-Rules/rules`
-
-Suggested local layout:
 
 ```bash
 cd "USR_PATH/Hub_Dev/MCPServers"
@@ -91,134 +142,211 @@ mkdir -p yara_rules
 git clone https://github.com/Neo23x0/signature-base yara-signature-base
 git clone https://github.com/Yara-Rules/rules yara-rules-community
 
-find yara-signature-base/yara -type f \\( -name '*.yar' -o -name '*.yara' \\) -exec cp {} yara_rules/ \\;
-find yara-rules-community -type f \\( -name '*.yar' -o -name '*.yara' \\) -exec cp {} yara_rules/ \\;
+find yara-signature-base/yara -type f \( -name '*.yar' -o -name '*.yara' \) -exec cp {} yara_rules/ \;
+find yara-rules-community -type f \( -name '*.yar' -o -name '*.yara' \) -exec cp {} yara_rules/ \;
 ```
 
-Practical note:
+**Notes:**
+- `Neo23x0/signature-base` includes rules that use external LOKI/THOR variables. If plain `yara` reports undefined identifiers, remove or isolate those files.
+- Combining corpora introduces duplicate rule names. Start with the curated baseline, then add breadth once scans are stable.
 
-- `Neo23x0/signature-base` includes some rules that rely on external variables for tools like LOKI/THOR. If plain `yara` reports undefined identifiers, remove or segregate those files before using them with `yaraMCP.py`.
-- If you combine multiple public corpora, expect duplicate rule names, inconsistent tagging, and some noisy/older rules. Start smaller, then add breadth once your scans are stable.
+---
 
-## Ghidra MCP Snapshot Build
+## MCP Server Configuration
 
-The Ghidra extension project lives in [GhidraMCP](GhidraMCP). Its Maven configuration is defined in [pom.xml](GhidraMCP/pom.xml), and the extension ZIP layout is defined in [ghidra-extension.xml](GhidraMCP/src/assembly/ghidra-extension.xml).
+`MCPServers/servers.json` defines which MCP tool servers the workflow loads. Each entry is:
+
+```json
+{
+  "server-id": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["path/to/server_script.py", "--transport", "stdio"]
+  }
+}
+```
+
+Server IDs containing `ghidra` are treated as requiring serial (non-concurrent) tool calls. Server IDs listed in the tool result cache allow-list will have their responses cached by the runtime.
+
+Script paths in `args` are resolved relative to the location of `servers.json`.
+
+---
+
+## Ghidra MCP Extension Build
+
+The Ghidra extension lives in `GhidraMCP/`. It exposes Ghidra analysis data over HTTP so `bridge_mcp_ghidra.py` can relay tool calls to it.
 
 ### Prerequisites
 
-- Java/JDK installed and available on `PATH`
-- Maven installed and available on `PATH`
-- A local Ghidra 12.0.2 install, because the `pom.xml` is pinned to `12.0.2`
+- Java/JDK on `PATH`
+- Maven on `PATH`
+- Ghidra 12.0.2 installed locally (the `pom.xml` is pinned to this version)
 
 ### Step 1: Populate `GhidraMCP/lib`
 
-The Maven project expects these Ghidra jars to exist in `GhidraMCP/lib/`:
+Copy these jars from your Ghidra install into `GhidraMCP/lib/`:
 
-| Jar to copy into `GhidraMCP/lib/` | Expected source path in a stock Ghidra install |
-| --- | --- |
-| `Base.jar` | `<GHIDRA_INSTALL>/Ghidra/Features/Base/lib/Base.jar` |
-| `Decompiler.jar` | `<GHIDRA_INSTALL>/Ghidra/Features/Decompiler/lib/Decompiler.jar` |
-| `Docking.jar` | `<GHIDRA_INSTALL>/Ghidra/Framework/Docking/lib/Docking.jar` |
-| `Generic.jar` | `<GHIDRA_INSTALL>/Ghidra/Framework/Generic/lib/Generic.jar` |
-| `Gui.jar` | `<GHIDRA_INSTALL>/Ghidra/Framework/Gui/lib/Gui.jar` |
-| `Project.jar` | `<GHIDRA_INSTALL>/Ghidra/Framework/Project/lib/Project.jar` |
-| `SoftwareModeling.jar` | `<GHIDRA_INSTALL>/Ghidra/Framework/SoftwareModeling/lib/SoftwareModeling.jar` |
-| `Utility.jar` | `<GHIDRA_INSTALL>/Ghidra/Framework/Utility/lib/Utility.jar` |
+| Jar | Source path in Ghidra install |
+|---|---|
+| `Base.jar` | `Ghidra/Features/Base/lib/Base.jar` |
+| `Decompiler.jar` | `Ghidra/Features/Decompiler/lib/Decompiler.jar` |
+| `Docking.jar` | `Ghidra/Framework/Docking/lib/Docking.jar` |
+| `Generic.jar` | `Ghidra/Framework/Generic/lib/Generic.jar` |
+| `Gui.jar` | `Ghidra/Framework/Gui/lib/Gui.jar` |
+| `Project.jar` | `Ghidra/Framework/Project/lib/Project.jar` |
+| `SoftwareModeling.jar` | `Ghidra/Framework/SoftwareModeling/lib/SoftwareModeling.jar` |
+| `Utility.jar` | `Ghidra/Framework/Utility/lib/Utility.jar` |
 
-If your Ghidra layout differs, search the install tree for the exact jar name and copy it into [GhidraMCP/lib](GhidraMCP/lib).
-
-### Step 2: Build the Plugin Snapshot
-
-From the `GhidraMCP/` directory:
+### Step 2: Build
 
 ```bash
 cd "USR_PATH/Hub_Dev/GhidraMCP"
 mvn clean package assembly:single
 ```
 
-What this does:
+Output: `target/GhidraMCP-12.0.2-SNAPSHOT.zip`
 
-- builds the plugin jar as `target/GhidraMCP.jar`
-- copies runtime dependencies into `target/lib/`
-- assembles the extension ZIP as `target/GhidraMCP-12.0.2-SNAPSHOT.zip`
+### Step 3: Install
 
-The assembly descriptor places:
+Install the ZIP into Ghidra via the extension manager, restart Ghidra, and enable the plugin.
 
-- `extension.properties` at the top of the packaged extension folder
-- `Module.manifest` at the top of the packaged extension folder
-- `GhidraMCP.jar` into `GhidraMCP/lib/` inside the ZIP
+---
 
-### Step 3: Install into Ghidra
+## Workflow Configuration (JSON files)
 
-Use the generated ZIP from `target/` as the extension artifact to install into Ghidra. After installation, restart Ghidra and enable the extension/plugin as needed.
+All agent behavior is driven by JSON files in `multi_agent_wf/workflow_config/`. You can modify these without touching Python code.
 
-## Folder Details
+| File | What it controls |
+|---|---|
+| `architecture_presets.json` | Named agent swarms (role + count per swarm). 8 presets defined. |
+| `agent_archetype_specs.json` | Agent role definitions: tool_domain, model, complexity flag. 16 archetypes. |
+| `pipeline_presets.json` | Ordered stage sequences with architecture and model per stage. 4+ presets. |
+| `stage_kind_metadata.json` | Capability flags per stage kind (tool access, parallel, validation gate, etc.). |
+| `base_prompts.json` | Base system prompt templates for static and dynamic agents. |
+| `agent_archetype_prompts.json` | Role-specific prompt specializations that extend the base. |
+| `stage_manager_prompts.json` | Orchestration instructions for each stage kind. |
+| `stage_output_contracts.json` | Expected JSON output format per stage (planner work items, validator gate, etc.). |
 
-## `GhidraMCP/`
+### Architecture presets
 
-Primary contents:
+| Preset | Agents | Use case |
+|---|---|---|
+| `minimal` | 1× static_generalist | Fast broad pass |
+| `balanced` | triage, ghidra, control_flow, obfuscation, string | Normal default |
+| `aws_collaboration` | balanced + capability_analyst | Multi-angle investigation |
+| `runtime_enriched` | aws_collaboration + runtime_behavior_analyst | Static + dynamic |
+| `static_swarm` | 2× control_flow_analyst | Control-flow-heavy samples |
+| `ghidra_focused` | 2× ghidra_analyst + type_recovery_analyst | Ghidra-centric work |
+| `code_reconstruction` | c/cpp/type recovery specialists | Pseudocode cleanup |
+| `ghidra_editing` | code_reconstruction + ghidra_refactor_analyst | Rename/retype proposals |
 
-- [pom.xml](GhidraMCP/pom.xml): Maven build definition for the Ghidra extension snapshot
-- [src/assembly/ghidra-extension.xml](GhidraMCP/src/assembly/ghidra-extension.xml): packaging layout for the final extension ZIP
-- `src/main/resources/`: extension metadata files such as `Module.manifest`, `extension.properties`, and `META-INF/MANIFEST.MF`
-- `lib/`: manually populated Ghidra jars referenced as system-scoped dependencies in the Maven build
+### Pipeline presets
 
-This folder is for the Ghidra-side plugin packaging workflow, not the main Python UI/runtime.
+| Preset | Stages | Use case |
+|---|---|---|
+| `preflight_direct_answer` | preflight → reporter | Quick metadata lookup |
+| `auto_triage` | preflight → presweeps → planner → workers → reporter | Post-Ghidra bootstrap triage |
+| `preflight_planner_workers_reporter` | preflight → planner → workers → reporter | Normal analysis |
+| `preflight_planner_workers_validators_reporter` | + validators (evidence gate) | Higher-confidence analysis |
+| `preflight_planner_workers_dual_validators_reporter` | + 2× validators | Strongest validation |
 
-## `MCPServers/`
+---
 
-Primary contents:
+## Automation Trigger (HTTP API)
 
-- [servers.json](MCPServers/servers.json): MCP server manifest used by the workflow runtime
-- [bridge_mcp_ghidra.py](MCPServers/bridge_mcp_ghidra.py): HTTP bridge from the workflow to the Ghidra-side service
-- CLI-style MCP wrappers such as:
-  - [capaMCP.py](MCPServers/capaMCP.py)
-  - [flareFlossMCP.py](MCPServers/flareFlossMCP.py)
-  - [stringMCP.py](MCPServers/stringMCP.py)
-  - [yaraMCP.py](MCPServers/yaraMCP.py)
-  - [hashDBMCP.py](MCPServers/hashDBMCP.py)
-  - [binwalkMCP.py](MCPServers/binwalkMCP.py)
-  - [gitleaksMCP.py](MCPServers/gitleaksMCP.py)
-  - [searchsploitMCP.py](MCPServers/searchsploitMCP.py)
-  - [trivyMCP.py](MCPServers/trivyMCP.py)
+When `AUTOMATION_TRIGGER_ENABLED=true`, the app starts an HTTP server on `AUTOMATION_TRIGGER_HOST:AUTOMATION_TRIGGER_PORT`.
 
-This folder is the tool surface the multi-agent workflow actually talks to.
+### Endpoints
 
-## `multi_agent_wf/`
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/automation/ghidra-load` | Trigger analysis from Ghidra or external tooling |
+| `GET` | `/automation/health` | Health check (returns 200 OK) |
+| `GET` | `/automation/status` | Returns current automation panel HTML (for JS polling) |
 
-Primary contents:
+### Payload for `/automation/ghidra-load`
 
-- [main.py](multi_agent_wf/main.py): entrypoint
-- [config.py](multi_agent_wf/config.py): env loading and workflow config bootstrap
-- [runtime.py](multi_agent_wf/runtime.py): deep-agent runtime, MCP loading, tool caching, and stage construction
-- [pipeline.py](multi_agent_wf/pipeline.py): pipeline execution, planner/validator handling, and host-managed worker fan-out
-- [shared_state.py](multi_agent_wf/shared_state.py): chat state, task board state, validation state, and live UI state
-- [frontend.py](multi_agent_wf/frontend.py): Gradio UI
-- `workflow_config/*.json`: prompt/configuration source of truth for architectures, stages, archetypes, and output contracts
+```json
+{
+  "program_key": "registered-program-name",
+  "executable_path": "C:\\path\\to\\sample.exe",
+  "sha256": "abc123...",
+  "ghidra_project_path": "C:\\path\\to\\project.gpr"
+}
+```
 
-This folder is the main application.
+`program_key` must be in the configured allow-list. Unregistered keys are rejected.
 
-## `skills/`
+---
 
-Primary contents:
+## Ghidra Change Queue
 
-- one `SKILL.md` per tool or workflow, such as:
-  - [capa-mcp](skills/capa-mcp/SKILL.md)
-  - [floss-mcp](skills/floss-mcp/SKILL.md)
-  - [strings-mcp](skills/strings-mcp/SKILL.md)
-  - [yara-mcp](skills/yara-mcp/SKILL.md)
-  - [yara-rule-authoring](skills/yara-rule-authoring/SKILL.md)
+During analysis, agents may propose Ghidra edits (function renames, type changes, comments). These are queued and blocked from automatic execution.
 
-These are used to teach agents how to safely form command strings and how to use the MCP tool wrappers.
+- The UI displays the pending queue with **Approve** and **Reject** buttons.
+- Approved changes are applied via `apply_ghidra_change_proposal_sync()`.
+- Rejected changes are removed from the queue.
 
-## `Test_Executables/`
+To enable agents to generate proposals, use the `ghidra_editing` architecture or any architecture containing `ghidra_refactor_analyst`.
 
-Primary contents:
+---
 
-- [Makefile](Test_Executables/Makefile): main build entrypoint for the sample corpus
-- [build_test_executables.py](Test_Executables/build_test_executables.py): Python-based build/manifest helper
-- [BUILD.md](Test_Executables/BUILD.md): build documentation
-- [README.md](Test_Executables/README.md): corpus overview
-- `RSWE_Samples/`: collected real-world or course/lab samples kept alongside the synthetic corpus
+## Tool Log Files
 
-This folder is the testing corpus for validating malware-analysis capabilities across different techniques and tool combinations.
+Each pipeline run writes structured tool logs to:
+
+```
+logs/agentToolBench_YYYYMMDD_HHMMSS/<stage_name>.log
+```
+
+Format: JSON lines. Each line is one of: `tool_call`, `tool_return`, `tool_cache_hit`, `tool_cache_wait`, `tool_cache_store`.
+
+These logs are the primary data source for efficiency metrics in the experimental testing plan.
+
+---
+
+## Folder Reference
+
+### `GhidraMCP/`
+- `pom.xml` — Maven build definition
+- `src/assembly/ghidra-extension.xml` — extension ZIP layout
+- `lib/` — manually populated Ghidra jars
+
+### `MCPServers/`
+- `servers.json` — MCP server manifest
+- `bridge_mcp_ghidra.py` — HTTP bridge to Ghidra plugin
+- `capaMCP.py`, `flareFlossMCP.py`, `stringMCP.py`, `yaraMCP.py`, `hashDBMCP.py`, `binwalkMCP.py`, `gitleaksMCP.py`, `searchsploitMCP.py`, `trivyMCP.py` — per-tool MCP wrappers
+
+### `multi_agent_wf/`
+- `main.py` — entrypoint
+- `config.py` — env loading and settings bootstrap
+- `workflow_config_loader.py` — JSON config validation and loading
+- `runtime.py` — agent runtime, MCP loading, tool caching, auto-triage presweeps
+- `pipeline.py` — stage orchestration, planner/validator handling, parallel worker fan-out
+- `shared_state.py` — mutable pipeline state, tool logging, UI snapshots, parent input blocking
+- `frontend.py` — Gradio UI + automation trigger HTTP server
+- `workflow_config/*.json` — all prompt and configuration source of truth
+- `assets/frontend_head.html` — JavaScript injected into the Gradio page (polling, timers, queue alerts)
+
+### `skills/`
+- One `SKILL.md` per tool: `capa-mcp`, `floss-mcp`, `strings-mcp`, `yara-mcp`, `yara-rule-authoring`
+- Loaded by agents to learn safe command construction and tool usage patterns
+
+### `Testing/`
+- `TESTING_PLAN.md` — functional and experimental test plan (includes EXP-A through EXP-I)
+- `Prototype_Test_Executables/` — original 8-sample regression corpus, Makefile, build scripts
+- `Experimental_Test_Executables/` — 8 new difficulty-stratified samples, Makefile, `SAMPLE_INDEX.md`
+- `Testing_Documentation/` — screenshots, prompt examples, and evidence from prior runs
+
+### Build the test corpus
+
+```bash
+# Prototype samples (MinGW cross-compile)
+make -C Testing/Prototype_Test_Executables all-with-gcc
+
+# Experimental samples
+make -C Testing/Experimental_Test_Executables all-with-gcc
+
+# Optional: UPX-packed variant for upxmcp smoke test
+make -C Testing/Experimental_Test_Executables upx
+```

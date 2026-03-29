@@ -1652,6 +1652,10 @@ class _AutomationTriggerHandler(BaseHTTPRequestHandler):
     server_version = "MultiAgentWFAutomation/1.0"
 
     def log_message(self, format: str, *args: Any) -> None:
+        path = getattr(self, "path", "") or ""
+        command = getattr(self, "command", "") or ""
+        if command == "GET" and path.rstrip("/") == _AUTOMATION_STATUS_PATH.rstrip("/"):
+            return
         print(f"[automation http] {self.address_string()} - {format % args}", flush=True)
 
     def _send_json(self, status: int, payload: Dict[str, Any]) -> None:
@@ -1673,6 +1677,8 @@ class _AutomationTriggerHandler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "html": render_automation_status_panel(state),
+                    "snapshot_version": int(snapshot.get("snapshot_version") or 0),
+                    "run_active": bool(snapshot.get("run_active")),
                 },
             )
             return
@@ -1929,6 +1935,12 @@ class WorkflowUI:
                         lines=2,
                         placeholder="Ask something. Example: analyze this sample for hashing, anti-debugging, and network behavior...",
                     )
+                    snapshot_refresh = gr.Button(
+                        "Refresh UI Snapshot",
+                        visible=True,
+                        elem_id="wf-hidden-snapshot-refresh",
+                        elem_classes=["wf-hidden-refresh-trigger"],
+                    )
                     with gr.Row():
                         send = gr.Button("Send", variant="primary")
                         cancel = gr.Button("Cancel", visible=False)
@@ -1997,6 +2009,13 @@ class WorkflowUI:
                 clear,
                 todo_board,
             ]
+            snapshot_refresh.click(
+                restore_last_ui,
+                inputs=None,
+                outputs=ui_outputs,
+                show_progress="hidden",
+                queue=False,
+            )
             send_event = send.click(
                 chat_turn,
                 inputs=[

@@ -1167,6 +1167,7 @@ _UI_SNAPSHOT: Dict[str, Any] = {
     "clear_visible": True,
     "todo_visible": False,
     "tool_log_visible": False,
+    "snapshot_version": 0,
 }
 
 
@@ -1232,6 +1233,7 @@ def _store_ui_snapshot(
             _UI_SNAPSHOT["todo_visible"] = todo_visible
         if tool_log_visible is not None:
             _UI_SNAPSHOT["tool_log_visible"] = tool_log_visible
+        _UI_SNAPSHOT["snapshot_version"] = int(_UI_SNAPSHOT.get("snapshot_version") or 0) + 1
 
 
 def _get_ui_snapshot() -> Dict[str, Any]:
