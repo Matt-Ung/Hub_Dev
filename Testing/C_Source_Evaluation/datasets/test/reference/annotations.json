@@ -1,0 +1,46 @@
+{
+  "program_id": "test",
+  "reference_status": "reviewed_concrete_anchor_v1",
+  "corpus": "prototype",
+  "gold_facts": [
+    "If argc > 1 then x is taken from argv[1][0], otherwise x defaults to 42",
+    "A negative helper result causes an early return with exit code 2",
+    "helper iterates from i=0 to i<x, alternately adding and subtracting i and breaking early if acc > 50",
+    "classify returns 10 through 17 via a switch on (v & 7)",
+    "main prints 'neg', 'low', 'mid', or 'high' before printing the final adjusted integer",
+    "Identify the switch/jump-table style classification on v & 7",
+    "Note the early break in helper when acc > 50",
+    "Explain the final ternary-like parity adjustment: odd -> c+3, even -> c-3"
+  ],
+  "key_functions": [
+    {
+      "name": "helper",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "classify",
+      "role": "classification helper"
+    },
+    {
+      "name": "main",
+      "role": "entry point and orchestration"
+    }
+  ],
+  "inputs": [
+    "command-line arguments",
+    "standard input"
+  ],
+  "outputs": [
+    "stdout status or diagnostic messages",
+    "process exit status"
+  ],
+  "side_effects": [
+    "writes markers or diagnostics to stdout"
+  ],
+  "bugs_or_risks": [],
+  "related_binary_samples": [
+    "test.exe",
+    "test_easy_stripped.exe",
+    "test_easy_upx.exe"
+  ]
+}

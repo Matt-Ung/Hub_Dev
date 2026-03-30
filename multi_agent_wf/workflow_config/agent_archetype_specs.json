@@ -11,21 +11,21 @@
     "tool_domain": "preflight",
     "preferred_mode": "sync",
     "typical_complexity": "moderate",
-    "model": "openai:gpt-4o-mini"
+    "model": "openai:gpt-5-nano"
   },
   "static_generalist": {
     "description": "General static reverse-engineering specialist.",
     "tool_domain": "static",
     "preferred_mode": "sync",
     "typical_complexity": "moderate",
-    "model": "openai:gpt-4o-mini"
+    "model": "openai:gpt-5-mini"
   },
   "triage_analyst": {
     "description": "Static triage specialist that identifies the highest-value pivots for the sample.",
     "tool_domain": "static",
     "preferred_mode": "sync",
     "typical_complexity": "moderate",
-    "model": "openai:gpt-4o-mini"
+    "model": "openai:gpt-5-mini"
   },
   "control_flow_analyst": {
     "description": "Static specialist focused on dispatcher logic, execution paths, and major branch pivots.",
@@ -74,7 +74,7 @@
     "tool_domain": "static",
     "preferred_mode": "sync",
     "typical_complexity": "moderate",
-    "model": "openai:gpt-4o-mini"
+    "model": "openai:gpt-5-nano"
   },
   "obfuscation_analyst": {
     "description": "Static specialist focused on concrete obfuscation and anti-analysis mechanisms.",
@@ -88,7 +88,7 @@
     "tool_domain": "static",
     "preferred_mode": "sync",
     "typical_complexity": "moderate",
-    "model": "openai:gpt-4o-mini"
+    "model": "openai:gpt-5-nano"
   },
   "runtime_behavior_analyst": {
     "description": "Runtime specialist focused on behavioral correlation and execution-time artifacts.",
@@ -102,7 +102,7 @@
     "tool_domain": "static",
     "preferred_mode": "sync",
     "typical_complexity": "moderate",
-    "model": "openai:gpt-4o-mini"
+    "model": "openai:gpt-5-nano"
   },
   "evidence_validator": {
     "description": "Validation specialist that reviews claims for evidentiary support and contradictions.",
@@ -116,6 +116,6 @@
     "tool_domain": "none",
     "preferred_mode": "sync",
     "typical_complexity": "moderate",
-    "model": "openai:gpt-4o-mini"
+    "model": "openai:gpt-5-nano"
   }
 }

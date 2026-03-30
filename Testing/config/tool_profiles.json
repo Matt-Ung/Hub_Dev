@@ -1,0 +1,42 @@
+{
+  "version": "tool_profiles_v1",
+  "description": "Named MCP tool-availability profiles for binary-evaluation ablations. Profiles only affect the analysis agent path; the judge configuration is separate.",
+  "profiles": {
+    "full": {
+      "description": "All default MCP servers available."
+    },
+    "core_static": {
+      "description": "Keep the core static-analysis lane (Ghidra, strings, FLOSS, capa) but disable specialty enrichers such as hashdb, binwalk, UPX, YARA, model gateway, patching, and artifact writers.",
+      "disabled_servers": [
+        "hashdbmcp",
+        "binwalkmcp",
+        "upxmcp",
+        "yaramcp",
+        "modelgatewaymcp",
+        "binarypatchmcp",
+        "agentartifactsmcp",
+        "gitleaksmcp",
+        "searchsploitmcp",
+        "trivymcp"
+      ]
+    },
+    "ghidra_only": {
+      "description": "Disable all non-Ghidra MCP servers to measure how much the broader tool ecosystem contributes beyond artifact-backed Ghidra analysis.",
+      "disabled_servers": [
+        "stringmcp",
+        "flareflossmcp",
+        "CapaMCP",
+        "hashdbmcp",
+        "binwalkmcp",
+        "upxmcp",
+        "yaramcp",
+        "modelgatewaymcp",
+        "binarypatchmcp",
+        "agentartifactsmcp",
+        "gitleaksmcp",
+        "searchsploitmcp",
+        "trivymcp"
+      ]
+    }
+  }
+}

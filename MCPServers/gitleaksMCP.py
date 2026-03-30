@@ -270,11 +270,11 @@ def main() -> None:
             mcp.settings.log_level = args.log_level
             mcp.settings.host = args.mcp_host or "127.0.0.1"
             mcp.settings.port = args.mcp_port or 8093
-            mcp.run(transport="sse")
+            mcp.run(transport="sse", show_banner=False)
         except KeyboardInterrupt:
             logger.info("Server stopped by user")
     else:
-        mcp.run()
+        mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":

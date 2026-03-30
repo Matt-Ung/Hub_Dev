@@ -1,0 +1,31 @@
+{
+  "version": "launch_presets_v1",
+  "description": "Named launch presets for safe testing-harness entry points. These presets are intentionally operational rather than scientific: they encode recommended launch shapes such as a cheap first paid pilot.",
+  "presets": {
+    "paid_narrow_pilot": {
+      "description": "Cheapest recommended first paid pilot. Uses one medium-difficulty focused recovery task and only the query-verbosity sweep family.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "variables": [
+        "query_verbosity"
+      ],
+      "repetitions": 1,
+      "skip_visuals": true,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "broad_default_sweep": {
+      "description": "Full default experimental sweep. Useful after the pilot passes, but intentionally expensive and likely to trip the default budget guardrails until thresholds are raised deliberately.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "repetitions": 3,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    }
+  }
+}

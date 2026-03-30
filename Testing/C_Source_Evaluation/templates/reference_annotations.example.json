@@ -37,8 +37,5 @@
       "title": "missing length guard before payload access",
       "severity": "high"
     }
-  ],
-  "semantic_diff_points": [
-    "version B rejects zero-length records while version A accepts them"
   ]
 }

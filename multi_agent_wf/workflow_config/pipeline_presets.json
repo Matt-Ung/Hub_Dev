@@ -11,14 +11,14 @@
         "stage_kind": "preflight",
         "architecture": [["preflight_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       },
       {
         "name": "reporter",
         "stage_kind": "reporter",
         "architecture": [["reporting_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       }
     ]
   },
@@ -34,14 +34,14 @@
         "stage_kind": "preflight",
         "architecture": [["preflight_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       },
       {
         "name": "presweeps",
         "stage_kind": "deterministic_presweeps",
         "architecture": [],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       },
       {
         "name": "planner",
@@ -55,14 +55,14 @@
         "stage_kind": "workers",
         "architecture": [],
         "use_worker_architecture": true,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-mini"
       },
       {
         "name": "reporter",
         "stage_kind": "reporter",
         "architecture": [["reporting_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       }
     ]
   },
@@ -78,7 +78,7 @@
         "stage_kind": "preflight",
         "architecture": [["preflight_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       },
       {
         "name": "planner",
@@ -92,22 +92,22 @@
         "stage_kind": "workers",
         "architecture": [],
         "use_worker_architecture": true,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-mini"
       },
       {
         "name": "reporter",
         "stage_kind": "reporter",
         "architecture": [["reporting_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       }
     ]
   },
-  "preflight_planner_workers_validators_reporter": {
+  "preflight_planner_workers_light_validators_reporter": {
     "description": [
-      "Best for deep, evidence-heavy malware-analysis requests where claims should be checked before final reporting.",
-      "Use for technical reports, high-confidence reverse engineering, artifact-backed explanations, or cases where validation rigor matters.",
-      "Choose this when the user is implicitly asking for stronger proof, careful review, or a more defensible final output."
+      "Best for validated analysis when you want a lighter single-validator gate rather than a stronger review wall.",
+      "Use for cheaper validation experiments or when you want to measure validator behavior without the cost of multiple signoffs.",
+      "Pair this with validator review levels such as easy, default, intermediate, or strict to study how review strength changes outcomes."
     ],
     "stages": [
       {
@@ -115,7 +115,7 @@
         "stage_kind": "preflight",
         "architecture": [["preflight_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       },
       {
         "name": "planner",
@@ -129,7 +129,51 @@
         "stage_kind": "workers",
         "architecture": [],
         "use_worker_architecture": true,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "validators",
+        "stage_kind": "validators",
+        "architecture": [["evidence_validator", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-nano"
+      }
+    ]
+  },
+  "preflight_planner_workers_validators_reporter": {
+    "description": [
+      "Best for deep, evidence-heavy malware-analysis requests where claims should be checked before final reporting.",
+      "Use for technical reports, high-confidence reverse engineering, artifact-backed explanations, or cases where medium validation rigor matters.",
+      "Pair this with validator review levels such as default or intermediate when running validation-strength experiments."
+    ],
+    "stages": [
+      {
+        "name": "preflight",
+        "stage_kind": "preflight",
+        "architecture": [["preflight_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-nano"
+      },
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-5-mini"
       },
       {
         "name": "validators",
@@ -143,7 +187,7 @@
         "stage_kind": "reporter",
         "architecture": [["reporting_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       }
     ]
   },
@@ -159,7 +203,7 @@
         "stage_kind": "preflight",
         "architecture": [["preflight_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       },
       {
         "name": "planner",
@@ -173,7 +217,7 @@
         "stage_kind": "workers",
         "architecture": [],
         "use_worker_architecture": true,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-mini"
       },
       {
         "name": "validators",
@@ -187,7 +231,7 @@
         "stage_kind": "reporter",
         "architecture": [["reporting_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       }
     ]
   },
@@ -210,22 +254,22 @@
         "stage_kind": "workers",
         "architecture": [],
         "use_worker_architecture": true,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-mini"
       },
       {
         "name": "reporter",
         "stage_kind": "reporter",
         "architecture": [["reporting_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       }
     ]
   },
-  "planner_workers_validators_reporter": {
+  "planner_workers_light_validators_reporter": {
     "description": [
-      "Best for validated analysis when preflight is unnecessary but review rigor is still desired.",
-      "Use when the sample context is already known and the main need is analysis plus validation.",
-      "This is the no-preflight counterpart to the standard validator pipeline."
+      "Best for no-preflight validated analysis when you want only a light single-validator gate.",
+      "Use when sample context is already known and you want a cheaper validator profile for experiments or quick review.",
+      "Pair this with validator review levels to vary how strict the single validator should be."
     ],
     "stages": [
       {
@@ -240,7 +284,44 @@
         "stage_kind": "workers",
         "architecture": [],
         "use_worker_architecture": true,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "validators",
+        "stage_kind": "validators",
+        "architecture": [["evidence_validator", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-nano"
+      }
+    ]
+  },
+  "planner_workers_validators_reporter": {
+    "description": [
+      "Best for validated analysis when preflight is unnecessary but medium review rigor is still desired.",
+      "Use when the sample context is already known and the main need is analysis plus validation.",
+      "This is the no-preflight counterpart to the standard medium-strength validator pipeline."
+    ],
+    "stages": [
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-5-mini"
       },
       {
         "name": "validators",
@@ -254,7 +335,7 @@
         "stage_kind": "reporter",
         "architecture": [["reporting_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       }
     ]
   },
@@ -277,7 +358,7 @@
         "stage_kind": "workers",
         "architecture": [],
         "use_worker_architecture": true,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-mini"
       },
       {
         "name": "validators",
@@ -291,7 +372,7 @@
         "stage_kind": "reporter",
         "architecture": [["reporting_analyst", 1]],
         "use_worker_architecture": false,
-        "model": "openai:gpt-4o-mini"
+        "model": "openai:gpt-5-nano"
       }
     ]
   }

@@ -1,0 +1,18 @@
+Basic Loops Test is a easy source-analysis benchmark.
+
+This baseline sample computes the sum 1..N, classifies that result into buckets, accumulates an integer array until a -1 sentinel is seen, and then runs a countdown loop.
+
+Primary behaviors or analysis targets:
+- compute_sum performs a simple 1..N summation loop
+- classify_value maps totals into -1/0/1/2/3 via an if/else ladder
+- accumulate stops early when it encounters the sentinel value -1
+- main calls compute_sum, classify_value, accumulate, and then a separate countdown while-loop
+
+Expected high-value findings:
+- Call graph: main -> compute_sum, classify_value, accumulate
+- The sample array is {5, 10, 15, -1, 99, 200} and accumulate should stop at -1
+- If argc > 1 then base=20, otherwise base=10
+- No encoding, packing, or anti-analysis behavior should be claimed
+
+Reference status: reviewed_concrete_anchor_v1
+This file contains concrete reviewed anchors intended to be stable enough for controlled evaluation sweeps, but it should still receive human signoff before publication use.

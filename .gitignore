@@ -2,15 +2,23 @@
 # Build outputs
 # =========================
 
-README.md
 # Maven build output (any module)
 **/target/
 
 # Compiled class files
 *.class
 
+# Native / compiled binary outputs
+*.exe
+*.dll
+*.pdb
+*.so
+*.dylib
+*.out
+
 # Logs
 *.log
+logs/
 
 # Java crash logs (if any)
 hs_err_pid*
@@ -89,6 +97,8 @@ mvnw.cmd
 # Environment files
 .env
 .env.*
+.python-version
+.direnv/
 
 # =========================
 # Third-party binaries
@@ -107,4 +117,18 @@ MCPServers/capa-rules
 MCPServers/capa-sigs
 mcp-security-hub
 vagrantProjects
+third_party/signature-base/
+
+# Generated agent/tool reports: keep helper scripts, ignore emitted artifacts.
+agent_artifacts/reports/
+
 Testing/generated/
+Testing/build/
+Testing/reference_binaries/
+
+# Track docs/templates under Testing/results, ignore generated outputs by default.
+Testing/results/*
+!Testing/results/README.md
+!Testing/results/run_record_template.md
+!Testing/results/reference_examples/
+!Testing/results/reference_examples/README.md

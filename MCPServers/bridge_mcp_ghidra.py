@@ -551,11 +551,11 @@ def main():
             logger.info(f"Starting MCP server on http://{mcp.settings.host}:{mcp.settings.port}/sse")
             logger.info(f"Using transport: {args.transport}")
 
-            mcp.run(transport="sse")
+            mcp.run(transport="sse", show_banner=False)
         except KeyboardInterrupt:
             logger.info("Server stopped by user")
     else:
-        mcp.run()
+        mcp.run(show_banner=False)
         
 if __name__ == "__main__":
     main()

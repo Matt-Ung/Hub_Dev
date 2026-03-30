@@ -1,0 +1,72 @@
+{
+  "program_id": "hash_dispatch_test",
+  "reference_status": "reviewed_concrete_anchor_v1",
+  "corpus": "experimental",
+  "gold_facts": [
+    "HASH_EXFIL is 0x0F66385D and HASH_SLEEP is 0x105CF61E",
+    "resolve_command prints 'resolved hash 0x%08X -> %s' on a match",
+    "main prints '=== Hash Dispatch Test ===' before dispatching commands",
+    "djb2_hash starts at 5381 and updates h = h*33 + c",
+    "DISPATCH_TABLE maps HASH_PING, HASH_EXEC, HASH_EXFIL, and HASH_SLEEP to live handlers",
+    "HASH_DEAD_1 0xDEADBEEF and HASH_DEAD_2 0xFEEDFACE intentionally map to nop_handler",
+    "build_and_dispatch copies command characters into a local buffer before hashing and indirect dispatch",
+    "Map 0x7C9C4733 to ping and 0x7C967DAA to exec",
+    "Recover the stack-built command strings ping, exec, exfil, and sleep",
+    "Identify the decoy dead entries separately from the live commands",
+    "Explain the indirect call through the resolved function pointer"
+  ],
+  "key_functions": [
+    {
+      "name": "djb2_hash",
+      "role": "resolution or hash-processing helper"
+    },
+    {
+      "name": "cmd_ping",
+      "role": "dispatch handler"
+    },
+    {
+      "name": "cmd_exec",
+      "role": "dispatch handler"
+    },
+    {
+      "name": "cmd_exfil",
+      "role": "dispatch handler"
+    },
+    {
+      "name": "cmd_sleep",
+      "role": "dispatch handler"
+    },
+    {
+      "name": "nop_handler",
+      "role": "callback or event handler"
+    },
+    {
+      "name": "resolve_command",
+      "role": "resolution or hash-processing helper"
+    },
+    {
+      "name": "build_and_dispatch",
+      "role": "main execution or dispatch routine"
+    },
+    {
+      "name": "main",
+      "role": "entry point and orchestration"
+    }
+  ],
+  "inputs": [
+    "command-line arguments",
+    "standard input"
+  ],
+  "outputs": [
+    "stdout status or diagnostic messages",
+    "process exit status"
+  ],
+  "side_effects": [
+    "writes markers or diagnostics to stdout",
+    "decodes embedded or obfuscated data in memory"
+  ],
+  "bugs_or_risks": [],
+  "related_binary_samples": [
+    "hash_dispatch_test.exe"
+  ]
+}

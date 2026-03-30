@@ -36,3 +36,10 @@ pyghidra
 # Optional helper dependencies for bundled/vendored maintenance scripts
 PyYAML
 PyGithub
+
+# Testing infrastructure, launch doctor, and sweep visualization
+# (Testing/run_evaluation.py, Testing/run_experiment_sweep.py,
+#  Testing/run_launch_doctor.py, and Testing/harness/*)
+pandas>=1.5
+matplotlib>=3.7
+openpyxl>=3.1

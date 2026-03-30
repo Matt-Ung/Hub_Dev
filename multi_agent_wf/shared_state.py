@@ -1127,6 +1127,10 @@ def _new_shared_state() -> Dict[str, Any]:
         "validation_last_decision": "",
         "validation_replan_feedback": "",
         "validation_history": [],
+        "pipeline_duration_sec": 0.0,
+        "model_usage_totals": {},
+        "model_usage_by_stage": {},
+        "model_usage_events": [],
     }
 
 

@@ -1,0 +1,18 @@
+String Table Test is a easy source-analysis benchmark.
+
+This baseline string sample stores cleartext status strings, a pointer-backed message table, and a stack-built greeting so the analysis can distinguish ordinary string storage from obfuscation.
+
+Primary behaviors or analysis targets:
+- Global status strings and banner live in cleartext
+- MESSAGES is an array of const char * pointers with indexed lookup
+- lookup_message returns '(unknown message index)' for out-of-range values
+- build_greeting formats 'Hello, %s! Welcome to the test harness.' into a stack buffer
+
+Expected high-value findings:
+- Recover the banner '=== String Table Test Executable v1.0 ==='
+- Recover multiple table strings such as msg[0] and msg[7]
+- Explain that the strings are stored in cleartext rather than encoded
+- Note the out-of-bounds fallback string '(unknown message index)'
+
+Reference status: reviewed_concrete_anchor_v1
+This file contains concrete reviewed anchors intended to be stable enough for controlled evaluation sweeps, but it should still receive human signoff before publication use.

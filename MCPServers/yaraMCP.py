@@ -25,6 +25,39 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency
+    def load_dotenv(*args, **kwargs):  # type: ignore[no-redef]
+        return False
+
+
+def _fallback_load_dotenv(path: Path) -> bool:
+    if not path.exists():
+        return False
+    loaded = False
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded = True
+    return loaded
+
+
+def _load_repo_dotenv() -> None:
+    env_path = REPO_ROOT / ".env"
+    loaded = bool(load_dotenv(env_path, override=False))
+    if not loaded:
+        _fallback_load_dotenv(env_path)
+
+
+_load_repo_dotenv()
+
 from artifact_paths import (
     get_base_yara_rules_dir,
     get_agent_artifact_dir,
@@ -37,14 +70,20 @@ IS_WINDOWS = sys.platform.startswith("win")
 _DRIVE_RE = re.compile(r"^/([A-Za-z]):/")
 _MNT_RE = re.compile(r"^/mnt/([A-Za-z])/(.*)")
 
-BASE_RULES_DIR = get_base_yara_rules_dir()
-GENERATED_RULES_DIR = get_agent_artifact_dir("yara")
 RULE_NAME_RE = re.compile(r"(?mi)^\s*rule\s+([A-Za-z_][A-Za-z0-9_]*)\b")
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 mcp = FastMCP(
     "yara_mcp",
     instructions="MCP server that exposes structured YARA scanning tools.",
 )
+
+
+def _base_rules_dir() -> Path:
+    return get_base_yara_rules_dir()
+
+
+def _generated_rules_dir() -> Path:
+    return get_agent_artifact_dir("yara")
 
 
 def truncate_text(text: str, max_chars: int = 12000) -> str:
@@ -151,19 +190,21 @@ def _resolve_rules_path(rules_path: Optional[str]) -> tuple[str, list[str], dict
     if rules_path:
         return ensure_existing_path(rules_path), [], {"source": "explicit"}
 
-    base_rule_files = _iter_rule_files(BASE_RULES_DIR)
-    generated_rule_files = _iter_rule_files(GENERATED_RULES_DIR)
+    base_rules_dir = _base_rules_dir()
+    generated_rules_dir = _generated_rules_dir()
+    base_rule_files = _iter_rule_files(base_rules_dir)
+    generated_rule_files = _iter_rule_files(generated_rules_dir)
     all_rule_files = [*base_rule_files, *generated_rule_files]
     if not all_rule_files:
         raise FileNotFoundError(
             "no YARA rules found. Provide rules_path or create rules under "
-            f"{BASE_RULES_DIR} or {GENERATED_RULES_DIR}"
+            f"{base_rules_dir} or {generated_rules_dir}"
         )
 
     metadata = {
         "source": "default_combined",
-        "base_rules_dir": str(BASE_RULES_DIR),
-        "generated_rules_dir": str(GENERATED_RULES_DIR),
+        "base_rules_dir": str(base_rules_dir),
+        "generated_rules_dir": str(generated_rules_dir),
         "base_rule_count": len(base_rule_files),
         "generated_rule_count": len(generated_rule_files),
         "total_rule_count": len(all_rule_files),
@@ -360,7 +401,9 @@ def yaraListRules(max_rules: int = 200) -> dict[str, Any]:
     """List available rule files under the configured rules directory."""
     entries: list[dict[str, str]] = []
     rules: list[str] = []
-    for source_name, rules_dir in (("base", BASE_RULES_DIR), ("generated", GENERATED_RULES_DIR)):
+    base_rules_dir = _base_rules_dir()
+    generated_rules_dir = _generated_rules_dir()
+    for source_name, rules_dir in (("base", base_rules_dir), ("generated", generated_rules_dir)):
         for path in _iter_rule_files(rules_dir):
             relative_path = str(path.relative_to(rules_dir))
             entries.append(
@@ -377,8 +420,8 @@ def yaraListRules(max_rules: int = 200) -> dict[str, Any]:
             break
     return {
         "ok": True,
-        "rules_dir": str(BASE_RULES_DIR),
-        "generated_rules_dir": str(GENERATED_RULES_DIR),
+        "rules_dir": str(base_rules_dir),
+        "generated_rules_dir": str(generated_rules_dir),
         "artifact_dirs": list_agent_artifact_dirs(),
         "rules": sorted(rules),
         "rule_entries": entries,
@@ -402,7 +445,8 @@ def yaraWriteRule(
     try:
         rule_name = _extract_rule_name(text)
         normalized_name = _normalize_rule_filename(filename, rule_name)
-        rules_dir = GENERATED_RULES_DIR.resolve()
+        base_rules_dir = _base_rules_dir()
+        rules_dir = _generated_rules_dir().resolve()
         rules_dir.mkdir(parents=True, exist_ok=True)
         rule_path = rules_dir / normalized_name
         existed_before_write = rule_path.exists()
@@ -436,7 +480,7 @@ def yaraWriteRule(
             "rule_name": rule_name,
             "rule_path": str(rule_path),
             "rules_dir": str(rules_dir),
-            "base_rules_dir": str(BASE_RULES_DIR),
+            "base_rules_dir": str(base_rules_dir),
             "index_path": str(index_path),
             "overwrote_existing": existed_before_write and overwrite,
             "validated": bool(validation.get("validated")),
@@ -453,12 +497,14 @@ def yaraWriteRule(
 def yaraHelp(timeout_sec: int = 5) -> str:
     """Return `yara --help` output."""
     dirs = list_agent_artifact_dirs()
+    base_rules_dir = _base_rules_dir()
+    generated_rules_dir = _generated_rules_dir()
     return (
         run_help_command("yara", timeout_sec=timeout_sec)
         + "\n\n"
         + "Configured rule directories:\n"
-        + f"- base rules: {BASE_RULES_DIR}\n"
-        + f"- generated rules: {GENERATED_RULES_DIR}\n"
+        + f"- base rules: {base_rules_dir}\n"
+        + f"- generated rules: {generated_rules_dir}\n"
         + f"- artifact root: {dirs['root']}"
     )
 
@@ -502,11 +548,11 @@ def main() -> None:
             mcp.settings.log_level = args.log_level
             mcp.settings.host = args.mcp_host or "127.0.0.1"
             mcp.settings.port = args.mcp_port or 8092
-            mcp.run(transport="sse")
+            mcp.run(transport="sse", show_banner=False)
         except KeyboardInterrupt:
             logger.info("Server stopped by user")
     else:
-        mcp.run()
+        mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":

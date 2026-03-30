@@ -1,0 +1,16 @@
+Resource Blob Loader Test is a hard source-analysis benchmark.
+
+This prototype loader sample validates a blob header, XOR-decodes a staged payload string, and computes a rolling checksum over the decoded content.
+
+Primary behaviors or analysis targets:
+- BlobHeader.magic must equal 0xB10B5EED
+- decode_record XORs the payload with key 0x5A and computes a rolling checksum seeded at 0xABCDEF01
+- The decoded payload string is STAGED: cmd.exe /c echo loader
+
+Expected high-value findings:
+- Recover the blob magic 0xB10B5EED
+- Recover the decoded payload string STAGED: cmd.exe /c echo loader
+- Explain that checksum is calculated after decode
+
+Reference status: reviewed_concrete_anchor_v1
+This file contains concrete reviewed anchors intended to be stable enough for controlled evaluation sweeps, but it should still receive human signoff before publication use.

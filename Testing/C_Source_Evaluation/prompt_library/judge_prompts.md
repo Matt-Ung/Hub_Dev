@@ -189,19 +189,9 @@ Add:
 
 ```text
 Also score:
-- valid_bug_rate
+- risk_assessment_accuracy
 - false_positive_control
 - severity_prioritization
-```
-
-### T8 Semantic Diff
-
-Add:
-
-```text
-Also score:
-- behavioral_diff_accuracy
-- cosmetic_change_filtering
 ```
 
 ### T9 Intent Mapping
@@ -246,4 +236,3 @@ Task:
 - produce a final merged scorecard
 - state why the rejected interpretation is weaker
 ```
-

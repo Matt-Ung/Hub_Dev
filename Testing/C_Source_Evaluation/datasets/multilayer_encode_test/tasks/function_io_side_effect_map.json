@@ -1,0 +1,32 @@
+{
+  "program_id": "multilayer_encode_test",
+  "task_name": "function_io_side_effect_map",
+  "tier": "hard",
+  "domain": "systems",
+  "representation": "full",
+  "correctness": "correct",
+  "reasoning_scope": "global",
+  "required_inputs": [
+    "source/multilayer_encode_test.c",
+    "reference/annotations.json"
+  ],
+  "expected_outputs": [
+    "program_map.md"
+  ],
+  "metrics": {
+    "function_coverage": 20,
+    "input_output_coverage": 20,
+    "side_effect_coverage": 20,
+    "precision": 10,
+    "hallucination_control": 15,
+    "clarity_usefulness": 15
+  },
+  "pass_threshold": {
+    "task_score_min": 70,
+    "min_metric_scores": {
+      "function_coverage": 3,
+      "side_effect_coverage": 2
+    }
+  },
+  "prompt_template_id": "c_source_eval_v1:T3"
+}

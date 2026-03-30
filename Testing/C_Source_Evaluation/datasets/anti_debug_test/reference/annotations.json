@@ -1,0 +1,40 @@
+{
+  "program_id": "anti_debug_test",
+  "reference_status": "reviewed_concrete_anchor_v1",
+  "corpus": "prototype",
+  "gold_facts": [
+    "timing_probe returns elapsed microseconds or -1 if the frequency is zero",
+    "timing_probe measures a busy loop using QueryPerformanceFrequency and QueryPerformanceCounter",
+    "main prints local_debugger and remote_debugger status values",
+    "The sample emits x64dbg.exe, ollydbg.exe, procmon.exe, and wireshark.exe marker strings",
+    "Identify both anti-debug APIs",
+    "Explain the timing-based probe logic",
+    "Recover the four analyst-tool marker strings"
+  ],
+  "key_functions": [
+    {
+      "name": "timing_probe",
+      "role": "timing or anti-analysis helper"
+    },
+    {
+      "name": "main",
+      "role": "entry point and orchestration"
+    }
+  ],
+  "inputs": [],
+  "outputs": [
+    "stdout status or diagnostic messages",
+    "process exit status"
+  ],
+  "side_effects": [
+    "writes markers or diagnostics to stdout",
+    "queries debugger state through Windows anti-debug APIs",
+    "queries high-resolution timing state"
+  ],
+  "bugs_or_risks": [],
+  "related_binary_samples": [
+    "anti_debug_test.exe",
+    "anti_debug_medium_stripped.exe",
+    "anti_debug_medium_upx.exe"
+  ]
+}

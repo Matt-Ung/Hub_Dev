@@ -1,0 +1,68 @@
+{
+  "program_id": "callback_dispatch_test",
+  "reference_status": "reviewed_concrete_anchor_v1",
+  "corpus": "experimental",
+  "gold_facts": [
+    "ExecState values are 0=IDLE, 1=RUNNING, 2=DONE, 3=ERROR",
+    "cmd_transform multiplies result_acc by arg unless arg is zero",
+    "cmd_validate appends 'validate:FAIL' and returns -2 on out-of-range results",
+    "main prints marker:callback_dispatch before exit",
+    "COMMAND_TABLE pairs INIT/LOAD/TRANSFORM/VALIDATE/FINALIZE with concrete handler pointers",
+    "run_dispatch performs an indirect call through COMMAND_TABLE[i].handler",
+    "cmd_load fails if arg < 0 and cmd_validate fails if result_acc is outside 0..100000",
+    "trace_push records execution order as pipe-delimited tokens such as init|load|transform|validate|finalize",
+    "Recover the five dispatch entries and their corresponding handlers",
+    "Explain the IDLE -> RUNNING -> DONE / ERROR state progression",
+    "Note that argc changes the LOAD argument from 10 to 42",
+    "Describe the indirect call site rather than treating handlers as unrelated functions"
+  ],
+  "key_functions": [
+    {
+      "name": "trace_push",
+      "role": "trace or state-logging helper"
+    },
+    {
+      "name": "cmd_init",
+      "role": "dispatch handler"
+    },
+    {
+      "name": "cmd_load",
+      "role": "dispatch handler"
+    },
+    {
+      "name": "cmd_transform",
+      "role": "dispatch handler"
+    },
+    {
+      "name": "cmd_validate",
+      "role": "dispatch handler"
+    },
+    {
+      "name": "cmd_finalize",
+      "role": "dispatch handler"
+    },
+    {
+      "name": "run_dispatch",
+      "role": "main execution or dispatch routine"
+    },
+    {
+      "name": "main",
+      "role": "entry point and orchestration"
+    }
+  ],
+  "inputs": [
+    "command-line arguments",
+    "standard input"
+  ],
+  "outputs": [
+    "stdout status or diagnostic messages",
+    "process exit status"
+  ],
+  "side_effects": [
+    "writes markers or diagnostics to stdout"
+  ],
+  "bugs_or_risks": [],
+  "related_binary_samples": [
+    "callback_dispatch_test.exe"
+  ]
+}

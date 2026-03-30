@@ -1,0 +1,18 @@
+Multilayer Encode Test is a hard source-analysis benchmark.
+
+This hard sample stores four strings behind a two-stage decode path: each byte is first rotated left by 3 and then XORed with 0x7E, while runtime recovery reverses the XOR and then rotates right.
+
+Primary behaviors or analysis targets:
+- BLOB_MAGIC is 0xCAFED00D and is validated before any decode
+- decode_entry reverses XOR_KEY 0x7E and ROL_BITS 3 for each entry
+- The encoded strings include a C2 URL, a registry Run path, a schtasks persistence command, and an AppData temp path
+- Entry metadata stores offset, length, rotation amount, and XOR key for each plaintext
+
+Expected high-value findings:
+- Recover https://c2.example.net/beacon/checkin
+- Recover HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+- Recover cmd.exe /c schtasks /create /sc minute /mo 15 /tn Updater
+- Explain both encoding layers instead of flattening the sample into a simple XOR decoder
+
+Reference status: reviewed_concrete_anchor_v1
+This file contains concrete reviewed anchors intended to be stable enough for controlled evaluation sweeps, but it should still receive human signoff before publication use.

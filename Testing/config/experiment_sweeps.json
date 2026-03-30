@@ -1,0 +1,198 @@
+{
+  "version": "binary_experiment_sweep_v6",
+  "description": "Baseline plus controlled one-variable-at-a-time sweep definition for the binary-analysis evaluation track. Variables that require a different local baseline may define baseline_overrides, and those variants are compared against that family-specific baseline rather than the global baseline alone.",
+  "repetitions": 3,
+  "baseline": {
+    "corpus": "experimental",
+    "pipeline": "auto_triage",
+    "architecture": "balanced",
+    "query_variant": "default",
+    "subagent_profile": "default",
+    "worker_persona_profile": "default",
+    "validator_review_level": "default",
+    "tool_profile": "full",
+    "model_profile": "repo_default",
+    "force_model": "",
+    "judge_mode": "agent"
+  },
+  "model_profiles": {
+    "repo_default": {
+      "description": "Use the repo's mixed per-stage and per-role model defaults with no forced override.",
+      "force_model": ""
+    },
+    "budget": {
+      "description": "Force the cheapest cross-run model profile used in experiments. This changes model choice, not token budgets or runtime limits.",
+      "force_model": "openai:gpt-5-nano"
+    },
+    "premium": {
+      "description": "Force the stronger cross-run model profile used in experiments. This changes model choice, not token budgets or runtime limits.",
+      "force_model": "openai:gpt-5-mini"
+    }
+  },
+  "sweeps": [
+    {
+      "variable": "query_verbosity",
+      "description": "Change only the task prompt/query detail level.",
+      "variants": [
+        {
+          "name": "brief",
+          "overrides": {
+            "query_variant": "brief"
+          }
+        },
+        {
+          "name": "detailed",
+          "overrides": {
+            "query_variant": "detailed"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "worker_subagents",
+      "description": "Reduce worker specialist breadth to a single generalist slot while leaving the rest of the workflow unchanged.",
+      "variants": [
+        {
+          "name": "single_generalist",
+          "overrides": {
+            "subagent_profile": "single_generalist"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "worker_persona_prompt",
+      "description": "Change only the worker-stage persona overlay while keeping worker breadth, tools, and pipeline constant.",
+      "variants": [
+        {
+          "name": "skeptical",
+          "overrides": {
+            "worker_persona_profile": "skeptical"
+          }
+        },
+        {
+          "name": "hypothesis_driven",
+          "overrides": {
+            "worker_persona_profile": "hypothesis_driven"
+          }
+        },
+        {
+          "name": "artifact_focused",
+          "overrides": {
+            "worker_persona_profile": "artifact_focused"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "tool_availability",
+      "description": "Disable selected MCP tool families while keeping the baseline pipeline, architecture, and prompt shape fixed.",
+      "variants": [
+        {
+          "name": "core_static",
+          "overrides": {
+            "tool_profile": "core_static"
+          }
+        },
+        {
+          "name": "ghidra_only",
+          "overrides": {
+            "tool_profile": "ghidra_only"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "architecture_preset",
+      "description": "Swap only the worker architecture preset while keeping the pipeline and query shape fixed.",
+      "variants": [
+        {
+          "name": "minimal",
+          "overrides": {
+            "architecture": "minimal"
+          }
+        },
+        {
+          "name": "ghidra_focused",
+          "overrides": {
+            "architecture": "ghidra_focused"
+          }
+        },
+        {
+          "name": "model_augmented",
+          "overrides": {
+            "architecture": "model_augmented"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "pipeline_preset",
+      "description": "Swap only the pipeline preset while holding the architecture, validator strictness, and query shape fixed.",
+      "variants": [
+        {
+          "name": "workers_reporter",
+          "overrides": {
+            "pipeline": "preflight_planner_workers_reporter"
+          }
+        },
+        {
+          "name": "planner_workers_reporter",
+          "overrides": {
+            "pipeline": "planner_workers_reporter"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "validator_topology",
+      "description": "Change only the validator topology while holding validator review strictness fixed at the family baseline.",
+      "baseline_overrides": {
+        "pipeline": "preflight_planner_workers_validators_reporter",
+        "validator_review_level": "default"
+      },
+      "variants": [
+        {
+          "name": "light",
+          "overrides": {
+            "pipeline": "preflight_planner_workers_light_validators_reporter"
+          }
+        },
+        {
+          "name": "dual",
+          "overrides": {
+            "pipeline": "preflight_planner_workers_dual_validators_reporter"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "validator_review_level",
+      "description": "Change only validator strictness while keeping validator topology fixed at the standard single-validator pipeline.",
+      "baseline_overrides": {
+        "pipeline": "preflight_planner_workers_validators_reporter",
+        "validator_review_level": "default"
+      },
+      "variants": [
+        {
+          "name": "easy",
+          "overrides": {
+            "validator_review_level": "easy"
+          }
+        },
+        {
+          "name": "intermediate",
+          "overrides": {
+            "validator_review_level": "intermediate"
+          }
+        },
+        {
+          "name": "strict",
+          "overrides": {
+            "validator_review_level": "strict"
+          }
+        }
+      ]
+    }
+  ]
+}

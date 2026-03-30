@@ -512,9 +512,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     if args.transport == "stdio":
-        mcp.run()
+        mcp.run(show_banner=False)
     else:
-        mcp.run(transport="sse", host=args.mcp_host, port=args.mcp_port)
+        mcp.run(transport="sse", host=args.mcp_host, port=args.mcp_port, show_banner=False)
 
 
 if __name__ == "__main__":

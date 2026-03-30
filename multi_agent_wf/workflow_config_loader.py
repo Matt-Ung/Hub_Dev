@@ -215,6 +215,27 @@ def _load_agent_archetype_prompts(
     return prompts
 
 
+def _load_worker_persona_profiles(config_dir: Path) -> Dict[str, Dict[str, Any]]:
+    raw = _expect_mapping(_load_json_file(config_dir, "worker_persona_profiles.json"), "worker_persona_profiles.json")
+    profiles: Dict[str, Dict[str, Any]] = {}
+    for name, value in raw.items():
+        entry = _expect_mapping(value, f"worker_persona_profiles.json::{name}")
+        description = str(entry.get("description") or "").strip()
+        specialization = entry.get("specialization")
+        rules = (
+            _expect_string_list(specialization, f"worker_persona_profiles.json::{name}.specialization")
+            if specialization is not None
+            else []
+        )
+        profiles[str(name).strip()] = {
+            "description": description,
+            "specialization": rules,
+        }
+    if "default" not in profiles:
+        raise RuntimeError("worker_persona_profiles.json must define a `default` profile")
+    return profiles
+
+
 def load_workflow_config(config_dir: Path, placeholders: Dict[str, str]) -> Dict[str, Any]:
     base_prompts = _load_base_prompts(config_dir, placeholders)
     architecture_presets, architecture_preset_descriptions = _load_architecture_presets(config_dir)
@@ -229,4 +250,5 @@ def load_workflow_config(config_dir: Path, placeholders: Dict[str, str]) -> Dict
         "stage_output_contracts": _load_text_map(config_dir, "stage_output_contracts.json", placeholders),
         "stage_manager_prompts": _load_text_map(config_dir, "stage_manager_prompts.json", placeholders),
         "agent_archetype_prompts": _load_agent_archetype_prompts(config_dir, base_prompts, placeholders),
+        "worker_persona_profiles": _load_worker_persona_profiles(config_dir),
     }

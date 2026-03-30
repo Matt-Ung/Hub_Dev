@@ -35,10 +35,13 @@ from .config import (
     DEEP_CONTEXT_MAX_TOKENS,
     DEEP_ENABLE_MEMORY,
     DEEP_ENABLE_SKILLS,
+    DEEP_FORCE_MODEL_ID,
     DEEP_INCLUDE_BUNDLED_SKILLS,
     DEEP_MEMORY_DIR,
     DEEP_PERSIST_BACKEND,
     DEEP_SKILL_DIRS,
+    DEEP_WORKER_PERSONA_PROFILE,
+    DEEP_WORKER_SUBAGENT_PROFILE,
     DEFAULT_SHELL_EXECUTION_MODE,
     GHIDRA_CHANGE_PROPOSALS_END,
     GHIDRA_CHANGE_PROPOSALS_START,
@@ -56,6 +59,7 @@ from .config import (
     get_stage_kind_metadata,
     TOOL_RESULT_CACHE_SERVER_MARKERS,
     VALIDATOR_REVIEW_LEVEL_LABELS,
+    WORKER_PERSONA_PROFILES,
     YARA_RULE_PROPOSALS_END,
     YARA_RULE_PROPOSALS_START,
     _normalize_shell_execution_mode,
@@ -84,6 +88,60 @@ _AUTO_TRIAGE_HASHDB_ALGORITHMS = ("crc32", "fnv1a32", "djb2", "sdbm")
 _HASHLIKE_STRING_RE = re.compile(r"(?i)\b(?:0x)?([0-9a-f]{8,16})\b")
 _AUTO_TRIAGE_UPX_OUTPUT_DIR = REPO_ROOT / ".deep" / "auto_triage_unpack"
 _FUNCTION_NAME_LIKE_RE = re.compile(r"^(?:FUN_|sub_|LAB_|thunk_)?[A-Za-z_~?][A-Za-z0-9_@$?~:<>\.-]*$")
+
+
+def _normalize_worker_subagent_profile(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"default", "single_generalist"}:
+        return normalized
+    return "default"
+
+
+def _normalize_worker_persona_profile(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in WORKER_PERSONA_PROFILES:
+        return normalized
+    return "default"
+
+
+def _worker_persona_overlay(stage_name: str) -> str:
+    if str(stage_name or "").split(".", 1)[0] != "workers":
+        return ""
+    profile_name = _normalize_worker_persona_profile(DEEP_WORKER_PERSONA_PROFILE)
+    if profile_name == "default":
+        return ""
+    entry = WORKER_PERSONA_PROFILES.get(profile_name) or {}
+    rules = [
+        str(rule).strip()
+        for rule in (entry.get("specialization") or [])
+        if str(rule).strip()
+    ]
+    if not rules:
+        return ""
+    return (
+        f"\n\nWorker persona overlay (`{profile_name}`):\n"
+        + "\n".join(f"- {rule}" for rule in rules)
+        + "\n"
+    )
+
+
+def _resolve_model_id(*candidates: Optional[str]) -> str:
+    forced = str(DEEP_FORCE_MODEL_ID or "").strip()
+    if forced:
+        return forced
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return str(OPENAI_MODEL_ID or "").strip()
+
+
+def _apply_worker_subagent_profile(architecture: List[Tuple[str, int]]) -> List[Tuple[str, int]]:
+    profile = _normalize_worker_subagent_profile(DEEP_WORKER_SUBAGENT_PROFILE)
+    selected = list(architecture or [])
+    if profile == "single_generalist" and selected:
+        return [("static_generalist", 1)]
+    return selected
 
 
 def load_mcp_servers(path: str) -> List[MCPServerStdio]:
@@ -845,7 +903,7 @@ def build_subagent_architecture(
             raise RuntimeError(f"Deep-agent archetype quantity must be >= 1 for {archetype_name!r}")
 
         spec = AGENT_ARCHETYPE_SPECS[archetype_name]
-        resolved_model = str(spec.get("model") or stage_model or OPENAI_MODEL_ID)
+        resolved_model = _resolve_model_id(spec.get("model"), stage_model, OPENAI_MODEL_ID)
         toolsets = _toolsets_for_domain(spec["tool_domain"], static_tools, dynamic_tools)
         if spec["tool_domain"] != "none" and not toolsets:
             raise RuntimeError(
@@ -854,7 +912,7 @@ def build_subagent_architecture(
 
         for idx in range(quantity):
             instance_name = archetype_name if quantity == 1 else f"{archetype_name}_{idx + 1}"
-            instructions = AGENT_ARCHETYPE_PROMPTS[archetype_name]
+            instructions = AGENT_ARCHETYPE_PROMPTS[archetype_name] + _worker_persona_overlay(stage_name)
             can_ask_questions = archetype_name not in {"evidence_validator", "reporting_analyst"}
             max_questions = 1 if can_ask_questions else 0
             if quantity > 1:
@@ -2320,7 +2378,7 @@ def get_architecture_definition_sync(architecture_name: Optional[str] = None) ->
             f"Unknown architecture preset {selected_name!r}. "
             f"Available presets: {', '.join(sorted(DEEP_AGENT_ARCHITECTURE_PRESETS))}"
         )
-    return list(DEEP_AGENT_ARCHITECTURE_PRESETS[selected_name])
+    return _apply_worker_subagent_profile(list(DEEP_AGENT_ARCHITECTURE_PRESETS[selected_name]))
 
 
 def get_pipeline_definition_sync(
@@ -2363,7 +2421,7 @@ def _build_pipeline_router_agent() -> Agent:
     global _PIPELINE_ROUTER_AGENT
     if _PIPELINE_ROUTER_AGENT is None:
         _PIPELINE_ROUTER_AGENT = Agent(
-            DEEP_AGENT_PIPELINE_ROUTER_MODEL,
+            _resolve_model_id(DEEP_AGENT_PIPELINE_ROUTER_MODEL, OPENAI_MODEL_ID),
             output_type=str,
             instructions=_pipeline_router_prompt(DEEP_AGENT_PIPELINE_NAME),
             retries=1,
@@ -2414,7 +2472,7 @@ def _build_architecture_router_agent() -> Agent:
     global _ARCHITECTURE_ROUTER_AGENT
     if _ARCHITECTURE_ROUTER_AGENT is None:
         _ARCHITECTURE_ROUTER_AGENT = Agent(
-            DEEP_AGENT_PIPELINE_ROUTER_MODEL,
+            _resolve_model_id(DEEP_AGENT_PIPELINE_ROUTER_MODEL, OPENAI_MODEL_ID),
             output_type=str,
             instructions=_architecture_router_prompt(DEEP_AGENT_ARCHITECTURE_FALLBACK_NAME),
             retries=1,
@@ -2575,14 +2633,14 @@ def build_host_worker_assignment_executor(
     slot_name: str,
     archetype_name: str,
     stage_model: Optional[str] = None,
-) -> Tuple[Agent, Any]:
+) -> Tuple[Agent, Any, str]:
     if archetype_name not in AGENT_ARCHETYPE_SPECS:
         raise RuntimeError(f"Unknown deep-agent archetype: {archetype_name!r}")
     if archetype_name not in AGENT_ARCHETYPE_PROMPTS:
         raise RuntimeError(f"Missing prompt definition for deep-agent archetype: {archetype_name!r}")
 
     spec = AGENT_ARCHETYPE_SPECS[archetype_name]
-    resolved_model = str(spec.get("model") or stage_model or OPENAI_MODEL_ID)
+    resolved_model = _resolve_model_id(spec.get("model"), stage_model, OPENAI_MODEL_ID)
     toolsets = [
         _clone_mcp_server(tool)
         for tool in _toolsets_for_domain(spec["tool_domain"], runtime.static_tools, runtime.dynamic_tools)
@@ -2592,7 +2650,7 @@ def build_host_worker_assignment_executor(
             f"Host-parallel worker requested {archetype_name!r}, but no {spec['tool_domain']} MCP toolsets are configured."
         )
 
-    instructions = AGENT_ARCHETYPE_PROMPTS[archetype_name].rstrip()
+    instructions = (AGENT_ARCHETYPE_PROMPTS[archetype_name] + _worker_persona_overlay(stage_name)).rstrip()
     instructions += (
         "\n\nExecution note:\n"
         "- You are a host-scheduled worker executing one assigned work item.\n"
@@ -2640,7 +2698,7 @@ def build_host_worker_assignment_executor(
         event_stream_handler=make_live_tool_event_handler(stage_name, slot_name),
     )
     deps = create_default_deps(backend=runtime.deep_backend) if runtime.deep_backend is not None else create_default_deps()
-    return agent, deps
+    return agent, deps, resolved_model
 
 
 def build_stage_runtime(
@@ -2653,7 +2711,7 @@ def build_stage_runtime(
     stage_name = str(stage_definition["name"])
     stage_kind = str(stage_definition["stage_kind"])
     architecture = list(stage_definition.get("architecture") or [])
-    stage_model = str(stage_definition.get("model") or OPENAI_MODEL_ID)
+    stage_model = _resolve_model_id(stage_definition.get("model"), OPENAI_MODEL_ID)
     subagents = (
         build_subagent_architecture(
             stage_name,
@@ -2764,7 +2822,12 @@ def get_runtime_sync(
     )
     if selected_architecture_name.lower() in {"dynamic", "auto"}:
         selected_architecture_name = DEEP_AGENT_ARCHITECTURE_FALLBACK_NAME
-    cache_key = (selected_pipeline_name, selected_architecture_name)
+    cache_key = (
+        selected_pipeline_name,
+        selected_architecture_name,
+        _normalize_worker_subagent_profile(DEEP_WORKER_SUBAGENT_PROFILE),
+        str(DEEP_FORCE_MODEL_ID or "").strip(),
+    )
     cached_runtime = _RUNTIME_CACHE.get(cache_key)
     if cached_runtime is not None:
         return cached_runtime
@@ -2794,6 +2857,8 @@ def get_runtime_sync(
             "worker_architecture_name": selected_architecture_name,
             "worker_architecture": worker_architecture,
             "worker_subagents": expand_architecture_names(worker_architecture),
+            "worker_subagent_profile": _normalize_worker_subagent_profile(DEEP_WORKER_SUBAGENT_PROFILE),
+            "forced_model": str(DEEP_FORCE_MODEL_ID or "").strip(),
             "pipeline_stage_names": [stage.name for stage in stages],
             "memory": DEEP_ENABLE_MEMORY,
             "memory_dir": DEEP_MEMORY_DIR,

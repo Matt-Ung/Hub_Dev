@@ -8,9 +8,9 @@
 | `MCPServers/` | Python FastMCP wrappers for capa, FLOSS, strings, YARA, HashDB, the Ghidra bridge, binwalk, UPX, bounded binary patching, alternate model backends, gitleaks, searchsploit, and trivy. |
 | `multi_agent_wf/` | Main deep-agent workflow app: config loading, runtime, pipeline orchestration, Gradio frontend, and JSON workflow configuration. |
 | `skills/` | Repo-local skill definitions that teach agents safe command construction and tool usage patterns. |
-| `Testing/Prototype_Test_Executables/` | Original regression sample corpus: 8 Windows PE samples covering static analysis, string obfuscation, API hashing, anti-debug, and control-flow flattening. Build scripts and Makefile included. |
-| `Testing/Experimental_Test_Executables/` | 8 new samples stratified by difficulty (easy / medium / hard). Designed to cover the full MCP server surface including binwalk, hashdb, YARA, and UPX. |
-| `Testing/` | `TESTING_PLAN.md`, `Testing_Documentation/`, and evidence from prior runs. |
+| `Testing/Prototype_Test_Source/` | Original regression sample source corpus: benign Windows PE-focused C samples plus build scripts, manifests, and explicit stripped/packed variant definitions. |
+| `Testing/Experimental_Test_Source/` | 8 new difficulty-stratified C samples covering the full MCP server surface including binwalk, hashdb, YARA, and UPX. |
+| `Testing/` | Testing harness, quickstart/testing-plan docs, benchmark corpora, and structured results. |
 
 ---
 
@@ -109,6 +109,15 @@ AUTOMATION_TRIGGER_ENABLED=false
 AUTOMATION_TRIGGER_HOST=127.0.0.1
 AUTOMATION_TRIGGER_PORT=7861
 
+# ── Headless Ghidra for the Testing harness ───────────────────────────────────
+# Either set the install dir or the explicit analyzeHeadless path.
+GHIDRA_INSTALL_DIR=
+GHIDRA_HEADLESS=
+
+# Optional dedicated JDK for analyzeHeadless. The testing harness will pass this
+# through as JAVA_HOME when preparing bundles.
+GHIDRA_JAVA_HOME=
+
 # ── Alternate model MCP defaults ───────────────────────────────────────────────
 # openai_compatible | huggingface_inference
 ALT_MODEL_DEFAULT_PROVIDER=openai_compatible
@@ -158,6 +167,10 @@ ALT_MODEL_AUTH_TOKEN=
 - `AGENT_ARTIFACT_DIR` is the shared root for agent-generated files.
 - If a per-type override is blank, the repo defaults to `AGENT_ARTIFACT_DIR/yara`, `python`, `java`, `reports`, and `ghidra`.
 - `YARA_RULES_DIR` remains the base rule corpus for scanning. Generated YARA rules are written into the generated-artifact YARA directory instead of the base corpus.
+
+**Headless Ghidra notes:**
+- `Testing/prepare_bundles.py`, `Testing/run_evaluation.py`, and `Testing/run_experiment_sweep.py` now auto-load these values from the repo `.env`.
+- If `analyzeHeadless` cannot find a suitable JDK, set `GHIDRA_JAVA_HOME` to the JDK home directory you want Ghidra to use.
 
 ---
 
@@ -229,6 +242,11 @@ Practical division:
 - `agent_artifacts/ghidra/` = Ghidra-supporting scripts or snippets
 - `agent_artifacts/reports/` = future reusable reports or note artifacts
 
+Binwalk scan byproducts now follow the same policy:
+
+- entropy plots and similar binwalk-generated artifacts default to `agent_artifacts/reports/binwalk/`
+- override with `BINWALK_OUTPUT_DIR` if you want a different location
+
 ---
 
 ## MCP Server Configuration
@@ -257,7 +275,7 @@ Relevant env vars:
 
 ```dotenv
 GHIDRA_MCP_FALLBACK_MODE=artifact_if_unavailable
-GHIDRA_ARTIFACT_BUNDLE_DIR=USR_PATH/Hub_Dev/Testing/generated/experimental_analysis/<sample_slug>
+GHIDRA_ARTIFACT_BUNDLE_DIR=USR_PATH/Hub_Dev/Testing/generated/bundles/experimental/<sample_slug>
 ```
 
 Modes:
@@ -560,20 +578,36 @@ These logs are the primary data source for efficiency metrics in the experimenta
 - Loaded by agents to learn safe command construction and tool usage patterns
 
 ### `Testing/`
-- `TESTING_PLAN.md` — functional and experimental test plan (includes EXP-A through EXP-I)
-- `Prototype_Test_Executables/` — original 8-sample regression corpus, Makefile, build scripts
-- `Experimental_Test_Executables/` — 8 new difficulty-stratified samples, Makefile, `SAMPLE_INDEX.md`
-- `Testing_Documentation/` — screenshots, prompt examples, and evidence from prior runs
+- `START_HERE.md` — quickest path to run the maintained testing harness
+- `TESTING_PLAN.md` — current testing-plan and evaluation-scope document
+- `Prototype_Test_Source/` — original regression source corpus, Makefile, build scripts, and explicit stripped/packed variant definitions
+- `Experimental_Test_Source/` — maintained benchmark corpus, sample manifest, and sample-index docs
+- `build/` — compiled binaries produced by the testing harness or Makefiles
+- `results/runs/` — structured evaluation outputs
+- `config/` — sweep, rubric, cost, and launch configuration
 
 ### Build the test corpus
 
 ```bash
 # Prototype samples (MinGW cross-compile)
-make -C Testing/Prototype_Test_Executables all-with-gcc
+make -C Testing/Prototype_Test_Source all-with-gcc
 
 # Experimental samples
-make -C Testing/Experimental_Test_Executables all-with-gcc
+make -C Testing/Experimental_Test_Source all-with-gcc
 
 # Optional: UPX-packed variant for upxmcp smoke test
-make -C Testing/Experimental_Test_Executables upx
+make -C Testing/Experimental_Test_Source upx
+```
+
+### Run the evaluation workflow
+
+```bash
+# End-to-end experimental run
+python Testing/run_evaluation.py --corpus experimental
+
+# Reuse existing binaries/bundles and just rerun analysis + judging
+python Testing/run_evaluation.py --corpus experimental --skip-build --skip-prepare
+
+# Prototype regression corpus
+python Testing/run_evaluation.py --corpus prototype
 ```

@@ -1,0 +1,18 @@
+Anti Analysis Suite Test is a hard source-analysis benchmark.
+
+This kitchen-sink hard sample combines anti-debug APIs, a timing probe, environment fingerprinting, a rotating-key XOR config, and opaque dead code behind misleading helper names.
+
+Primary behaviors or analysis targets:
+- update_display is a misleadingly named debugger check that uses stack-built strings for IsDebuggerPresent and CheckRemoteDebuggerPresent
+- timing_probe measures a busy loop with QueryPerformanceCounter / QueryPerformanceFrequency and flags values above 100000 microseconds
+- env_fingerprint checks USERNAME/USER and COMPUTERNAME/HOSTNAME for sandbox-style identifiers
+- decrypt_config reverses a rotating XOR scheme whose key starts at 0x1F and increments by 0x07 for each byte
+
+Expected high-value findings:
+- Recover IsDebuggerPresent and CheckRemoteDebuggerPresent as anti-debug behaviors despite misleading naming
+- Recover c2=https://update.example.net/api;sleep=600;id=AA-0042 from the encrypted config
+- Identify never_called / opaque_false style dead-code behavior as unreachable or misleading
+- Explain that multiple independent anti-analysis signals contribute to the total score
+
+Reference status: reviewed_concrete_anchor_v1
+This file contains concrete reviewed anchors intended to be stable enough for controlled evaluation sweeps, but it should still receive human signoff before publication use.

@@ -1,0 +1,91 @@
+{
+  "version": "binary_judge_v2",
+  "description": "Agent-based judging rubric for executable-analysis benchmark runs. Five core technical dimensions are scored 0-5, while report_conciseness is intentionally down-weighted to 0-3 so brevity cannot dominate technical correctness. Normalize to 0-100 by dividing the raw total by the rubric-defined raw_total_max.",
+  "dimensions": [
+    {
+      "name": "evidence_grounding",
+      "max_score": 5,
+      "description": "Claims are anchored to concrete artifacts such as functions, addresses, APIs, strings, imports, or capa findings.",
+      "levels": [
+        {"score": 0, "label": "No evidence", "description": "No technical artifacts are cited. The report is a capability list or generic behavioral statements with nothing traced to a specific location or observation in the sample."},
+        {"score": 1, "label": "Nominally evidenced", "description": "Generic technique labels dominate. An occasional artifact name appears but seems incidental rather than the result of systematic analysis. No consistent practice of citing where in the binary observations were made."},
+        {"score": 2, "label": "Thinly evidenced", "description": "A handful of findings cite specific artifacts — one or two function or API names appear — but the majority of the report describes capability classes without grounding them in the binary. A reader could not verify most conclusions."},
+        {"score": 3, "label": "Partially evidenced", "description": "Roughly half the claims name specific artifacts. The remainder characterize behavior at a category level without identifying the specific function, API, address, or instruction. Enough anchors exist to confirm the general direction but not the full picture."},
+        {"score": 4, "label": "Mostly evidenced", "description": "The large majority of claims are artifact-anchored. One or two technique statements are made without direct citation but are clearly reasonable inferences from evidence cited elsewhere. The overall analysis is verifiable with a small amount of follow-on checking."},
+        {"score": 5, "label": "Fully evidenced", "description": "Every technique claim cites at least one concrete artifact: a named function or address, a decoded string value, a specific import or export name, a capa rule, a YARA tag match, or an instruction/byte sequence. A reader could reload the binary and independently verify each finding at the cited location."}
+      ]
+    },
+    {
+      "name": "specificity",
+      "max_score": 5,
+      "description": "Findings are technically specific rather than vague or generic.",
+      "levels": [
+        {"score": 0, "label": "Template", "description": "No sample-specific content whatsoever. The report reads as a generic malware analysis template or boilerplate checklist — nothing in it traces to an artifact, value, or observation from this binary."},
+        {"score": 1, "label": "Generic", "description": "Essentially no sample-specific technical content. Statements describe behaviors without naming a single concrete entity from this binary ('imports suspicious APIs', 'string obfuscation is present')."},
+        {"score": 2, "label": "Minimally specific", "description": "Specifics are sparse. One or two names appear but most of the report describes classes of behavior without naming any particular function, string, address, or value. The analysis reads like a summary of what tool categories produced."},
+        {"score": 3, "label": "Moderately specific", "description": "Some findings are specific — a few named APIs, addresses, or recovered strings appear — but a substantial portion uses technique-category descriptions without instantiating them with sample-specific values."},
+        {"score": 4, "label": "Mostly specific", "description": "Most findings name specific entities. One or two findings use mild generalizations without naming the particular DLL, API, key, or function at the cited location. The report is clearly about this sample and not another."},
+        {"score": 5, "label": "Fully specific", "description": "Function names, resolved API names, decoded string values, memory addresses, struct field names, mutex names, registry paths, or decoded config entries appear throughout. The report could not plausibly have been written about a different sample without editing every finding."}
+      ]
+    },
+    {
+      "name": "technique_coverage",
+      "max_score": 5,
+      "description": "The report covers the primary behaviors or analysis techniques expected for the sample.",
+      "levels": [
+        {"score": 0, "label": "Coverage failure", "description": "The report does not address the primary techniques. It describes entirely wrong behavior, covers only trivial secondary observations, or consists of generic statements that match nothing in the expected technique profile for this sample."},
+        {"score": 1, "label": "Superficial", "description": "One or two techniques are mentioned in passing but none are explained mechanistically. The primary behaviors expected from this sample are largely absent."},
+        {"score": 2, "label": "Limited", "description": "Fewer than half the primary techniques are addressed. The report either misses several expected behaviors, conflates distinct techniques into a single vague claim, or spends the analysis budget on secondary observations while leaving the primary targets uncovered."},
+        {"score": 3, "label": "Partial", "description": "The majority of primary techniques are identified and at least briefly explained. One primary technique is missing entirely, or two are identified but unexplained. A knowledgeable reader would notice the gap and need additional analysis to fill it."},
+        {"score": 4, "label": "Near-complete", "description": "All primary techniques are identified. One is covered only superficially — labeled without explaining the mechanism or citing specific evidence. The gap is minor and the report would still be useful to an analyst."},
+        {"score": 5, "label": "Complete", "description": "Every primary technique in the sample's expected profile is addressed and each is explained mechanistically — not just labeled but described in terms of how it operates in this binary."}
+      ]
+    },
+    {
+      "name": "false_claim_control",
+      "max_score": 5,
+      "description": "The report avoids unsupported or incorrect statements. Scored positively — 5 means no meaningful errors.",
+      "levels": [
+        {"score": 0, "label": "Predominantly false", "description": "The report is predominantly incorrect or unverifiable. It names non-existent artifacts, describes behavior inconsistent with the sample's actual operation, or appears to have been generated without reference to the binary evidence."},
+        {"score": 1, "label": "Substantially misleading", "description": "Numerous incorrect or unverifiable claims are present. A reader following this analysis would draw significantly wrong conclusions about the sample's behavior, purpose, or primary techniques."},
+        {"score": 2, "label": "Several errors", "description": "Multiple unsupported or incorrect claims are present. The agent confidently attributes capabilities or names functions that do not appear in the binary. A reader would be actively misled on more than one point."},
+        {"score": 3, "label": "A few errors or one significant error", "description": "Two to three inaccuracies or unsupported claims are present, OR one error that touches a primary technique and could meaningfully mislead the reader. The overall analysis direction is not wrong, but flagged claims should be verified before acting on them."},
+        {"score": 4, "label": "One minor error", "description": "One minor inaccuracy or one weakly-supported claim is present. The error is peripheral — it does not touch a primary technique and does not mislead a reader about the sample's core behavior."},
+        {"score": 5, "label": "No meaningful errors", "description": "No unsupported or incorrect claims are identifiable. Where uncertain, the agent flagged uncertainty explicitly. No artifacts are named that do not exist in the binary. No capabilities are confidently attributed without traceable justification."}
+      ]
+    },
+    {
+      "name": "task_alignment",
+      "max_score": 5,
+      "description": "The answer stays aligned with the requested task and uses the work budget on the most relevant points.",
+      "levels": [
+        {"score": 0, "label": "Not aligned", "description": "The report does not address the requested task. It provides a generic analysis template, answers a different question, or fails at any point to use the task question as a guide for what to include."},
+        {"score": 1, "label": "Weakly aligned", "description": "The task question is addressed incidentally, if at all. The report consists primarily of general observations or covers a different analysis angle than was requested. An analyst with the specific task question would find little of direct use."},
+        {"score": 2, "label": "Partially aligned", "description": "The report only partially addresses the task. A significant portion of the content covers secondary findings or general characterization rather than the specific question. Partial value is provided but substantial supplementation would be needed."},
+        {"score": 3, "label": "Substantially aligned but padded", "description": "The report answers the task but includes a notable amount of off-topic content — general malware observations, unrequested tool output summaries, or PE metadata context that was not asked for. The relevant answer is present but requires effort to extract."},
+        {"score": 4, "label": "Well aligned with minor drift", "description": "The report addresses the task clearly and completely. One section or a short passage drifts into a tangential observation that was not requested but does not crowd out the primary answer. The report would be directly useful to an analyst working on the stated problem."},
+        {"score": 5, "label": "Precisely aligned", "description": "The report directly, completely, and efficiently answers the question posed. Every section serves the stated task. Work budget is spent on the most relevant findings with no visible drift."}
+      ]
+    },
+    {
+      "name": "report_conciseness",
+      "max_score": 3,
+      "description": "The report avoids unnecessary boilerplate, redundancy, or PE-startup filler.",
+      "levels": [
+        {"score": 0, "label": "Dominated by filler", "description": "The report is substantially padded. PE startup routines, generic malware-behavior descriptions, repeated tool summaries, or duplicated findings dominate. The analytical content is buried and difficult to extract. The report reads as quantity over quality."},
+        {"score": 1, "label": "Some filler", "description": "The report contains a noticeable amount of boilerplate or redundancy. PE import tables, standard runtime startup routines, or generic malware-category statements occupy meaningful space. The useful findings are present but diluted by surrounding filler that an analyst would trim."},
+        {"score": 2, "label": "Mostly tight", "description": "The report has one or two instances of minor filler — a brief boilerplate phrase, a mildly redundant summary sentence, or a tool-output recap that adds little — but overall density is good and the useful content is immediately accessible."},
+        {"score": 3, "label": "Tight throughout", "description": "The report is fully analyst-relevant. No PE initialization boilerplate, no findings restated identically across multiple sections, no generic malware-category prose, no padding. Section lengths are proportional to the available evidence."}
+      ]
+    }
+  ],
+  "normalization": {
+    "raw_total_max": 28,
+    "formula": "overall_score_0_to_100 = round(raw_total / 28.0 * 100.0, 2)"
+  },
+  "pass_thresholds": {
+    "overall_score_0_to_100": 70,
+    "minimum_false_claim_control": 3,
+    "minimum_evidence_grounding": 3
+  }
+}

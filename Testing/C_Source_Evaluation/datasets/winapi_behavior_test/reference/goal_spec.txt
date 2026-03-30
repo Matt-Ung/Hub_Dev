@@ -1,0 +1,16 @@
+Winapi Behavior Test is a medium source-analysis benchmark.
+
+This prototype WinAPI behavior sample dynamically resolves VirtualAlloc and VirtualFree from kernel32.dll, creates a named mutex, and exposes URL, registry, and stack-command indicators.
+
+Primary behaviors or analysis targets:
+- GetProcAddress resolves VirtualAlloc and VirtualFree at runtime from kernel32.dll
+- CreateMutexA references Global\\UpdaterMutex
+- The sample contains https://updates.example.net/checkin, Software\\Microsoft\\Windows\\CurrentVersion\\Run, and the stack-built command CMD: cmd.exe /c echo hello
+
+Expected high-value findings:
+- Explain the dynamic resolution of VirtualAlloc/VirtualFree
+- Recover the mutex, URL, registry path, and stack-built command
+- Note the temporary allocation and free sequence on a 0x1000-byte region
+
+Reference status: reviewed_concrete_anchor_v1
+This file contains concrete reviewed anchors intended to be stable enough for controlled evaluation sweeps, but it should still receive human signoff before publication use.

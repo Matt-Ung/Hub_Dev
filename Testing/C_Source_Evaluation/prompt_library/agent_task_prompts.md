@@ -174,54 +174,29 @@ Source:
 
 ---
 
-## T7 Bug / Risk / Undefined-Behavior Detection
+## T7 Correctness / Risk Review
 
 ```text
 You are reviewing C source code for benchmark item {{PROGRAM_ID}}.
 
-Task: identify bugs, risky code, or undefined behavior.
+Task: identify confirmed bugs if they exist, otherwise justify a low-bug-risk assessment and call out any correctness or safety risks that remain worth reviewing.
 
 Requirements:
 - Prioritize correctness and safety findings.
-- Separate confirmed bugs from lower-confidence risks.
+- Separate confirmed bugs from lower-confidence risks and from "no confirmed bug" conclusions.
 - For each finding, cite the relevant code pattern and explain the impact.
+- If you conclude there is no confirmed bug, explain why the code appears low-risk rather than inventing a bug.
 - Do not report style nits unless they matter to correctness or safety.
 
 Output format:
-1. Findings (ordered by severity)
-2. Why each finding is a bug or risk
-3. Conditions required to trigger it
-4. Confidence and uncertainty
+1. Confirmed bugs or "no confirmed bug"
+2. Residual correctness or safety risks
+3. Why each finding is a bug or risk
+4. Conditions required to trigger it
+5. Confidence and uncertainty
 
 Source:
 {{SOURCE_CODE}}
-```
-
----
-
-## T8 Semantic Difference Between Versions
-
-```text
-You are comparing two versions of C source code for benchmark item {{PROGRAM_ID}}.
-
-Task: explain the semantic or behavioral differences.
-
-Requirements:
-- Focus on changes in behavior, not cosmetic edits.
-- Identify added, removed, or modified behaviors.
-- Note any changes in safety, correctness, or edge-case handling.
-
-Output format:
-1. High-level behavioral changes
-2. Detailed semantic differences
-3. Non-semantic changes to ignore
-4. Risk implications
-
-Version A:
-{{VERSION_A_CODE}}
-
-Version B:
-{{VERSION_B_CODE}}
 ```
 
 ---
@@ -292,4 +267,3 @@ Include:
 - final score if provided
 - one sentence on likely failure mode
 ```
-

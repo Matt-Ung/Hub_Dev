@@ -63,10 +63,5 @@
     "transport": "stdio",
     "command": "python",
     "args": ["binaryPatchMCP.py", "--transport", "stdio"]
-  },
-  "modelgatewaymcp": {
-    "transport": "stdio",
-    "command": "python",
-    "args": ["modelGatewayMCP.py", "--transport", "stdio"]
   }
 }

@@ -74,6 +74,93 @@ _GENERIC_YARA_STRINGS = {
     "help",
 }
 
+_USAGE_KEYS = (
+    "requests",
+    "tool_calls",
+    "input_tokens",
+    "cache_write_tokens",
+    "cache_read_tokens",
+    "input_audio_tokens",
+    "cache_audio_read_tokens",
+    "output_tokens",
+)
+
+
+def _empty_usage_snapshot() -> Dict[str, Any]:
+    return {**{key: 0 for key in _USAGE_KEYS}, "details": {}}
+
+
+def _coerce_usage_snapshot(raw: Any) -> Dict[str, Any]:
+    snapshot = _empty_usage_snapshot()
+    if raw is None:
+        return snapshot
+    source = raw if isinstance(raw, dict) else {key: getattr(raw, key, 0) for key in _USAGE_KEYS}
+    if not isinstance(raw, dict):
+        source["details"] = getattr(raw, "details", {})
+    for key in _USAGE_KEYS:
+        try:
+            snapshot[key] = int(source.get(key) or 0)
+        except Exception:
+            snapshot[key] = 0
+    details = source.get("details")
+    if isinstance(details, dict):
+        normalized: Dict[str, int] = {}
+        for key, value in details.items():
+            try:
+                normalized[str(key)] = int(value)
+            except Exception:
+                continue
+        snapshot["details"] = normalized
+    return snapshot
+
+
+def _result_usage_snapshot(result: Any) -> Dict[str, Any]:
+    usage_attr = getattr(result, "usage", None)
+    usage = usage_attr() if callable(usage_attr) else usage_attr
+    return _coerce_usage_snapshot(usage)
+
+
+def _merge_usage_snapshots(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    merged = _coerce_usage_snapshot(left)
+    rhs = _coerce_usage_snapshot(right)
+    for key in _USAGE_KEYS:
+        merged[key] = int(merged.get(key) or 0) + int(rhs.get(key) or 0)
+    details = dict(merged.get("details") or {})
+    for key, value in (rhs.get("details") or {}).items():
+        details[str(key)] = int(details.get(str(key), 0) or 0) + int(value or 0)
+    merged["details"] = details
+    return merged
+
+
+def _record_model_usage(
+    state: Dict[str, Any],
+    *,
+    phase: str,
+    stage_name: str,
+    model: str,
+    usage: Dict[str, Any],
+    slot_name: str = "",
+    work_item_id: str = "",
+) -> None:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    usage_snapshot = _coerce_usage_snapshot(usage)
+    if not any(int(usage_snapshot.get(key) or 0) for key in _USAGE_KEYS) and not (usage_snapshot.get("details") or {}):
+        return
+    shared["model_usage_totals"] = _merge_usage_snapshots(shared.get("model_usage_totals") or {}, usage_snapshot)
+    stage_bucket = dict((shared.get("model_usage_by_stage") or {}).get(stage_name) or _empty_usage_snapshot())
+    stage_bucket = _merge_usage_snapshots(stage_bucket, usage_snapshot)
+    shared.setdefault("model_usage_by_stage", {})[stage_name] = stage_bucket
+    shared.setdefault("model_usage_events", []).append(
+        {
+            "phase": str(phase or ""),
+            "stage_name": str(stage_name or ""),
+            "model": str(model or ""),
+            "slot_name": str(slot_name or ""),
+            "work_item_id": str(work_item_id or ""),
+            "usage": usage_snapshot,
+        }
+    )
+
 
 def _extract_yara_section(rule_text: str, section_name: str) -> str:
     pattern = re.compile(
@@ -1868,7 +1955,7 @@ def _run_host_worker_assignment(
     active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
     active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage_name)
     try:
-        agent, deps = build_host_worker_assignment_executor(
+        agent, deps, resolved_model = build_host_worker_assignment_executor(
             runtime,
             stage_name=stage_name,
             slot_name=slot_name,
@@ -1889,9 +1976,11 @@ def _run_host_worker_assignment(
             "work_item_id": work_item_id,
             "slot_name": slot_name,
             "archetype_name": archetype_name,
+            "model": str(resolved_model or ""),
             "role_key": role_key,
             "history": new_history,
             "output_text": output_text,
+            "usage": _result_usage_snapshot(result),
             "duration_sec": duration_sec,
             "status": "ok",
         }
@@ -1902,9 +1991,11 @@ def _run_host_worker_assignment(
             "work_item_id": work_item_id,
             "slot_name": slot_name,
             "archetype_name": archetype_name,
+            "model": str(stage_model or ""),
             "role_key": role_key,
             "history": [],
             "output_text": "",
+            "usage": _empty_usage_snapshot(),
             "duration_sec": duration_sec,
             "status": "failed",
             "error": f"{type(e).__name__}: {e}",
@@ -2056,6 +2147,15 @@ def _run_host_parallel_worker_stage(
             assignment = future_map[future]
             result = future.result()
             results_by_index[int(result["index"])] = result
+            _record_model_usage(
+                state,
+                phase="host_worker_assignment",
+                stage_name=stage.name,
+                model=str(result.get("model") or ""),
+                usage=result.get("usage") or {},
+                slot_name=str(result.get("slot_name") or ""),
+                work_item_id=str(result.get("work_item_id") or ""),
+            )
             history = list(result.get("history") or [])
             set_role_history(state, str(result.get("role_key") or ""), history)
             append_tool_log_delta(state, stage.name, [], history)
@@ -2174,6 +2274,10 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["validation_last_decision"] = ""
     shared["validation_replan_feedback"] = ""
     shared["validation_history"] = []
+    shared["pipeline_duration_sec"] = 0.0
+    shared["model_usage_totals"] = _empty_usage_snapshot()
+    shared["model_usage_by_stage"] = {}
+    shared["model_usage_events"] = []
     shared["host_parallel_worker_execution"] = HOST_PARALLEL_WORKER_EXECUTION
     shared["max_parallel_workers"] = MAX_PARALLEL_WORKERS
     state["pending_parent_input"] = _empty_parent_input()
@@ -2319,6 +2423,13 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 f"tool_return:{stage.name}",
             )
             stage_output = str(result.output)
+            _record_model_usage(
+                state,
+                phase="pipeline_stage",
+                stage_name=stage.name,
+                model=str(stage.model or ""),
+                usage=_result_usage_snapshot(result),
+            )
         if stage_meta["parses_planner_work_items"]:
             update_planned_work_items_from_planner_output(state, stage_output)
         if stage_meta["supports_parallel_assignments"] or stage_meta["finalizes_report"]:
@@ -2488,6 +2599,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                         error="Validation gate rejected after max replans",
                     )
                 shared["run_count"] = int(shared.get("run_count", 0)) + 1
+                shared["pipeline_duration_sec"] = round(time.perf_counter() - t0, 6)
                 shared["final_output"] = final_output
                 append_status(state, f"Deep pipeline stopped in {time.perf_counter() - t0:.1f}s")
                 return final_output
@@ -2495,6 +2607,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         stage_index += 1
 
     shared["run_count"] = int(shared.get("run_count", 0)) + 1
+    shared["pipeline_duration_sec"] = round(time.perf_counter() - t0, 6)
     shared["final_output"] = final_output
     if runtime.pipeline_name == "auto_triage":
         _record_auto_triage_run(
