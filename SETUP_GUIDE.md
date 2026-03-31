@@ -198,6 +198,31 @@ Supported lookup paths are implemented in [MCPServers/capaMCP.py](MCPServers/cap
 - `CAPA_SIGS_DIR`
 - fallback repo-local `MCPServers/capa-rules` and `MCPServers/capa-sigs`
 
+Official upstream sources:
+
+- rules: [mandiant/capa-rules](https://github.com/mandiant/capa-rules)
+- signatures: [mandiant/capa-testfiles](https://github.com/mandiant/capa-testfiles) in its `sigs/` directory
+
+Recommended repo-local layout:
+
+```bash
+mkdir -p third_party
+git clone https://github.com/mandiant/capa-rules third_party/capa-rules
+git clone https://github.com/mandiant/capa-testfiles third_party/capa-testfiles
+```
+
+Recommended `.env` values:
+
+```dotenv
+CAPA_RULES_DIR=./third_party/capa-rules
+CAPA_SIGS_DIR=./third_party/capa-testfiles/sigs
+```
+
+Notes:
+
+- `CAPA_SIGS_DIR` should point at the `sigs/` subdirectory, not just the root of `capa-testfiles`.
+- If you prefer, you can copy or symlink only that `sigs/` directory into another local folder and point `CAPA_SIGS_DIR` there instead.
+
 ### YARA corpus
 
 Also optional for startup.
@@ -206,6 +231,29 @@ Supported base path is implemented in [artifact_paths.py](artifact_paths.py):
 
 - `YARA_RULES_DIR`
 - otherwise repo-local `MCPServers/yara_rules`
+
+Official upstream source:
+
+- [Neo23x0/signature-base](https://github.com/Neo23x0/signature-base)
+
+Recommended repo-local layout:
+
+```bash
+mkdir -p third_party
+git clone https://github.com/Neo23x0/signature-base third_party/signature-base
+```
+
+Recommended `.env` value for this repo:
+
+```dotenv
+YARA_RULES_DIR=./third_party/signature-base
+```
+
+Notes:
+
+- This repo is already configured to work with `./third_party/signature-base` as the base YARA corpus.
+- [MCPServers/yaraMCP.py](MCPServers/yaraMCP.py) scans the configured directory recursively for `*.yar` and `*.yara`, so pointing at the repo root is fine even though most rules live under `yara/`.
+- Some `signature-base` rules are designed for LOKI/THOR-style external variables. If plain YARA reports `undefined identifier`, check the upstream repository README for the files it recommends excluding in non-LOKI/non-THOR setups.
 
 Generated rules are written under `agent_artifacts/yara/`.
 
