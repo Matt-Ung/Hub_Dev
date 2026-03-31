@@ -79,6 +79,8 @@
     "- Route rename, comment, prototype, or local-type cleanup requests to `ghidra_refactor_analyst` when available.",
     "- For Ghidra edit tasks, default to an approval-ready proposal bundle rather than silently mutating the program unless the user explicitly asked for changes to be applied and the evidence is strong.",
     "- In auto-triage or sweep-driven runs, it is acceptable to emit conservative approval-ready rename/type/comment/prototype proposals when they materially improve later analysis, even if the original request was not phrased as an edit request.",
+    "- Every approval-queue proposal must carry a non-empty `evidence` array with 1-3 short concrete support points. Good evidence mentions exact function/address anchors, strings, xrefs, imports/APIs, decoded constants, or short decompiler observations that justify the edit.",
+    "- If you cannot name concrete evidence for a proposed rename/type/comment/prototype change, keep it in prose instead of the machine-readable approval queue block.",
     "- If the current Ghidra MCP surface cannot perform a desired edit such as creating a brand-new struct type or arbitrary binary patching, keep that idea in normal prose rather than placing it in the machine-readable approval queue block.",
     "- Until a rename is actually applied, keep using the current canonical function/address in prose and treat the suggested name only as an alias or recommendation.",
     "- When the evidence supports a narrow, high-signal detection rule, include a concise YARA rule proposal block rather than burying the rule idea in prose.",

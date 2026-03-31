@@ -9,6 +9,7 @@
 import argparse
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urljoin
@@ -35,6 +36,9 @@ ghidra_server_url = DEFAULT_GHIDRA_SERVER
 ghidra_fallback_mode = str(os.environ.get("GHIDRA_MCP_FALLBACK_MODE") or DEFAULT_FALLBACK_MODE).strip().lower()
 ghidra_artifact_bundle_dir = str(os.environ.get("GHIDRA_ARTIFACT_BUNDLE_DIR") or "").strip()
 _artifact_bundle_loaded = False
+_FUNCTION_SELECTOR_WITH_ADDRESS_RE = re.compile(
+    r"^\s*(?P<name>.+?)\s*@\s*(?P<address>(?:0x)?[0-9A-Fa-f]+)\s*$"
+)
 
 
 def _normalize_fallback_mode(raw_mode: str) -> str:
@@ -112,6 +116,16 @@ def _call_mutating_with_fallback(tool_name: str, live_callable, *artifact_args, 
             return _read_only_mutation_error(tool_name)
     return live_result
 
+
+def _canonicalize_function_selector(value: str) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    match = _FUNCTION_SELECTOR_WITH_ADDRESS_RE.match(candidate)
+    if match:
+        return match.group("name").strip()
+    return candidate
+
 def safe_get(endpoint: str, params: dict = None) -> list:
     """
     Perform a GET request with optional query parameters.
@@ -165,7 +179,8 @@ def decompile_function(name: str) -> str:
     """
     Decompile a specific function by name and return the decompiled C code.
     """
-    return _call_with_fallback("decompile_function", lambda: safe_post("decompile", name), name)
+    canonical_name = _canonicalize_function_selector(name)
+    return _call_with_fallback("decompile_function", lambda: safe_post("decompile", canonical_name), canonical_name)
 
 @mcp.tool()
 def rename_function(old_name: str, new_name: str) -> str:
@@ -231,12 +246,13 @@ def search_functions_by_name(query: str, offset: int = 0, limit: int = 100) -> l
     """
     Search for functions whose name contains the given substring.
     """
-    if not query:
+    canonical_query = _canonicalize_function_selector(query)
+    if not canonical_query:
         return ["Error: query string is required"]
     return _call_with_fallback(
         "search_functions_by_name",
-        lambda: safe_get("searchFunctions", {"query": query, "offset": offset, "limit": limit}),
-        query,
+        lambda: safe_get("searchFunctions", {"query": canonical_query, "offset": offset, "limit": limit}),
+        canonical_query,
         offset,
         limit,
     )
@@ -424,10 +440,11 @@ def get_function_xrefs(name: str, offset: int = 0, limit: int = 100) -> list:
     Returns:
         List of references to the specified function
     """
+    canonical_name = _canonicalize_function_selector(name)
     return _call_with_fallback(
         "get_function_xrefs",
-        lambda: safe_get("function_xrefs", {"name": name, "offset": offset, "limit": limit}),
-        name,
+        lambda: safe_get("function_xrefs", {"name": canonical_name, "offset": offset, "limit": limit}),
+        canonical_name,
         offset,
         limit,
     )

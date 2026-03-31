@@ -149,6 +149,6 @@ Best high-level comparison view:
 
 ## 8. Where To Extend The Suite
 
-- Add or edit benchmark binaries: [Experimental_Test_Source/README.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/Experimental_Test_Source/README.md)
-- Add sweep dimensions or guardrails: [config/README.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/config/README.md)
-- Understand the current supported evaluation design: [TESTING_PLAN.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/TESTING_PLAN.md)
+- Add or edit benchmark binaries: [Experimental_Test_Source/README.md](Experimental_Test_Source/README.md)
+- Add sweep dimensions or guardrails: [config/README.md](config/README.md)
+- Understand the current supported evaluation design: [TESTING_PLAN.md](TESTING_PLAN.md)

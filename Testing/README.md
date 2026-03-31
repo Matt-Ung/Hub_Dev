@@ -11,7 +11,7 @@
 - **Source-code track**: datasets, templates, and prompt scaffolding only
   - there is no dedicated source-eval runner yet
 
-If you are new to the testing suite, start with [START_HERE.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/START_HERE.md).
+If you are new to the testing suite, start with [START_HERE.md](START_HERE.md).
 
 ## Directory Map
 
@@ -42,7 +42,7 @@ python Testing/render_test_catalog.py --corpus experimental
 
 ## Current Sweep Dimensions
 
-The maintained default sweep is defined in [Testing/config/experiment_sweeps.json](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/config/experiment_sweeps.json).
+The maintained default sweep is defined in [Testing/config/experiment_sweeps.json](config/experiment_sweeps.json).
 
 It currently studies these one-variable-at-a-time families:
 
@@ -95,12 +95,13 @@ Inside each run slot:
 - `judge_result.json`
 - `record.json`
 
-See [Testing/results/README.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/results/README.md) for the full output map.
+See [Testing/results/README.md](results/README.md) for the full output map.
 
 ## Extension Guides
 
-- [START_HERE.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/START_HERE.md): how to run the suite end to end
-- [TESTING_PLAN.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/TESTING_PLAN.md): current evaluation design
-- [config/README.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/config/README.md): how to add sweep variables, prompts, and guardrails
-- [Experimental_Test_Source/README.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/Experimental_Test_Source/README.md): how to add samples and tasks
-- [Prototype_Test_Source/README.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/Prototype_Test_Source/README.md): prototype smoke corpus notes
+- [multi_agent_wf/extension_tutorial.md](../multi_agent_wf/extension_tutorial.md): workflow/dashboard extension map and how new pipeline or architecture options flow into testing
+- [START_HERE.md](START_HERE.md): how to run the suite end to end
+- [TESTING_PLAN.md](TESTING_PLAN.md): current evaluation design
+- [config/README.md](config/README.md): how to add sweep variables, prompts, and guardrails
+- [Experimental_Test_Source/README.md](Experimental_Test_Source/README.md): how to add samples and tasks
+- [Prototype_Test_Source/README.md](Prototype_Test_Source/README.md): prototype smoke corpus notes

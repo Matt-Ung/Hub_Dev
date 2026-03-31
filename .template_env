@@ -180,15 +180,20 @@ STATUS_LOG_STDOUT=true
 
 # Server ids that should have successful results cached by exact call signature.
 # Change only if you intentionally expand or reduce caching coverage.
-TOOL_RESULT_CACHE_SERVER_MARKERS=capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy
+TOOL_RESULT_CACHE_SERVER_MARKERS=ghidra,capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy
 
 # Server ids that must stay serialized even when worker parallelism is enabled.
-# Keep ghidra here unless you know the backend is safe under concurrency.
-SERIAL_MCP_SERVER_MARKERS=ghidra
+# These defaults keep the mutation-prone / stateful servers serialized while
+# still allowing read-only scanners to overlap:
+#   ghidra         = live project/session backend
+#   yara           = generated rule + index writes
+#   agent_artifacts = reusable artifact writes
+#   binary_patch   = patched-output emission
+SERIAL_MCP_SERVER_MARKERS=ghidra,yara,agent_artifacts,binary_patch
 
 # false = disable the local automation trigger server used for Ghidra auto-load workflows.
 # true  = keep the local trigger endpoint enabled.
-AUTOMATION_TRIGGER_ENABLED=true
+AUTOMATION_TRIGGER_ENABLED=false
 
 # Local automation trigger bind settings.
 AUTOMATION_TRIGGER_HOST=127.0.0.1

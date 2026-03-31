@@ -79,6 +79,9 @@ _AUTOMATION_RUN_HISTORY: Dict[str, Dict[str, Any]] = {}
 _FRONTEND_HEAD_PATH = Path(__file__).resolve().parent / "assets" / "frontend_head.html"
 _AUTOMATION_STATUS_PATH = "/automation/status"
 
+# Tutorial 1.5 in extension_tutorial.md: preset names auto-populate here from
+# workflow config. Tutorial 4.2: add a new helper/control only when you are
+# introducing a brand new workflow knob, not just another preset name.
 _PIPELINE_PRESET_CHOICES = [("DYNAMIC (agent chooses)", "dynamic")] + [
     (name, name) for name in DEEP_AGENT_PIPELINE_PRESETS.keys()
 ]
@@ -90,12 +93,14 @@ _ARCHITECTURE_PRESET_CHOICES = [("DYNAMIC (agent chooses)", "dynamic")] + [
 def _load_frontend_head() -> str:
     try:
         content = _FRONTEND_HEAD_PATH.read_text(encoding="utf-8")
-        status_url = (
-            f"http://{AUTOMATION_TRIGGER_HOST}:{AUTOMATION_TRIGGER_PORT}{_AUTOMATION_STATUS_PATH}"
-            if AUTOMATION_TRIGGER_ENABLED
-            else ""
+        status_host = AUTOMATION_TRIGGER_HOST if AUTOMATION_TRIGGER_ENABLED else ""
+        status_port = str(AUTOMATION_TRIGGER_PORT) if AUTOMATION_TRIGGER_ENABLED else ""
+        status_path = _AUTOMATION_STATUS_PATH if AUTOMATION_TRIGGER_ENABLED else ""
+        return (
+            content.replace("__AUTOMATION_STATUS_HOST__", status_host)
+            .replace("__AUTOMATION_STATUS_PORT__", status_port)
+            .replace("__AUTOMATION_STATUS_PATH__", status_path)
         )
-        return content.replace("__AUTOMATION_STATUS_URL__", status_url)
     except FileNotFoundError:
         return ""
 
@@ -200,7 +205,10 @@ def _validation_gate_container(state: Dict[str, Any]):
 
 
 def _automation_status_board(state: Dict[str, Any]):
-    return gr.update(value=render_automation_status_panel(state), visible=True)
+    return gr.update(
+        value=render_automation_status_panel(state),
+        visible=bool(AUTOMATION_TRIGGER_ENABLED),
+    )
 
 
 def _ghidra_change_queue_board(state: Dict[str, Any]):
@@ -1950,6 +1958,7 @@ class WorkflowUI:
                     automation_status_panel = gr.HTML(
                         value=render_automation_status_panel(initial_state),
                         elem_id="automation-status-panel",
+                        visible=bool(AUTOMATION_TRIGGER_ENABLED),
                     )
                     with gr.Accordion("Planned Work Items", open=False):
                         planned_work_items_panel = gr.HTML(value=render_planned_work_items_panel(initial_state))

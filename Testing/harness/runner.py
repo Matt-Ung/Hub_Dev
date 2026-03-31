@@ -8,6 +8,7 @@ build -> bundle prep -> per-sample-task analysis -> judging -> aggregation.
 
 If you need to add a new run-level knob, wire it through:
 - CLI args here
+- env passthrough here when the runtime reads it from process env
 - `run_metadata`
 - preflight validation
 - reporting fields if the knob should appear in outputs
@@ -127,6 +128,9 @@ def main(argv: List[str] | None = None) -> None:
     run_dir = ensure_dir(RUNS_ROOT / run_id)
     sample_root = ensure_dir(run_dir / "samples")
 
+    # Tutorial 5.3 in multi_agent_wf/extension_tutorial.md: mirror any new
+    # env-driven workflow knob here so single runs and sweep child runs use the
+    # same runtime configuration path.
     os.environ["DEEP_WORKER_SUBAGENT_PROFILE"] = str(args.subagent_profile or "default").strip() or "default"
     os.environ["DEEP_WORKER_PERSONA_PROFILE"] = str(args.worker_persona_profile or "default").strip() or "default"
     if str(args.force_model or "").strip():

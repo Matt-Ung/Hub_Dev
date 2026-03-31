@@ -1,5 +1,13 @@
 `multi_agent_wf/` package layout
 
+Quickstart:
+
+- minimal launch instructions: [SETUP_GUIDE.md](../SETUP_GUIDE.md)
+- extension guide: [extension_tutorial.md](extension_tutorial.md)
+- default run dataflow diagrams: [docs/agent_run_dataflow.md](../docs/agent_run_dataflow.md)
+- entrypoint: `python -m multi_agent_wf.main`
+- workflow config source of truth: [workflow_config/](workflow_config)
+
 - `main.py`
   Package entrypoint. Bootstraps env/config and launches the Gradio UI.
 - `config.py`

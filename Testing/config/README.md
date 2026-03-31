@@ -4,6 +4,10 @@ JSON config files in this directory are the main extension surface for the testi
 
 Because JSON does not support comments, treat this file as the lightweight guide for what each config controls and how to extend it safely.
 
+If you are extending the workflow/dashboard itself, start with
+[multi_agent_wf/extension_tutorial.md](../../multi_agent_wf/extension_tutorial.md)
+first, then return here to wire the new option into sweeps or launch presets.
+
 ## File Roles
 
 - `binary_judge_rubric.json`
@@ -27,7 +31,7 @@ Because JSON does not support comments, treat this file as the lightweight guide
 
 ## Add A New Sweep Dimension
 
-Edit [experiment_sweeps.json](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/config/experiment_sweeps.json).
+Edit [experiment_sweeps.json](experiment_sweeps.json).
 
 Rules:
 
@@ -55,13 +59,13 @@ Minimal pattern:
 
 If the new field is a run-level knob, also wire it through:
 
-- [Testing/harness/runner.py](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/harness/runner.py)
-- [Testing/harness/preflight.py](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/harness/preflight.py)
+- [Testing/harness/runner.py](../harness/runner.py)
+- [Testing/harness/preflight.py](../harness/preflight.py)
 - reporting only if it should appear in summaries
 
 ## Add A New Tool-Availability Profile
 
-Edit [tool_profiles.json](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/config/tool_profiles.json).
+Edit [tool_profiles.json](tool_profiles.json).
 
 Use:
 
@@ -72,7 +76,7 @@ Prefer tool profiles when studying MCP/tool availability instead of creating ad 
 
 ## Add A New Query Variant
 
-Edit [query_variants.json](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/config/query_variants.json).
+Edit [query_variants.json](query_variants.json).
 
 Each variant wraps the base task query as:
 
@@ -82,7 +86,7 @@ Keep these variants small and mechanical. If a change is really a role/persona o
 
 ## Add Or Change The Binary Rubric
 
-Edit [binary_judge_rubric.json](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/config/binary_judge_rubric.json).
+Edit [binary_judge_rubric.json](binary_judge_rubric.json).
 
 The current harness derives dimension fields from this rubric, so the safe order is:
 
@@ -95,11 +99,11 @@ Do not hardcode rubric field names elsewhere unless absolutely necessary.
 
 ## Adjust Budget / Launch Safety
 
-Edit [budget_guardrails.json](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/config/budget_guardrails.json) when you want to change:
+Edit [budget_guardrails.json](budget_guardrails.json) when you want to change:
 
 - per-run ceilings
 - experiment ceilings
 - projected-cost heuristics
 - judge-model requirements
 
-Use [launch_presets.json](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/config/launch_presets.json) for named operational entry points, not for scientific sweep definitions.
+Use [launch_presets.json](launch_presets.json) for named operational entry points, not for scientific sweep definitions.

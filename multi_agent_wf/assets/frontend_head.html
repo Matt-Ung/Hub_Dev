@@ -39,7 +39,19 @@
 (() => {
   if (window.__wfTodoTimerInstalled) return;
   window.__wfTodoTimerInstalled = true;
-  const automationStatusUrl = "__AUTOMATION_STATUS_URL__";
+  const automationStatusHost = "__AUTOMATION_STATUS_HOST__";
+  const automationStatusPort = "__AUTOMATION_STATUS_PORT__";
+  const automationStatusPath = "__AUTOMATION_STATUS_PATH__";
+  function resolveAutomationStatusUrl() {
+    if (!automationStatusPath || !automationStatusPort) return "";
+    let host = automationStatusHost;
+    if (!host || host === "0.0.0.0" || host === "127.0.0.1" || host === "localhost") {
+      host = window.location.hostname || "127.0.0.1";
+    }
+    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+    return `${protocol}//${host}:${automationStatusPort}${automationStatusPath}`;
+  }
+  const automationStatusUrl = resolveAutomationStatusUrl();
   let automationStatusPollInFlight = false;
   let lastAutomationHtml = null;
   let lastSnapshotVersion = -1;

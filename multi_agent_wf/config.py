@@ -119,6 +119,9 @@ def resolve_pipeline_definition(
     pipeline_template: List[Dict[str, Any]],
     worker_architecture: List[Tuple[str, int]],
 ) -> List[Dict[str, Any]]:
+    # Tutorial 1.2 in extension_tutorial.md: `use_worker_architecture` is
+    # resolved here so a pipeline stage can inherit the selected architecture
+    # preset instead of hardcoding its own slot list.
     resolved: List[Dict[str, Any]] = []
     for raw_stage in pipeline_template:
         stage = dict(raw_stage)
@@ -133,6 +136,9 @@ def resolve_pipeline_definition(
 def _pipeline_log_slots_from_presets(
     pipeline_presets: Mapping[str, List[Dict[str, Any]]],
 ) -> List[Tuple[str, str]]:
+    # Tutorial 1.5 in extension_tutorial.md: stage log accordions are derived
+    # from pipeline presets, so valid new stage names appear in the dashboard
+    # automatically without extra UI registration.
     ordered: List[Tuple[str, str]] = []
     seen: set[Tuple[str, str]] = set()
     for pipeline in pipeline_presets.values():
@@ -271,6 +277,8 @@ def _build_runtime_settings(
     loaded_dotenv: Optional[Path] = None,
     extra_launch_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    # Tutorial 4.1 in extension_tutorial.md: add env-backed workflow knobs and
+    # their normalized defaults here before wiring them into frontend/runtime.
     current_workflow_config = workflow_config or _load_workflow_config_with_placeholders()
     architecture_presets = current_workflow_config["architecture_presets"]
     architecture_preset_descriptions = current_workflow_config["architecture_preset_descriptions"]
@@ -322,7 +330,7 @@ def _build_runtime_settings(
             for marker in str(
                 env.get(
                     "TOOL_RESULT_CACHE_SERVER_MARKERS",
-                    "capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy",
+                    "ghidra,capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy",
                 )
             ).split(",")
             if marker.strip()
@@ -355,7 +363,7 @@ def _build_runtime_settings(
         "DEFAULT_SHELL_EXECUTION_MODE": _normalize_shell_execution_mode(
             env.get("DEFAULT_SHELL_EXECUTION_MODE", "none")
         ),
-        "AUTOMATION_TRIGGER_ENABLED": _env_flag_from(env, "AUTOMATION_TRIGGER_ENABLED", True),
+        "AUTOMATION_TRIGGER_ENABLED": _env_flag_from(env, "AUTOMATION_TRIGGER_ENABLED", False),
         "AUTOMATION_TRIGGER_HOST": (env.get("AUTOMATION_TRIGGER_HOST") or "127.0.0.1").strip() or "127.0.0.1",
         "AUTOMATION_TRIGGER_PORT": int(env.get("AUTOMATION_TRIGGER_PORT", "7861")),
         "AUTOMATION_TRIGGER_PATH": (

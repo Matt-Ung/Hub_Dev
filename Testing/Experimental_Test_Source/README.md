@@ -11,9 +11,9 @@ Testing/build/experimental/
 The benchmark definition is split across:
 
 - the C source files in this directory
-- [sample_manifest.json](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/Experimental_Test_Source/sample_manifest.json)
+- [sample_manifest.json](sample_manifest.json)
 
-See [SAMPLE_INDEX.md](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/Experimental_Test_Source/SAMPLE_INDEX.md) for the current sample matrix and coverage notes.
+See [SAMPLE_INDEX.md](SAMPLE_INDEX.md) for the current sample matrix and coverage notes.
 
 ## Build
 
@@ -26,7 +26,7 @@ make -C Testing/Experimental_Test_Source upx
 
 1. Add the new `.c` file here.
 2. Update the Makefile so the executable is built into `Testing/build/experimental/`.
-3. Add a manifest entry in [sample_manifest.json](/Users/matthewung/Desktop/Thesis%20Tools/Hub_Dev/Testing/Experimental_Test_Source/sample_manifest.json).
+3. Add a manifest entry in [sample_manifest.json](sample_manifest.json).
 4. Rebuild:
 
 ```bash

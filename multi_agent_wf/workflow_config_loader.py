@@ -108,6 +108,9 @@ def _normalize_pipeline_stage(raw_stage: Any, label: str) -> Dict[str, Any]:
 
 
 def _load_pipeline_presets(config_dir: Path) -> tuple[Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
+    # Tutorial 1.2 in extension_tutorial.md: add new pipeline preset entries in
+    # `workflow_config/pipeline_presets.json`. If a preset references a new
+    # `stage_kind`, continue with Tutorial 2 before using that preset.
     raw = _expect_mapping(_load_json_file(config_dir, "pipeline_presets.json"), "pipeline_presets.json")
     presets: Dict[str, List[Dict[str, Any]]] = {}
     descriptions: Dict[str, str] = {}
@@ -133,6 +136,9 @@ def _load_pipeline_presets(config_dir: Path) -> tuple[Dict[str, List[Dict[str, A
 
 
 def _load_agent_archetype_specs(config_dir: Path) -> Dict[str, Dict[str, str]]:
+    # Tutorial 3.2 in extension_tutorial.md: register each new role here before
+    # any architecture preset can reference it. If the role uses a new
+    # `tool_domain`, continue with Tutorial 3.6 in runtime.py.
     raw = _expect_mapping(_load_json_file(config_dir, "agent_archetype_specs.json"), "agent_archetype_specs.json")
     specs: Dict[str, Dict[str, str]] = {}
     required_keys = ("description", "tool_domain", "preferred_mode", "typical_complexity")
@@ -162,6 +168,8 @@ def _load_text_map(config_dir: Path, filename: str, placeholders: Dict[str, str]
 
 
 def _load_stage_kind_metadata(config_dir: Path) -> Dict[str, Dict[str, bool]]:
+    # Tutorial 2.1 in extension_tutorial.md: every new stage kind starts here,
+    # but it must stay aligned with Tutorials 2.2-2.6 before it is runnable.
     raw = _expect_mapping(_load_json_file(config_dir, "stage_kind_metadata.json"), "stage_kind_metadata.json")
     required_keys = (
         "tool_free",

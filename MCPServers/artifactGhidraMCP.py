@@ -9,6 +9,7 @@ would otherwise require manually opening each sample in the GUI.
 import argparse
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -25,6 +26,9 @@ mcp = FastMCP(
 )
 
 _BUNDLE: "ArtifactBundle | None" = None
+_FUNCTION_SELECTOR_WITH_ADDRESS_RE = re.compile(
+    r"^\s*(?P<name>.+?)\s*@\s*(?P<address>(?:0x)?[0-9A-Fa-f]+)\s*$"
+)
 
 
 def _paginate(items: List[Any], offset: int = 0, limit: int = 100) -> List[Any]:
@@ -93,6 +97,16 @@ def _read_only_error(tool_name: str) -> str:
     )
 
 
+def _canonicalize_function_selector(value: str) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    match = _FUNCTION_SELECTOR_WITH_ADDRESS_RE.match(candidate)
+    if match:
+        return match.group("name").strip()
+    return candidate
+
+
 @mcp.tool()
 def list_methods(offset: int = 0, limit: int = 100) -> list[str]:
     return _paginate([str(item.get("name") or "") for item in _bundle().functions if item.get("name")], offset, limit)
@@ -105,9 +119,10 @@ def list_classes(offset: int = 0, limit: int = 100) -> list:
 
 @mcp.tool()
 def decompile_function(name: str) -> str:
-    function = _bundle().function_by_name(name)
+    canonical_name = _canonicalize_function_selector(name)
+    function = _bundle().function_by_name(canonical_name)
     if not function:
-        return f"Error: function not found: {name}"
+        return f"Error: function not found: {canonical_name or name}"
     return str(function.get("decompilation") or function.get("decompiled") or "")
 
 
@@ -149,7 +164,8 @@ def list_data_items(offset: int = 0, limit: int = 100) -> list:
 
 @mcp.tool()
 def search_functions_by_name(query: str, offset: int = 0, limit: int = 100) -> list:
-    needle = str(query or "").strip().lower()
+    canonical_query = _canonicalize_function_selector(query)
+    needle = str(canonical_query or "").strip().lower()
     if not needle:
         return ["Error: query string is required"]
     matches = [item for item in _bundle().functions if needle in str(item.get("name") or "").lower()]
@@ -239,9 +255,10 @@ def get_xrefs_from(address: str, offset: int = 0, limit: int = 100) -> list:
 
 @mcp.tool()
 def get_function_xrefs(name: str, offset: int = 0, limit: int = 100) -> list:
-    function = _bundle().function_by_name(name)
+    canonical_name = _canonicalize_function_selector(name)
+    function = _bundle().function_by_name(canonical_name)
     if not function:
-        return [f"Error: function not found: {name}"]
+        return [f"Error: function not found: {canonical_name or name}"]
     address = str(function.get("address") or function.get("entry") or "").strip()
     refs = _bundle().refs_to.get(address, [])
     return _paginate(list(refs), offset, limit)

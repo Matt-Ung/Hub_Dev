@@ -77,6 +77,9 @@ def _build_run_plan(
     variable_filters: List[str] | None = None,
     corpus_override: str = "",
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], int]:
+    # Tutorial 5.1 in multi_agent_wf/extension_tutorial.md: add maintained
+    # sweep families in `Testing/config/experiment_sweeps.json`. If a family
+    # adds a new runner field, continue with Tutorial 5.3 as well.
     baseline = dict(config.get("baseline") or {})
     if corpus_override:
         baseline["corpus"] = corpus_override

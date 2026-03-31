@@ -6,7 +6,6 @@ import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
@@ -88,6 +87,9 @@ _AUTO_TRIAGE_HASHDB_ALGORITHMS = ("crc32", "fnv1a32", "djb2", "sdbm")
 _HASHLIKE_STRING_RE = re.compile(r"(?i)\b(?:0x)?([0-9a-f]{8,16})\b")
 _AUTO_TRIAGE_UPX_OUTPUT_DIR = REPO_ROOT / ".deep" / "auto_triage_unpack"
 _FUNCTION_NAME_LIKE_RE = re.compile(r"^(?:FUN_|sub_|LAB_|thunk_)?[A-Za-z_~?][A-Za-z0-9_@$?~:<>\.-]*$")
+_FUNCTION_SELECTOR_WITH_ADDRESS_RE = re.compile(
+    r"^\s*(?P<name>.+?)\s*@\s*(?P<address>(?:0x)?[0-9A-Fa-f]+)\s*$"
+)
 
 
 def _normalize_worker_subagent_profile(value: str) -> str:
@@ -236,6 +238,35 @@ def _server_requires_serial_calls(server_id: str) -> bool:
     return bool(sid) and any(marker in sid for marker in SERIAL_MCP_SERVER_MARKERS)
 
 
+def _normalize_tool_args_for_execution(server_id: str, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(tool_args or {})
+    sid = (server_id or "").lower()
+    normalized_tool_name = str(tool_name or "").strip()
+
+    if "ghidra" in sid:
+        if normalized_tool_name in {"decompile_function", "get_function_xrefs"}:
+            raw_name = str(normalized.get("name") or "").strip()
+            match = _FUNCTION_SELECTOR_WITH_ADDRESS_RE.match(raw_name)
+            if match and _looks_like_function_name(match.group("name")):
+                normalized["name"] = match.group("name").strip()
+        elif normalized_tool_name == "search_functions_by_name":
+            raw_query = str(normalized.get("query") or "").strip()
+            match = _FUNCTION_SELECTOR_WITH_ADDRESS_RE.match(raw_query)
+            if match and _looks_like_function_name(match.group("name")):
+                normalized["query"] = match.group("name").strip()
+
+    return normalized
+
+
+def _tool_call_allows_result_cache(server_id: str, tool_name: str) -> bool:
+    normalized_tool_name = str(tool_name or "").strip()
+    if not _server_allows_result_cache(server_id):
+        return False
+    if "ghidra" in str(server_id or "").lower() and normalized_tool_name in _GHIDRA_MUTATING_TOOL_NAMES:
+        return False
+    return True
+
+
 def _tool_result_cache_key(server_id: str, tool_name: str, tool_args: Dict[str, Any]) -> str:
     payload = {
         "server_id": server_id,
@@ -303,11 +334,12 @@ def _append_tool_cache_note(
 
 
 def _make_cached_tool_call_processor(server_id: str):
-    cacheable = _server_allows_result_cache(server_id)
     requires_serial_calls = _server_requires_serial_calls(server_id)
 
     async def _processor(ctx: Any, direct_call: Any, tool_name: str, tool_args: Dict[str, Any]) -> Any:
         normalized_tool_name = str(tool_name or "").strip()
+        normalized_tool_args = _normalize_tool_args_for_execution(server_id, normalized_tool_name, tool_args)
+        cacheable = _tool_call_allows_result_cache(server_id, normalized_tool_name)
         if (
             "ghidra" in str(server_id or "").lower()
             and normalized_tool_name in _GHIDRA_MUTATING_TOOL_NAMES
@@ -323,11 +355,11 @@ def _make_cached_tool_call_processor(server_id: str):
 
         async def _direct_call_once() -> Any:
             if not requires_serial_calls:
-                return await direct_call(normalized_tool_name, tool_args)
+                return await direct_call(normalized_tool_name, normalized_tool_args)
             lock = _SERIAL_MCP_CALL_LOCKS.setdefault(server_id, Lock())
             await asyncio.to_thread(lock.acquire)
             try:
-                return await direct_call(normalized_tool_name, tool_args)
+                return await direct_call(normalized_tool_name, normalized_tool_args)
             finally:
                 lock.release()
 
@@ -340,11 +372,18 @@ def _make_cached_tool_call_processor(server_id: str):
             return await _direct_call_once()
 
         cache = state.setdefault("tool_result_cache", {})
-        cache_key = _tool_result_cache_key(server_id, normalized_tool_name, tool_args)
+        cache_key = _tool_result_cache_key(server_id, normalized_tool_name, normalized_tool_args)
         cached = cache.get(cache_key)
         if cached and cached.get("ok"):
             cached["hit_count"] = int(cached.get("hit_count", 0)) + 1
-            _append_tool_cache_note(state, stage_name, "tool_cache_hit", server_id, normalized_tool_name, tool_args)
+            _append_tool_cache_note(
+                state,
+                stage_name,
+                "tool_cache_hit",
+                server_id,
+                normalized_tool_name,
+                normalized_tool_args,
+            )
             return cached.get("result")
 
         current_loop = asyncio.get_running_loop()
@@ -366,7 +405,14 @@ def _make_cached_tool_call_processor(server_id: str):
                     owner = True
 
         if not owner:
-            _append_tool_cache_note(state, stage_name, "tool_cache_wait", server_id, normalized_tool_name, tool_args)
+            _append_tool_cache_note(
+                state,
+                stage_name,
+                "tool_cache_wait",
+                server_id,
+                normalized_tool_name,
+                normalized_tool_args,
+            )
             return await task
 
         try:
@@ -384,15 +430,29 @@ def _make_cached_tool_call_processor(server_id: str):
                 "ok": True,
                 "server_id": server_id,
                 "tool_name": normalized_tool_name,
-                "args": _json_safe(tool_args),
+                "args": _json_safe(normalized_tool_args),
                 "result": result,
                 "cached_at": datetime.now().isoformat(timespec="seconds"),
                 "hit_count": 0,
             }
             _prune_tool_result_cache(state)
-            _append_tool_cache_note(state, stage_name, "tool_cache_store", server_id, normalized_tool_name, tool_args)
+            _append_tool_cache_note(
+                state,
+                stage_name,
+                "tool_cache_store",
+                server_id,
+                normalized_tool_name,
+                normalized_tool_args,
+            )
         else:
-            _append_tool_cache_note(state, stage_name, "tool_cache_skip", server_id, normalized_tool_name, tool_args)
+            _append_tool_cache_note(
+                state,
+                stage_name,
+                "tool_cache_skip",
+                server_id,
+                normalized_tool_name,
+                normalized_tool_args,
+            )
         return result
 
     return _processor
@@ -425,6 +485,9 @@ def _toolsets_for_domain(
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
 ) -> List[MCPServerStdio]:
+    # Tutorial 3.6 in extension_tutorial.md: if a new role introduces a new
+    # `tool_domain`, add the mapping here before referencing that domain from
+    # `agent_archetype_specs.json`.
     if tool_domain == "none":
         return []
     if tool_domain == "preflight":
@@ -1003,6 +1066,9 @@ def build_stage_prompt(
     architecture: List[Tuple[str, int]],
     shared_state: Optional[Dict[str, Any]] = None,
 ) -> str:
+    # Tutorial 2.6 in extension_tutorial.md: only add stage-specific prompt
+    # shaping here when the JSON prompt/contract are not enough. Keep any new
+    # `stage_kind` logic aligned with the execution branch in `pipeline.py`.
     shared = shared_state or {}
     stage_meta = get_stage_kind_metadata(stage_kind)
     selected_pipeline_name = str(shared.get("selected_pipeline_name") or "").strip()
@@ -1297,8 +1363,10 @@ def build_stage_prompt(
                 f"`{GHIDRA_CHANGE_PROPOSALS_START}` and `{GHIDRA_CHANGE_PROPOSALS_END}`.",
                 "- The JSON payload must be an array of proposal objects.",
                 "- Proposal object keys should include: `id`, `action`, `target_kind`, `summary`, `rationale`, `evidence`, and the action-specific fields needed to apply the change.",
+                "- `evidence` must be a non-empty array of short concrete support points. Prefer 1-3 bullets such as function/address anchors, relevant strings, xrefs, imports/APIs, decoded constants, or short decompiler observations that justify the edit.",
                 "- Supported auto-apply actions are: `rename_function`, `rename_function_by_address`, `rename_data`, `rename_variable`, `set_function_prototype`, `set_local_variable_type`, `set_decompiler_comment`, and `set_disassembly_comment`.",
                 "- Only include proposals in this machine-readable block if they map directly to one of those supported actions and contain the exact fields needed for the corresponding MCP tool call.",
+                "- Do not emit a proposal with an empty `evidence` array. If the evidence is too weak to name concrete support points, keep the edit idea in prose instead of the approval queue.",
                 "- Unsupported ideas such as new struct definitions, enum creation, or binary patch concepts must stay in normal prose, not in the machine-readable approval queue block.",
                 "- If there are no concrete proposals for approval, emit an empty array in the machine-readable block rather than omitting the block.",
                 "- Naming rule: unless a proposal is explicitly marked as applied, do not speak as though the rename already exists in Ghidra. In prose, refer to the current canonical symbol/address and optionally show the suggested alias in parentheses.",
@@ -1389,9 +1457,6 @@ _ALLOW_GHIDRA_MUTATIONS: ContextVar[bool] = ContextVar(
 _TOOL_RESULT_CACHE_INFLIGHT_LOCK = Lock()
 _TOOL_RESULT_CACHE_INFLIGHT: Dict[str, Tuple[asyncio.Task[Any], Any]] = {}
 _SERIAL_MCP_CALL_LOCKS: Dict[str, Lock] = {}
-_AUTOMATION_TRIGGER_SERVER: ThreadingHTTPServer | None = None
-_AUTOMATION_TRIGGER_LOCK = Lock()
-_AUTOMATION_TRIGGER_PENDING = False
 _GHIDRA_MUTATING_TOOL_NAMES = {
     "rename_function",
     "rename_function_by_address",
@@ -1610,6 +1675,9 @@ def _direct_mcp_tool_call_sync(
             "error": f"No MCP server matching marker `{server_marker}` is configured.",
         }
 
+    normalized_tool_name = str(tool_name or "").strip()
+    normalized_tool_args = _normalize_tool_args_for_execution(server.id or "", normalized_tool_name, tool_args)
+    cacheable = _tool_call_allows_result_cache(server.id or "", normalized_tool_name)
     call_id = f"presweep_{tool_name}_{int(time.time() * 1000)}"
     if isinstance(state, dict):
         _append_tool_log_entries(
@@ -1619,22 +1687,68 @@ def _direct_mcp_tool_call_sync(
                 {
                     "stage": stage_name,
                     "kind": "tool_call",
-                    "tool_name": tool_name,
+                    "tool_name": normalized_tool_name,
                     "tool_call_id": call_id,
                     "server_id": server.id or "",
-                    "args": _json_safe(tool_args),
+                    "args": _json_safe(normalized_tool_args),
                     "source": "deterministic_presweeps.host",
                 }
             ],
         )
+        if cacheable:
+            cache = state.setdefault("tool_result_cache", {})
+            cache_key = _tool_result_cache_key(server.id or "", normalized_tool_name, normalized_tool_args)
+            cached = cache.get(cache_key)
+            if cached and cached.get("ok"):
+                cached["hit_count"] = int(cached.get("hit_count", 0)) + 1
+                _append_tool_cache_note(
+                    state,
+                    stage_name,
+                    "tool_cache_hit",
+                    server.id or "",
+                    normalized_tool_name,
+                    normalized_tool_args,
+                )
+                _append_tool_log_entries(
+                    state,
+                    stage_name,
+                    [
+                        {
+                            "stage": stage_name,
+                            "kind": "tool_return",
+                            "tool_name": normalized_tool_name,
+                            "tool_call_id": call_id,
+                            "server_id": server.id or "",
+                            "content": _render_tool_log_entry_content(cached.get("result")),
+                            "source": "deterministic_presweeps.host",
+                            "cached": True,
+                        }
+                    ],
+                )
+                return {
+                    "ok": True,
+                    "server_id": server.id or "",
+                    "tool_name": normalized_tool_name,
+                    "result": cached.get("result"),
+                    "text": _coerce_direct_tool_result_text(cached.get("result")),
+                    "error": "",
+                }
 
     cloned_server = _clone_mcp_server(server)
 
     async def _call() -> Any:
-        return await cloned_server.direct_call_tool(tool_name, dict(tool_args or {}))
+        return await cloned_server.direct_call_tool(normalized_tool_name, dict(normalized_tool_args or {}))
 
     try:
-        raw_result = asyncio.run(_call())
+        if _server_requires_serial_calls(server.id or ""):
+            lock = _SERIAL_MCP_CALL_LOCKS.setdefault(server.id or "", Lock())
+            lock.acquire()
+            try:
+                raw_result = asyncio.run(_call())
+            finally:
+                lock.release()
+        else:
+            raw_result = asyncio.run(_call())
         text_result = _coerce_direct_tool_result_text(raw_result)
         if isinstance(state, dict):
             _append_tool_log_entries(
@@ -1644,7 +1758,7 @@ def _direct_mcp_tool_call_sync(
                     {
                         "stage": stage_name,
                         "kind": "tool_return",
-                        "tool_name": tool_name,
+                        "tool_name": normalized_tool_name,
                         "tool_call_id": call_id,
                         "server_id": server.id or "",
                         "content": _render_tool_log_entry_content(raw_result),
@@ -1652,10 +1766,39 @@ def _direct_mcp_tool_call_sync(
                     }
                 ],
             )
+            if cacheable and _is_cacheable_tool_result(raw_result):
+                cache = state.setdefault("tool_result_cache", {})
+                cache[_tool_result_cache_key(server.id or "", normalized_tool_name, normalized_tool_args)] = {
+                    "ok": True,
+                    "server_id": server.id or "",
+                    "tool_name": normalized_tool_name,
+                    "args": _json_safe(normalized_tool_args),
+                    "result": raw_result,
+                    "cached_at": datetime.now().isoformat(timespec="seconds"),
+                    "hit_count": 0,
+                }
+                _prune_tool_result_cache(state)
+                _append_tool_cache_note(
+                    state,
+                    stage_name,
+                    "tool_cache_store",
+                    server.id or "",
+                    normalized_tool_name,
+                    normalized_tool_args,
+                )
+            elif cacheable:
+                _append_tool_cache_note(
+                    state,
+                    stage_name,
+                    "tool_cache_skip",
+                    server.id or "",
+                    normalized_tool_name,
+                    normalized_tool_args,
+                )
         return {
             "ok": True,
             "server_id": server.id or "",
-            "tool_name": tool_name,
+            "tool_name": normalized_tool_name,
             "result": raw_result,
             "text": text_result,
             "error": "",
@@ -1670,7 +1813,7 @@ def _direct_mcp_tool_call_sync(
                     {
                         "stage": stage_name,
                         "kind": "tool_return",
-                        "tool_name": tool_name,
+                        "tool_name": normalized_tool_name,
                         "tool_call_id": call_id,
                         "server_id": server.id or "",
                         "content": error_text,
@@ -1681,7 +1824,7 @@ def _direct_mcp_tool_call_sync(
         return {
             "ok": False,
             "server_id": server.id or "",
-            "tool_name": tool_name,
+            "tool_name": normalized_tool_name,
             "result": None,
             "text": "",
             "error": error_text,
@@ -2641,10 +2784,9 @@ def build_host_worker_assignment_executor(
 
     spec = AGENT_ARCHETYPE_SPECS[archetype_name]
     resolved_model = _resolve_model_id(spec.get("model"), stage_model, OPENAI_MODEL_ID)
-    toolsets = [
-        _clone_mcp_server(tool)
-        for tool in _toolsets_for_domain(spec["tool_domain"], runtime.static_tools, runtime.dynamic_tools)
-    ]
+    # Reuse the runtime's shared MCP connections for host-managed workers so
+    # parallel assignments do not relaunch a fresh stdio server fleet per work item.
+    toolsets = list(_toolsets_for_domain(spec["tool_domain"], runtime.static_tools, runtime.dynamic_tools))
     if spec["tool_domain"] != "none" and not toolsets:
         raise RuntimeError(
             f"Host-parallel worker requested {archetype_name!r}, but no {spec['tool_domain']} MCP toolsets are configured."
@@ -2657,6 +2799,9 @@ def build_host_worker_assignment_executor(
         "- Focus on the assigned work item only. Do not broaden into unrelated plan items.\n"
         "- Parallel peer workers may be running on other independent work items at the same time.\n"
         "- Reuse shared context and existing canonical sample metadata instead of re-deriving it unless conflicting evidence appears.\n"
+        "- Before issuing a broad catalog call such as `list_functions`, `list_imports`, `list_strings`, or `list_data_items`, check whether the needed catalog is already present in shared context or a recent tool result.\n"
+        "- Treat selectors like `function_name @ 0xADDRESS` as display hints, not canonical names. Strip the `@ address` suffix for name-based tools, or use the address with an address-based tool.\n"
+        "- Once you have mapped a dispatcher and its relevant handler family well enough for the current work item, stop re-probing the same handlers unless a new evidence target requires it.\n"
         "- Return a strong evidence bundle for this one work item.\n"
     )
     if slot_name != archetype_name:
@@ -2708,6 +2853,9 @@ def build_stage_runtime(
     skill_directories: List[str],
     deep_backend: Any,
 ) -> PipelineStageRuntime:
+    # Tutorial 2.4 in extension_tutorial.md: once a stage is added to a preset,
+    # this function can build its manager runtime automatically. It does not
+    # define the stage semantics; Tutorial 2.5 does that in `pipeline.py`.
     stage_name = str(stage_definition["name"])
     stage_kind = str(stage_definition["stage_kind"])
     architecture = list(stage_definition.get("architecture") or [])
