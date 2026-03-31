@@ -116,6 +116,9 @@ Current default baseline:
 | `validator_topology` | family baseline + `light`, `dual` |
 | `validator_review_level` | family baseline + `easy`, `intermediate`, `strict` |
 
+
+Some families also define a **family baseline**. This means the sweep inserts an extra local baseline run for that family using its `baseline_overrides`, and that family's variants are compared against that local baseline instead of only against the global default baseline. In the current sweep, this is used for `validator_topology` and `validator_review_level`.
+
 Current default size:
 
 - `21` configuration groups
