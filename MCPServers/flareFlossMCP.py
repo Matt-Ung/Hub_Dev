@@ -59,8 +59,49 @@ def _split_command(command: str) -> List[str]:
     if not command:
         return []
     if os.name == "nt":
-        return shlex.split(command, posix=False)
-    return shlex.split(command, posix=True)
+        argv = shlex.split(command, posix=False)
+    else:
+        argv = shlex.split(command, posix=True)
+    return _normalize_multivalue_choice_flags(argv)
+
+
+def _normalize_multivalue_choice_flags(argv: List[str]) -> List[str]:
+    if not argv:
+        return []
+
+    choice_flags = {"--only", "--no"}
+    normalized: List[str] = []
+    idx = 0
+    while idx < len(argv):
+        token = argv[idx]
+        matched_inline = False
+        for flag in choice_flags:
+            prefix = f"{flag}="
+            if token.startswith(prefix):
+                values = [part.strip() for part in token[len(prefix) :].split(",") if part.strip()]
+                if len(values) > 1:
+                    normalized.append(flag)
+                    normalized.extend(values)
+                    matched_inline = True
+                break
+        if matched_inline:
+            idx += 1
+            continue
+
+        normalized.append(token)
+        if token not in choice_flags:
+            idx += 1
+            continue
+
+        idx += 1
+        while idx < len(argv):
+            candidate = argv[idx]
+            if candidate.startswith("-"):
+                break
+            parts = [part.strip() for part in candidate.split(",") if part.strip()]
+            normalized.extend(parts or [candidate])
+            idx += 1
+    return normalized
 
 
 def _is_floss_argv0(argv0: str) -> bool:
@@ -313,11 +354,11 @@ def main():
             mcp.settings.host = args.mcp_host or "127.0.0.1"
             mcp.settings.port = args.mcp_port or 8083
             logger.info(f"Starting MCP server on http://{mcp.settings.host}:{mcp.settings.port}/sse")
-            mcp.run(transport="sse")
+            mcp.run(transport="sse", show_banner=False)
         except KeyboardInterrupt:
             logger.info("Server stopped by user")
     else:
-        mcp.run()
+        mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":

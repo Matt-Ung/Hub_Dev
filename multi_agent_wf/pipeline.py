@@ -1,4 +1,5 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
+from datetime import datetime
 import html
 import json
 import re
@@ -42,6 +43,7 @@ from .runtime import (
     run_deterministic_presweeps_sync,
 )
 from .shared_state import (
+    _append_tool_log_entries,
     _annotate_unapproved_ghidra_aliases,
     _empty_parent_input,
     _make_parent_input_callback,
@@ -60,6 +62,154 @@ from .shared_state import (
 
 class PipelineCancelled(RuntimeError):
     pass
+
+
+_GENERIC_YARA_STRINGS = {
+    "this program cannot be run in dos mode",
+    ".text",
+    ".rdata",
+    ".data",
+    "rich",
+    "mz",
+    "pe",
+    "error",
+    "help",
+}
+
+_USAGE_KEYS = (
+    "requests",
+    "tool_calls",
+    "input_tokens",
+    "cache_write_tokens",
+    "cache_read_tokens",
+    "input_audio_tokens",
+    "cache_audio_read_tokens",
+    "output_tokens",
+)
+
+
+def _empty_usage_snapshot() -> Dict[str, Any]:
+    return {**{key: 0 for key in _USAGE_KEYS}, "details": {}}
+
+
+def _coerce_usage_snapshot(raw: Any) -> Dict[str, Any]:
+    snapshot = _empty_usage_snapshot()
+    if raw is None:
+        return snapshot
+    source = raw if isinstance(raw, dict) else {key: getattr(raw, key, 0) for key in _USAGE_KEYS}
+    if not isinstance(raw, dict):
+        source["details"] = getattr(raw, "details", {})
+    for key in _USAGE_KEYS:
+        try:
+            snapshot[key] = int(source.get(key) or 0)
+        except Exception:
+            snapshot[key] = 0
+    details = source.get("details")
+    if isinstance(details, dict):
+        normalized: Dict[str, int] = {}
+        for key, value in details.items():
+            try:
+                normalized[str(key)] = int(value)
+            except Exception:
+                continue
+        snapshot["details"] = normalized
+    return snapshot
+
+
+def _result_usage_snapshot(result: Any) -> Dict[str, Any]:
+    usage_attr = getattr(result, "usage", None)
+    usage = usage_attr() if callable(usage_attr) else usage_attr
+    return _coerce_usage_snapshot(usage)
+
+
+def _merge_usage_snapshots(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    merged = _coerce_usage_snapshot(left)
+    rhs = _coerce_usage_snapshot(right)
+    for key in _USAGE_KEYS:
+        merged[key] = int(merged.get(key) or 0) + int(rhs.get(key) or 0)
+    details = dict(merged.get("details") or {})
+    for key, value in (rhs.get("details") or {}).items():
+        details[str(key)] = int(details.get(str(key), 0) or 0) + int(value or 0)
+    merged["details"] = details
+    return merged
+
+
+def _record_model_usage(
+    state: Dict[str, Any],
+    *,
+    phase: str,
+    stage_name: str,
+    model: str,
+    usage: Dict[str, Any],
+    slot_name: str = "",
+    work_item_id: str = "",
+) -> None:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    usage_snapshot = _coerce_usage_snapshot(usage)
+    if not any(int(usage_snapshot.get(key) or 0) for key in _USAGE_KEYS) and not (usage_snapshot.get("details") or {}):
+        return
+    shared["model_usage_totals"] = _merge_usage_snapshots(shared.get("model_usage_totals") or {}, usage_snapshot)
+    stage_bucket = dict((shared.get("model_usage_by_stage") or {}).get(stage_name) or _empty_usage_snapshot())
+    stage_bucket = _merge_usage_snapshots(stage_bucket, usage_snapshot)
+    shared.setdefault("model_usage_by_stage", {})[stage_name] = stage_bucket
+    shared.setdefault("model_usage_events", []).append(
+        {
+            "phase": str(phase or ""),
+            "stage_name": str(stage_name or ""),
+            "model": str(model or ""),
+            "slot_name": str(slot_name or ""),
+            "work_item_id": str(work_item_id or ""),
+            "usage": usage_snapshot,
+        }
+    )
+
+
+def _extract_yara_section(rule_text: str, section_name: str) -> str:
+    pattern = re.compile(
+        rf"(?ims)^\s*{re.escape(section_name)}\s*:\s*(.*?)(?=^\s*(?:meta|strings|condition)\s*:|\Z)"
+    )
+    match = pattern.search(str(rule_text or ""))
+    return match.group(1) if match else ""
+
+
+def _assess_yara_rule_specificity(rule_text: str) -> Tuple[bool, str]:
+    text = str(rule_text or "")
+    lower = text.lower()
+    if "condition:" not in lower:
+        return False, "rule is missing a condition section"
+
+    strings_body = _extract_yara_section(text, "strings")
+    condition_body = _extract_yara_section(text, "condition").lower()
+    quoted_strings = [match.group(1) for match in re.finditer(r'"((?:\\.|[^"\\])*)"', strings_body)]
+    hex_patterns = re.findall(r"\{[^}]+\}", strings_body)
+    import_calls = re.findall(r"pe\.(?:imports?|imphash)\s*\(", condition_body)
+
+    meaningful_strings = []
+    for raw_value in quoted_strings:
+        value = raw_value.encode("utf-8", "ignore").decode("unicode_escape", "ignore").strip().lower()
+        if len(value) < 5:
+            continue
+        if value in _GENERIC_YARA_STRINGS:
+            continue
+        if "dos mode" in value:
+            continue
+        meaningful_strings.append(value)
+
+    generic_condition_markers = [
+        "uint16(0) == 0x5a4d",
+        "uint32(0) == 0x464c457f",
+        "pe.number_of_sections",
+        "pe.entry_point",
+        "pe.machine",
+    ]
+    generic_condition_hits = sum(1 for marker in generic_condition_markers if marker in condition_body)
+    signal_count = len(meaningful_strings) + len(hex_patterns) + len(import_calls)
+
+    if signal_count < 2:
+        return False, "rule is too generic; expected at least two distinct behavior anchors such as unique strings, hex patterns, or import-based conditions"
+    if generic_condition_hits and signal_count <= generic_condition_hits:
+        return False, "rule is dominated by generic PE/startup checks rather than sample-specific behavior anchors"
+    return True, ""
 
 
 def _check_cancel_requested(state: Dict[str, Any], *, location: str = "") -> None:
@@ -408,7 +558,7 @@ def extract_ghidra_change_proposals(text: str) -> Tuple[List[Dict[str, Any]], st
             normalized_item = normalize_ghidra_change_proposal(raw_item)
             action = " ".join(str(normalized_item.get("action") or "").split()).lower()
             target_kind = " ".join(str(normalized_item.get("target_kind") or "").split()).lower()
-            evidence = _normalize_string_list(raw_item.get("evidence") or raw_item.get("evidence_targets"))
+            evidence, evidence_missing, evidence_source = _extract_ghidra_proposal_evidence(raw_item)
             proposal = {
                 "id": proposal_id,
                 "action": action,
@@ -426,6 +576,8 @@ def extract_ghidra_change_proposals(text: str) -> Tuple[List[Dict[str, Any]], st
                 "summary": " ".join(str(raw_item.get("summary") or raw_item.get("objective") or "").split()),
                 "rationale": " ".join(str(raw_item.get("rationale") or raw_item.get("reason") or "").split()),
                 "evidence": evidence,
+                "evidence_missing": evidence_missing,
+                "evidence_source": evidence_source,
                 "status": "pending",
                 "source_stage": " ".join(str(raw_item.get("source_stage") or "").split()),
                 "raw": raw_item,
@@ -522,6 +674,8 @@ def _merge_ghidra_proposal_records(
         "comment",
         "summary",
         "rationale",
+        "evidence_missing",
+        "evidence_source",
         "can_apply",
         "apply_reason",
         "apply_tool_name",
@@ -537,6 +691,17 @@ def _merge_ghidra_proposal_records(
         merged[key] = incoming_value
 
     merged["evidence"] = _merge_unique_string_lists(existing.get("evidence"), incoming.get("evidence"))
+    merged["evidence_missing"] = not bool(merged.get("evidence")) or bool(
+        existing.get("evidence_missing") and incoming.get("evidence_missing")
+    )
+    if not merged["evidence_missing"]:
+        merged["evidence_source"] = "structured"
+    else:
+        merged["evidence_source"] = str(
+            incoming.get("evidence_source")
+            or existing.get("evidence_source")
+            or "missing"
+        )
     merged["source_stages"] = _merge_unique_string_lists(existing.get("source_stages"), incoming.get("source_stage"))
     merged["dedupe_alias_ids"] = _merge_unique_string_lists(
         existing.get("dedupe_alias_ids"),
@@ -657,6 +822,7 @@ def update_ghidra_change_proposals_from_stage_output(
             existing_by_conflict[proposal_conflict_signature] = proposal_id or resolved_id or f"proposal_{len(existing)}"
 
     merged_proposals = list(existing.values())
+    weak_evidence_count = sum(1 for item in merged_proposals if bool(item.get("evidence_missing")))
     shared["ghidra_change_draft_proposals"] = merged_proposals
     if dropped_existing:
         append_status(
@@ -679,6 +845,11 @@ def update_ghidra_change_proposals_from_stage_output(
         shared["ghidra_change_queue_finalized"] = False
         shared["ghidra_change_proposals"] = []
         append_status(state, f"Ghidra change draft proposals parsed from {stage_name}: {len(proposals)}")
+    if weak_evidence_count:
+        append_status(
+            state,
+            f"Ghidra proposal evidence warning from {stage_name}: {weak_evidence_count} proposal(s) lacked structured evidence.",
+        )
     _store_ui_snapshot(state=state)
 
 
@@ -790,6 +961,15 @@ def update_generated_yara_rules_from_stage_output(
             existing.append(record)
             continue
 
+        specificity_ok, specificity_error = _assess_yara_rule_specificity(str(proposal.get("rule_text") or ""))
+        if not specificity_ok:
+            record["status"] = "failed"
+            record["error"] = specificity_error
+            append_status(state, f"YARA rule rejected from {stage_name}: {specificity_error}")
+            existing.append(record)
+            existing_signatures.add(signature)
+            continue
+
         write_result = _direct_mcp_tool_call_sync(
             runtime,
             state,
@@ -842,6 +1022,77 @@ def _normalize_string_list(value: Any) -> List[str]:
         return out
     normalized = " ".join(str(value).split())
     return [normalized] if normalized else []
+
+
+def _normalize_evidence_item(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        labeled_fields = (
+            ("function_address", "function"),
+            ("function_name", "function_name"),
+            ("address", "address"),
+            ("string", "string"),
+            ("decoded_string", "decoded_string"),
+            ("api", "api"),
+            ("import", "import"),
+            ("xref", "xref"),
+            ("rule", "rule"),
+            ("offset", "offset"),
+        )
+        free_text_fields = (
+            "fact",
+            "evidence",
+            "excerpt",
+            "artifact",
+            "observation",
+            "detail",
+            "summary",
+            "description",
+            "note",
+            "reason",
+            "rationale",
+        )
+        parts: List[str] = []
+        for key, label in labeled_fields:
+            normalized = _normalize_string_list(value.get(key))
+            if normalized:
+                parts.extend(f"{label}: {item}" for item in normalized)
+        for key in free_text_fields:
+            for item in _normalize_string_list(value.get(key)):
+                if item not in parts:
+                    parts.append(item)
+        return parts
+    if isinstance(value, (list, tuple, set)):
+        out: List[str] = []
+        for item in value:
+            out.extend(_normalize_evidence_item(item))
+        return out
+    return _normalize_string_list(value)
+
+
+def _extract_ghidra_proposal_evidence(raw_item: Dict[str, Any]) -> Tuple[List[str], bool, str]:
+    evidence_sources = (
+        raw_item.get("evidence"),
+        raw_item.get("evidence_targets"),
+        raw_item.get("supporting_evidence"),
+        raw_item.get("artifacts"),
+        raw_item.get("support"),
+        raw_item.get("proof"),
+        raw_item.get("observations"),
+        raw_item.get("anchors"),
+        raw_item.get("citations"),
+        raw_item.get("basis"),
+    )
+    evidence = _merge_unique_string_lists(*(_normalize_evidence_item(source) for source in evidence_sources))
+    if evidence:
+        return evidence, False, "structured"
+
+    rationale = " ".join(str(raw_item.get("rationale") or raw_item.get("reason") or "").split())
+    if rationale:
+        return [f"Rationale fallback: {rationale}"], True, "rationale_fallback"
+
+    return [], True, "missing"
 
 
 def extract_validation_gate(text: str, *, required_signoffs: int) -> Tuple[Dict[str, Any], str]:
@@ -1477,6 +1728,16 @@ def render_ghidra_change_queue_panel(state: Dict[str, Any]) -> str:
     pending_html = ""
     if pending:
         evidence = pending.get("evidence") or []
+        evidence_missing = bool(pending.get("evidence_missing"))
+        evidence_source = str(pending.get("evidence_source") or "").strip()
+        if not evidence and isinstance(pending.get("raw"), dict):
+            derived_evidence, derived_missing, derived_source = _extract_ghidra_proposal_evidence(
+                pending.get("raw") or {}
+            )
+            evidence = derived_evidence
+            evidence_missing = derived_missing
+            if not evidence_source:
+                evidence_source = derived_source
         evidence_html = "".join(
             f"<div style='margin-top: 2px; color: #5f6368;'>- {html.escape(str(item))}</div>"
             for item in evidence[:5]
@@ -1487,25 +1748,96 @@ def render_ghidra_change_queue_panel(state: Dict[str, Any]) -> str:
         rationale = html.escape(str(pending.get("rationale") or ""))
         apply_text = "yes" if bool(pending.get("can_apply")) else "proposal only"
         apply_reason = html.escape(str(pending.get("apply_reason") or ""))
-        field_line = ""
-        if current_name or proposed_name:
-            field_line = (
+        action = str(pending.get("action") or "unknown").strip()
+        function_address = str(pending.get("function_address") or "").strip()
+        function_name = str(pending.get("function_name") or "").strip()
+        address = str(pending.get("address") or function_address or "").strip()
+        variable_name = str(pending.get("variable_name") or "").strip()
+        current_type = str(pending.get("current_type") or "").strip()
+        proposed_type = str(pending.get("proposed_type") or "").strip()
+        prototype = str(pending.get("prototype") or "").strip()
+        comment = str(pending.get("comment") or "").strip()
+        evidence_warning = ""
+        if evidence_missing:
+            warning_text = "No structured evidence was supplied for this proposal."
+            if evidence_source == "rationale_fallback":
+                warning_text = (
+                    "No structured evidence was supplied for this proposal. "
+                    "The queue is showing a rationale fallback instead."
+                )
+            evidence_warning = (
+                "<div style='margin-top: 6px; padding: 6px 8px; border: 1px solid #f1d89a; "
+                "border-radius: 8px; background: #fff8e1; color: #7a5300;'>"
+                f"{html.escape(warning_text)}</div>"
+            )
+        detail_parts: List[str] = []
+        locator_parts: List[str] = []
+        if function_address:
+            locator_parts.append(f"<strong>function:</strong> {html.escape(function_address)}")
+        elif function_name:
+            locator_parts.append(f"<strong>function:</strong> {html.escape(function_name)}")
+        if address and address != function_address:
+            locator_parts.append(f"<strong>address:</strong> {html.escape(address)}")
+        if variable_name:
+            locator_parts.append(f"<strong>variable:</strong> {html.escape(variable_name)}")
+        if locator_parts:
+            detail_parts.append(
+                "<div style='margin-top: 4px; color: #202124;'>"
+                + " | ".join(locator_parts)
+                + "</div>"
+            )
+
+        if action in {"set_decompiler_comment", "set_disassembly_comment"}:
+            if comment:
+                detail_parts.append(
+                    "<div style='margin-top: 4px; color: #202124;'><strong>comment to add:</strong></div>"
+                    "<div style='margin-top: 4px; padding: 8px 10px; border: 1px solid #e0e3e7; border-radius: 8px; "
+                    "background: #f8f9fa; color: #202124; white-space: pre-wrap;'>"
+                    f"{html.escape(comment)}"
+                    "</div>"
+                )
+        elif action == "set_function_prototype":
+            if current_name or function_name:
+                detail_parts.append(
+                    "<div style='margin-top: 4px; color: #202124;'>"
+                    f"<strong>current:</strong> {html.escape(current_name or function_name or 'n/a')}"
+                    "</div>"
+                )
+            if prototype:
+                detail_parts.append(
+                    "<div style='margin-top: 4px; color: #202124;'><strong>prototype to set:</strong></div>"
+                    "<div style='margin-top: 4px; padding: 8px 10px; border: 1px solid #e0e3e7; border-radius: 8px; "
+                    "background: #f8f9fa; color: #202124; white-space: pre-wrap;'>"
+                    f"{html.escape(prototype)}"
+                    "</div>"
+                )
+        elif action == "set_local_variable_type":
+            detail_parts.append(
+                "<div style='margin-top: 4px; color: #202124;'>"
+                f"<strong>current type:</strong> {html.escape(current_type or 'n/a')}<br>"
+                f"<strong>proposed type:</strong> {html.escape(proposed_type or 'n/a')}"
+                "</div>"
+            )
+        elif current_name or proposed_name:
+            detail_parts.append(
                 "<div style='margin-top: 4px; color: #202124;'>"
                 f"<strong>current:</strong> {html.escape(current_name or 'n/a')}<br>"
                 f"<strong>proposed:</strong> {html.escape(proposed_name or 'n/a')}"
                 "</div>"
             )
+        field_line = "".join(detail_parts)
         pending_html = (
             "<div style='margin-top: 10px; padding: 10px 12px; border: 1px solid #d5d8dd; border-radius: 10px; background: #ffffff;'>"
             f"<div style='font-size: 14px; color: #202124;'><strong>Next pending:</strong> {summary}</div>"
             f"<div style='margin-top: 4px; color: #5f6368;'>id: {html.escape(str(pending.get('id') or ''))} | "
-            f"action: {html.escape(str(pending.get('action') or 'unknown'))} | "
+            f"action: {html.escape(action or 'unknown')} | "
             f"target: {html.escape(str(pending.get('target_kind') or 'unknown'))}</div>"
             f"{field_line}"
             f"<div style='margin-top: 4px; color: #5f6368;'><strong>auto-apply support:</strong> {html.escape(apply_text)}"
             + (f" ({apply_reason})" if apply_reason else "")
             + "</div>"
             + (f"<div style='margin-top: 4px; color: #202124;'><strong>rationale:</strong> {rationale}</div>" if rationale else "")
+            + evidence_warning
             + "<div style='margin-top: 6px; color: #202124; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;'>evidence</div>"
             + evidence_html
             + "</div>"
@@ -1744,13 +2076,17 @@ def _build_host_worker_prompt(
         f"- objective: {objective}\n"
         "- Execute this one work item only. Do not broaden into unrelated work items.\n"
         "- If you notice a dependency on another work item, note it briefly but continue focusing on the assigned objective.\n"
+        "- Reuse earlier evidence already present in shared context before issuing a new broad catalog query.\n"
+        "- Treat strings like `function_name @ 0xADDRESS` as display selectors, not canonical names. Strip the `@ address` suffix for name-based tools, or use the address with an address-based tool.\n"
+        "- Avoid rerunning broad `list_functions`, `list_imports`, `list_strings`, or `list_data_items` sweeps unless the current objective truly needs a missing catalog slice.\n"
+        "- Once you have mapped a dispatcher and its handler family well enough for this objective, stop re-decompiling the same handlers unless you need a new concrete fact.\n"
         "- Return an evidence-backed result for this work item.\n"
         "Evidence targets for this assignment:\n"
         f"{evidence_lines}"
     ).strip()
 
 
-def _run_host_worker_assignment(
+async def _run_host_worker_assignment(
     runtime: MultiAgentRuntime,
     stage_name: str,
     stage_kind: str,
@@ -1781,6 +2117,22 @@ def _run_host_worker_assignment(
         state,
         f"Worker assignment started: {work_item_id} -> {slot_name} ({archetype_name})",
     )
+    assignment_started_at = datetime.now().isoformat(timespec="seconds")
+    _append_tool_log_entries(
+        state,
+        stage_name,
+        [
+            {
+                "stage": stage_name,
+                "kind": "worker_assignment_start",
+                "source": slot_name,
+                "work_item_id": work_item_id,
+                "archetype_name": archetype_name,
+                "model": str(stage_model or ""),
+                "started_at": assignment_started_at,
+            }
+        ],
+    )
     worker_t0 = time.perf_counter()
     _set_planned_work_item_status(
         state,
@@ -1798,7 +2150,7 @@ def _run_host_worker_assignment(
     active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
     active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage_name)
     try:
-        agent, deps = build_host_worker_assignment_executor(
+        agent, deps, resolved_model = build_host_worker_assignment_executor(
             runtime,
             stage_name=stage_name,
             slot_name=slot_name,
@@ -1806,7 +2158,24 @@ def _run_host_worker_assignment(
             stage_model=stage_model,
         )
         deps.ask_user = _make_parent_input_callback(state, f"{stage_name}/{slot_name}/{work_item_id}")
-        result = agent.run_sync(
+        model_run_started_at = datetime.now().isoformat(timespec="seconds")
+        _append_tool_log_entries(
+            state,
+            stage_name,
+            [
+                {
+                    "stage": stage_name,
+                    "kind": "model_run_start",
+                    "source": slot_name,
+                    "work_item_id": work_item_id,
+                    "archetype_name": archetype_name,
+                    "model": str(resolved_model or ""),
+                    "started_at": model_run_started_at,
+                }
+            ],
+        )
+        model_t0 = time.perf_counter()
+        result = await agent.run(
             prompt,
             message_history=old_history if old_history else None,
             deps=deps,
@@ -1814,28 +2183,99 @@ def _run_host_worker_assignment(
         new_history = result.all_messages()
         output_text = str(result.output)
         duration_sec = time.perf_counter() - worker_t0
+        model_duration_sec = time.perf_counter() - model_t0
+        _append_tool_log_entries(
+            state,
+            stage_name,
+            [
+                {
+                    "stage": stage_name,
+                    "kind": "model_run_finish",
+                    "source": slot_name,
+                    "work_item_id": work_item_id,
+                    "archetype_name": archetype_name,
+                    "model": str(resolved_model or ""),
+                    "status": "ok",
+                    "duration_sec": round(model_duration_sec, 6),
+                    "finished_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            ],
+        )
+        _append_tool_log_entries(
+            state,
+            stage_name,
+            [
+                {
+                    "stage": stage_name,
+                    "kind": "worker_assignment_finish",
+                    "source": slot_name,
+                    "work_item_id": work_item_id,
+                    "archetype_name": archetype_name,
+                    "model": str(resolved_model or ""),
+                    "status": "ok",
+                    "duration_sec": round(duration_sec, 6),
+                    "finished_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            ],
+        )
         return {
             "index": int(assignment["index"]),
             "work_item_id": work_item_id,
             "slot_name": slot_name,
             "archetype_name": archetype_name,
+            "model": str(resolved_model or ""),
             "role_key": role_key,
             "history": new_history,
             "output_text": output_text,
+            "usage": _result_usage_snapshot(result),
             "duration_sec": duration_sec,
+            "model_duration_sec": model_duration_sec,
             "status": "ok",
         }
     except Exception as e:
         duration_sec = time.perf_counter() - worker_t0
+        _append_tool_log_entries(
+            state,
+            stage_name,
+            [
+                {
+                    "stage": stage_name,
+                    "kind": "model_run_finish",
+                    "source": slot_name,
+                    "work_item_id": work_item_id,
+                    "archetype_name": archetype_name,
+                    "model": str(stage_model or ""),
+                    "status": "failed",
+                    "duration_sec": round(duration_sec, 6),
+                    "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    "error": f"{type(e).__name__}: {e}",
+                },
+                {
+                    "stage": stage_name,
+                    "kind": "worker_assignment_finish",
+                    "source": slot_name,
+                    "work_item_id": work_item_id,
+                    "archetype_name": archetype_name,
+                    "model": str(stage_model or ""),
+                    "status": "failed",
+                    "duration_sec": round(duration_sec, 6),
+                    "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    "error": f"{type(e).__name__}: {e}",
+                },
+            ],
+        )
         return {
             "index": int(assignment["index"]),
             "work_item_id": work_item_id,
             "slot_name": slot_name,
             "archetype_name": archetype_name,
+            "model": str(stage_model or ""),
             "role_key": role_key,
             "history": [],
             "output_text": "",
+            "usage": _empty_usage_snapshot(),
             "duration_sec": duration_sec,
+            "model_duration_sec": duration_sec,
             "status": "failed",
             "error": f"{type(e).__name__}: {e}",
         }
@@ -1965,27 +2405,37 @@ def _run_host_parallel_worker_stage(
         ),
     )
 
-    results_by_index: Dict[int, Dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=concurrency_limit, thread_name_prefix="host-worker") as executor:
-        future_map = {
-            executor.submit(
-                _run_host_worker_assignment,
-                runtime,
-                stage.name,
-                stage.stage_kind,
-                state,
-                user_text,
-                prior_stage_outputs,
-                assignment,
-                stage_model=str(stage.model or ""),
-            ): assignment
-            for assignment in assignments
-        }
-        for future in as_completed(future_map):
+    async def _run_all_assignments() -> Dict[int, Dict[str, Any]]:
+        semaphore = asyncio.Semaphore(concurrency_limit)
+        results_by_index_async: Dict[int, Dict[str, Any]] = {}
+
+        async def _run_one(assignment: Dict[str, Any]) -> Dict[str, Any]:
+            async with semaphore:
+                return await _run_host_worker_assignment(
+                    runtime,
+                    stage.name,
+                    stage.stage_kind,
+                    state,
+                    user_text,
+                    prior_stage_outputs,
+                    assignment,
+                    stage_model=str(stage.model or ""),
+                )
+
+        tasks = [asyncio.create_task(_run_one(assignment)) for assignment in assignments]
+        for task in asyncio.as_completed(tasks):
             _check_cancel_requested(state, location="during worker stage")
-            assignment = future_map[future]
-            result = future.result()
-            results_by_index[int(result["index"])] = result
+            result = await task
+            results_by_index_async[int(result["index"])] = result
+            _record_model_usage(
+                state,
+                phase="host_worker_assignment",
+                stage_name=stage.name,
+                model=str(result.get("model") or ""),
+                usage=result.get("usage") or {},
+                slot_name=str(result.get("slot_name") or ""),
+                work_item_id=str(result.get("work_item_id") or ""),
+            )
             history = list(result.get("history") or [])
             set_role_history(state, str(result.get("role_key") or ""), history)
             append_tool_log_delta(state, stage.name, [], history)
@@ -2046,6 +2496,9 @@ def _run_host_parallel_worker_stage(
                         f"({result.get('error')})"
                     ),
                 )
+        return results_by_index_async
+
+    results_by_index = asyncio.run(_run_all_assignments())
 
     ordered_results = [results_by_index[idx] for idx in sorted(results_by_index)]
     if not any(item.get("status") == "ok" for item in ordered_results):
@@ -2104,6 +2557,10 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["validation_last_decision"] = ""
     shared["validation_replan_feedback"] = ""
     shared["validation_history"] = []
+    shared["pipeline_duration_sec"] = 0.0
+    shared["model_usage_totals"] = _empty_usage_snapshot()
+    shared["model_usage_by_stage"] = {}
+    shared["model_usage_events"] = []
     shared["host_parallel_worker_execution"] = HOST_PARALLEL_WORKER_EXECUTION
     shared["max_parallel_workers"] = MAX_PARALLEL_WORKERS
     state["pending_parent_input"] = _empty_parent_input()
@@ -2176,6 +2633,9 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage.name)
         try:
             _check_cancel_requested(state, location=f"before executing {stage.name}")
+            # Tutorial 2.5 in extension_tutorial.md: add the execution branch
+            # for each new `stage_kind` here and keep its shared-state/status
+            # behavior aligned with the existing stage implementations.
             if stage.stage_kind == "deterministic_presweeps":
                 stage_output, presweep_bundle = run_deterministic_presweeps_sync(runtime, state)
                 shared["auto_triage_pre_sweeps"] = presweep_bundle
@@ -2249,6 +2709,13 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 f"tool_return:{stage.name}",
             )
             stage_output = str(result.output)
+            _record_model_usage(
+                state,
+                phase="pipeline_stage",
+                stage_name=stage.name,
+                model=str(stage.model or ""),
+                usage=_result_usage_snapshot(result),
+            )
         if stage_meta["parses_planner_work_items"]:
             update_planned_work_items_from_planner_output(state, stage_output)
         if stage_meta["supports_parallel_assignments"] or stage_meta["finalizes_report"]:
@@ -2418,6 +2885,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                         error="Validation gate rejected after max replans",
                     )
                 shared["run_count"] = int(shared.get("run_count", 0)) + 1
+                shared["pipeline_duration_sec"] = round(time.perf_counter() - t0, 6)
                 shared["final_output"] = final_output
                 append_status(state, f"Deep pipeline stopped in {time.perf_counter() - t0:.1f}s")
                 return final_output
@@ -2425,6 +2893,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         stage_index += 1
 
     shared["run_count"] = int(shared.get("run_count", 0)) + 1
+    shared["pipeline_duration_sec"] = round(time.perf_counter() - t0, 6)
     shared["final_output"] = final_output
     if runtime.pipeline_name == "auto_triage":
         _record_auto_triage_run(

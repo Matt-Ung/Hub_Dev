@@ -39,6 +39,11 @@
     "command": "python",
     "args": ["yaraMCP.py", "--transport", "stdio"]
   },
+  "agentartifactsmcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["agentArtifactsMCP.py", "--transport", "stdio"]
+  },
   "gitleaksmcp": {
     "transport": "stdio",
     "command": "python",
@@ -53,5 +58,10 @@
     "transport": "stdio",
     "command": "python",
     "args": ["trivyMCP.py", "--transport", "stdio"]
+  },
+  "binarypatchmcp": {
+    "transport": "stdio",
+    "command": "python",
+    "args": ["binaryPatchMCP.py", "--transport", "stdio"]
   }
 }

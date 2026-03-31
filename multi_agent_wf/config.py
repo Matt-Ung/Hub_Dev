@@ -119,6 +119,9 @@ def resolve_pipeline_definition(
     pipeline_template: List[Dict[str, Any]],
     worker_architecture: List[Tuple[str, int]],
 ) -> List[Dict[str, Any]]:
+    # Tutorial 1.2 in extension_tutorial.md: `use_worker_architecture` is
+    # resolved here so a pipeline stage can inherit the selected architecture
+    # preset instead of hardcoding its own slot list.
     resolved: List[Dict[str, Any]] = []
     for raw_stage in pipeline_template:
         stage = dict(raw_stage)
@@ -133,6 +136,9 @@ def resolve_pipeline_definition(
 def _pipeline_log_slots_from_presets(
     pipeline_presets: Mapping[str, List[Dict[str, Any]]],
 ) -> List[Tuple[str, str]]:
+    # Tutorial 1.5 in extension_tutorial.md: stage log accordions are derived
+    # from pipeline presets, so valid new stage names appear in the dashboard
+    # automatically without extra UI registration.
     ordered: List[Tuple[str, str]] = []
     seen: set[Tuple[str, str]] = set()
     for pipeline in pipeline_presets.values():
@@ -271,6 +277,8 @@ def _build_runtime_settings(
     loaded_dotenv: Optional[Path] = None,
     extra_launch_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    # Tutorial 4.1 in extension_tutorial.md: add env-backed workflow knobs and
+    # their normalized defaults here before wiring them into frontend/runtime.
     current_workflow_config = workflow_config or _load_workflow_config_with_placeholders()
     architecture_presets = current_workflow_config["architecture_presets"]
     architecture_preset_descriptions = current_workflow_config["architecture_preset_descriptions"]
@@ -310,6 +318,7 @@ def _build_runtime_settings(
     return {
         "DOTENV_PATH": str(loaded_dotenv) if loaded_dotenv else "",
         "OPENAI_MODEL_ID": env.get("OPENAI_MODEL_ID", "openai:gpt-5-mini"),
+        "DEEP_FORCE_MODEL_ID": str(env.get("DEEP_FORCE_MODEL_ID", "")).strip(),
         "MAX_ROLE_HISTORY_MESSAGES": int(env.get("MAX_ROLE_HISTORY_MESSAGES", "16")),
         "MAX_TASK_OUTPUTS": int(env.get("MAX_TASK_OUTPUTS", "32")),
         "MAX_TOOL_LOG_CHARS": int(env.get("MAX_TOOL_LOG_CHARS", "120000")),
@@ -321,7 +330,7 @@ def _build_runtime_settings(
             for marker in str(
                 env.get(
                     "TOOL_RESULT_CACHE_SERVER_MARKERS",
-                    "capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy",
+                    "ghidra,capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy",
                 )
             ).split(",")
             if marker.strip()
@@ -343,6 +352,8 @@ def _build_runtime_settings(
         "MAX_STATUS_LOG_LINES": int(env.get("MAX_STATUS_LOG_LINES", "400")),
         "STATUS_LOG_STDOUT": _env_flag_from(env, "STATUS_LOG_STDOUT", True),
         "DEEP_AGENT_RETRIES": int(env.get("DEEP_AGENT_RETRIES", "4")),
+        "DEEP_WORKER_SUBAGENT_PROFILE": str(env.get("DEEP_WORKER_SUBAGENT_PROFILE", "default")).strip().lower() or "default",
+        "DEEP_WORKER_PERSONA_PROFILE": str(env.get("DEEP_WORKER_PERSONA_PROFILE", "default")).strip().lower() or "default",
         "DEEP_AGENT_AUTO_SELECT_PIPELINE": auto_select_pipeline,
         "DEEP_AGENT_PIPELINE_ROUTER_MODEL": env.get("DEEP_AGENT_PIPELINE_ROUTER_MODEL", "openai:gpt-4o-mini"),
         "DEFAULT_ALLOW_PARENT_INPUT": _env_flag_from(env, "DEFAULT_ALLOW_PARENT_INPUT", False),
@@ -352,7 +363,7 @@ def _build_runtime_settings(
         "DEFAULT_SHELL_EXECUTION_MODE": _normalize_shell_execution_mode(
             env.get("DEFAULT_SHELL_EXECUTION_MODE", "none")
         ),
-        "AUTOMATION_TRIGGER_ENABLED": _env_flag_from(env, "AUTOMATION_TRIGGER_ENABLED", True),
+        "AUTOMATION_TRIGGER_ENABLED": _env_flag_from(env, "AUTOMATION_TRIGGER_ENABLED", False),
         "AUTOMATION_TRIGGER_HOST": (env.get("AUTOMATION_TRIGGER_HOST") or "127.0.0.1").strip() or "127.0.0.1",
         "AUTOMATION_TRIGGER_PORT": int(env.get("AUTOMATION_TRIGGER_PORT", "7861")),
         "AUTOMATION_TRIGGER_PATH": (
@@ -360,6 +371,9 @@ def _build_runtime_settings(
         ),
         "AUTOMATION_TRIGGER_HEALTH_PATH": (
             (env.get("AUTOMATION_TRIGGER_HEALTH_PATH") or "/automation/health").strip() or "/automation/health"
+        ),
+        "MCP_SERVER_MANIFEST_PATH": str(
+            _resolve_repo_relative_path(env.get("MCP_SERVER_MANIFEST_PATH", "MCPServers/servers.json"))
         ),
         "AUTOMATION_DEFAULT_PROMPT_TEMPLATE": env.get(
             "AUTOMATION_DEFAULT_PROMPT_TEMPLATE",
@@ -379,6 +393,7 @@ def _build_runtime_settings(
         "WORKFLOW_CONFIG": current_workflow_config,
         "STAGE_KIND_METADATA": stage_kind_metadata,
         "AGENT_ARCHETYPE_PROMPTS": current_workflow_config["agent_archetype_prompts"],
+        "WORKER_PERSONA_PROFILES": current_workflow_config["worker_persona_profiles"],
         "PIPELINE_STAGE_MANAGER_PROMPTS": current_workflow_config["stage_manager_prompts"],
         "DEEP_AGENT_ARCHITECTURE_PRESETS": architecture_presets,
         "DEEP_AGENT_ARCHITECTURE_DESCRIPTIONS": architecture_preset_descriptions,

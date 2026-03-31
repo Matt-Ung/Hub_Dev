@@ -1,5 +1,13 @@
 # Progress Log
 
+## Evaluation Docs
+
+- Testing workflow overview and runner usage: `Testing/README.md`
+- Binary- and workflow-oriented testing plan: `Testing/TESTING_PLAN.md`
+- Controlled baseline + one-variable-at-a-time sweep runner: `Testing/run_experiment_sweep.py`
+- Source-code evaluation support files: `Testing/C_Source_Evaluation/`
+- Source-eval prompt library: `Testing/C_Source_Evaluation/prompt_library/`
+
 ## Work from Feb 5–11
 ### Gradio integration
 - Integrated Gradio (baseline wiring / UI scaffold)

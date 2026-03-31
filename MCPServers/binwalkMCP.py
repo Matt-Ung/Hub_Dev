@@ -21,13 +21,24 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from artifact_paths import get_agent_artifact_dir
+
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform.startswith("win")
 _DRIVE_RE = re.compile(r"^/([A-Za-z]):/")
 _MNT_RE = re.compile(r"^/mnt/([A-Za-z])/(.*)")
 
-DEFAULT_OUTPUT_DIR = Path(os.environ.get("BINWALK_OUTPUT_DIR", str(Path.cwd() / "MCPServers" / "binwalk_output")))
+DEFAULT_OUTPUT_DIR = Path(
+    os.environ.get(
+        "BINWALK_OUTPUT_DIR",
+        str((get_agent_artifact_dir("reports") / "binwalk").resolve()),
+    )
+)
 mcp = FastMCP(
     "binwalk_mcp",
     instructions="MCP server that exposes structured binwalk scanning and extraction tools.",
@@ -81,13 +92,14 @@ def ensure_directory(path: str | Path) -> str:
     return str(candidate)
 
 
-def run_command(argv: list[str], timeout_sec: int) -> subprocess.CompletedProcess[str]:
+def run_command(argv: list[str], timeout_sec: int, *, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
         capture_output=True,
         text=True,
         errors="replace",
         timeout=max(1, int(timeout_sec)),
+        cwd=cwd,
     )
 
 
@@ -139,6 +151,12 @@ def _list_files(root: Path, max_files: int = 200) -> list[str]:
     return out
 
 
+def _safe_component(value: str, default: str = "artifact") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned or default
+
+
 @mcp.tool()
 def binwalkScan(
     file_path: str,
@@ -155,7 +173,10 @@ def binwalkScan(
 
         resolved_file = ensure_existing_path(file_path)
         output_root = Path(ensure_directory(DEFAULT_OUTPUT_DIR))
+        scan_work_dir = output_root / f"scan_{_safe_component(Path(resolved_file).stem, 'sample')}_{uuid.uuid4().hex[:8]}"
+        scan_work_dir = Path(ensure_directory(scan_work_dir))
         extraction_dir = output_root / f"extract_{uuid.uuid4().hex[:8]}"
+        entropy_plot_path = scan_work_dir / f"{Path(resolved_file).name}.png"
 
         cmd = ["binwalk"]
         if extract:
@@ -168,7 +189,7 @@ def binwalkScan(
             cmd.append("-M")
         cmd.append(resolved_file)
 
-        result = run_command(cmd, timeout_sec=timeout_sec)
+        result = run_command(cmd, timeout_sec=timeout_sec, cwd=str(scan_work_dir))
         signatures = _parse_binwalk_signatures(result.stdout or "")
         extracted_files = _list_files(extraction_dir) if extract else []
 
@@ -186,12 +207,18 @@ def binwalkScan(
                 "signature_count": len(signatures),
                 "extracted_file_count": len(extracted_files),
             },
+            "output_root": str(output_root),
+            "scan_work_dir": str(scan_work_dir),
             "stdout": truncate_text(result.stdout or "", max_chars=16000),
             "stderr": truncate_text(result.stderr or "", max_chars=4000),
         }
         if extract:
             payload["extraction_path"] = str(extraction_dir)
             payload["extracted_files"] = extracted_files
+        if entropy:
+            payload["entropy_plot_path"] = str(entropy_plot_path)
+            payload["entropy_plot_exists"] = entropy_plot_path.exists()
+            payload["scan_work_files"] = _list_files(scan_work_dir)
         return payload
     except FileNotFoundError as e:
         return {"ok": False, "error": str(e)}
@@ -261,11 +288,11 @@ def main() -> None:
             mcp.settings.log_level = args.log_level
             mcp.settings.host = args.mcp_host or "127.0.0.1"
             mcp.settings.port = args.mcp_port or 8091
-            mcp.run(transport="sse")
+            mcp.run(transport="sse", show_banner=False)
         except KeyboardInterrupt:
             logger.info("Server stopped by user")
     else:
-        mcp.run()
+        mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":

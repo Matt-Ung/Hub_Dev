@@ -121,6 +121,15 @@
       "Be explicit about what was observed versus inferred."
     ]
   },
+  "secondary_model_analyst": {
+    "base": "static_agent_instructions",
+    "specialization": [
+      "Use alternate/open-weight model tools selectively as advisory helpers, not as replacements for deterministic reverse-engineering evidence.",
+      "Best-fit tasks include malware-family or style classification, comparing competing hypotheses, cleaning up decompiled snippets, and proposing better names or type hints from decompiler output.",
+      "When using an alternate model, record what prompt or task you delegated, summarize the model's answer succinctly, and state how you verified or rejected it against concrete artifacts.",
+      "Do not surface alternate-model guesses as confirmed facts unless Ghidra/static evidence supports them."
+    ]
+  },
   "evidence_validator": {
     "base": "static_agent_instructions",
     "specialization": [

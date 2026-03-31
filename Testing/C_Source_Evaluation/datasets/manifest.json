@@ -1,0 +1,342 @@
+{
+  "version": "c_source_eval_dataset_manifest_v1",
+  "dataset_count": 15,
+  "datasets": [
+    {
+      "program_id": "anti_analysis_suite_test",
+      "corpus": "experimental",
+      "difficulty": "hard",
+      "source_file": "anti_analysis_suite_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/anti_analysis_suite_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "anti_analysis_suite_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "basic_loops_test",
+      "corpus": "experimental",
+      "difficulty": "easy",
+      "source_file": "basic_loops_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/basic_loops_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5"
+      ],
+      "related_binary_samples": [
+        "basic_loops_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "callback_dispatch_test",
+      "corpus": "experimental",
+      "difficulty": "medium",
+      "source_file": "callback_dispatch_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/callback_dispatch_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "callback_dispatch_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "config_decoder_test",
+      "corpus": "experimental",
+      "difficulty": "medium",
+      "source_file": "config_decoder_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/config_decoder_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "config_decoder_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "embedded_payload_test",
+      "corpus": "experimental",
+      "difficulty": "hard",
+      "source_file": "embedded_payload_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/embedded_payload_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "embedded_payload_test.exe",
+        "embedded_payload_test_upx.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "hash_dispatch_test",
+      "corpus": "experimental",
+      "difficulty": "hard",
+      "source_file": "hash_dispatch_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/hash_dispatch_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "hash_dispatch_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "multilayer_encode_test",
+      "corpus": "experimental",
+      "difficulty": "hard",
+      "source_file": "multilayer_encode_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/multilayer_encode_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "multilayer_encode_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "string_table_test",
+      "corpus": "experimental",
+      "difficulty": "easy",
+      "source_file": "string_table_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/string_table_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5"
+      ],
+      "related_binary_samples": [
+        "string_table_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "anti_debug_test",
+      "corpus": "prototype",
+      "difficulty": "medium",
+      "source_file": "anti_debug_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/anti_debug_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "anti_debug_test.exe",
+        "anti_debug_medium_stripped.exe",
+        "anti_debug_medium_upx.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "api_hash_resolver_test",
+      "corpus": "prototype",
+      "difficulty": "hard",
+      "source_file": "api_hash_resolver_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/api_hash_resolver_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "api_hash_resolver_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "control_flow_flattened_test",
+      "corpus": "prototype",
+      "difficulty": "hard",
+      "source_file": "control_flow_flattened_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/control_flow_flattened_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "control_flow_flattened_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "floss_test",
+      "corpus": "prototype",
+      "difficulty": "easy",
+      "source_file": "floss_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/floss_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5"
+      ],
+      "related_binary_samples": [
+        "floss_test.exe",
+        "floss_test_02.exe",
+        "floss_test_stripped.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "resource_blob_loader_test",
+      "corpus": "prototype",
+      "difficulty": "hard",
+      "source_file": "resource_blob_loader_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/resource_blob_loader_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "resource_blob_loader_test.exe",
+        "resource_blob_loader_hard_stripped.exe",
+        "resource_blob_loader_hard_upx.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "test",
+      "corpus": "prototype",
+      "difficulty": "easy",
+      "source_file": "test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5"
+      ],
+      "related_binary_samples": [
+        "test.exe",
+        "test_easy_stripped.exe",
+        "test_easy_upx.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "winapi_behavior_test",
+      "corpus": "prototype",
+      "difficulty": "medium",
+      "source_file": "winapi_behavior_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/winapi_behavior_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "winapi_behavior_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    }
+  ],
+  "notes": [
+    "These datasets support the source-code evaluation track.",
+    "They are not required by the current binary `run_evaluation.py` or `run_experiment_sweep.py` workflows.",
+    "Reference artifacts are seeded drafts and should be reviewed before use as gold scoring references."
+  ]
+}

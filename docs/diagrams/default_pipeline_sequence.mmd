@@ -1,0 +1,53 @@
+sequenceDiagram
+    autonumber
+    participant Trigger as "CLI / UI trigger"
+    participant Runner as "Testing runner<br/>runner.py"
+    participant Samples as "Manifest resolver<br/>samples.py"
+    participant Bundles as "Build + bundles"
+    participant Analyze as "run_agent_case<br/>analyze.py"
+    participant Runtime as "runtime + pipeline"
+    participant Tools as "MCP tools"
+    participant Judge as "judge.py"
+    participant Report as "reporting + result_layout"
+    participant FS as "results filesystem"
+
+    Trigger->>Runner: run args / UI inputs<br/>{corpus, sample?, task?, pipeline?, architecture?, query_variant, ...}
+    Runner->>Samples: list_sample_binaries()<br/>build_evaluation_tasks()
+    Samples-->>Runner: EvaluationTask[]<br/>{sample_name, sample_path,<br/> task_id, task_name, query,<br/> difficulty, target_tools,<br/> expected_evidence,<br/> acceptance_targets, tags}
+    Runner->>Bundles: build_corpus()<br/>prepare_corpus_bundles()<br/>inspect_corpus_bundles()
+    Bundles-->>Runner: build_record / prepare_record / bundle_readiness
+    Runner->>FS: write run_manifest.json,<br/>build_record.json,<br/>prepare_record.json,<br/>bundle_readiness.json,<br/>preflight.json
+
+    loop for each EvaluationTask
+        Runner->>Analyze: run_agent_case(bundle_dir,<br/> query=effective_query,<br/> pipeline, architecture,<br/> validator_review_level,<br/> tool_profile)
+        Analyze->>Analyze: build_artifact_servers_manifest()<br/>swap live Ghidra -> artifactGhidraMCP
+        Analyze->>Runtime: get_runtime_sync(pipeline, architecture)
+        Analyze->>Runtime: run_deepagent_pipeline(runtime, effective_query, state)
+
+        rect rgb(238,243,255)
+            Note over Runtime: shared_state initialized<br/>{pipeline_stage_progress, planned_work_items,<br/> ghidra_change_proposals, generated_yara_rules,<br/> validation_history, model_usage_events}
+            Runtime->>Tools: preflight tool calls<br/>lightweight recon only
+            Tools-->>Runtime: metadata / pivots / validated_sample_path
+            Runtime->>Runtime: planner parses JSON block<br/>[{id, objective, recommended_roles, evidence_targets}]
+            Runtime->>Tools: workers execute assignments<br/>{index, work_item, slot_name, archetype_name}
+            Tools-->>Runtime: tool results<br/>(text/json)
+            alt validator accepts or pipeline has no validator stage
+                Runtime->>Runtime: reporter synthesizes final_output
+            else validator rejects
+                Runtime->>Runtime: parse validation JSON<br/>{decision, signoff_count,<br/> required_signoffs, accepted_findings,<br/> rejected_findings, rejection_reasons,<br/> planner_fixes, summary}
+                Runtime->>Runtime: reset planner/workers/... and replan<br/>up to MAX_VALIDATION_REPLAN_RETRIES
+            end
+        end
+
+        Runtime-->>Analyze: final report + shared_state-derived payloads
+        Analyze-->>Runner: agent_result<br/>{status, final_report, produced_result,<br/> accepted_final_output, planned_work_items,<br/> validator_summary, validation,<br/> ghidra_change_proposals,<br/> generated_yara_rules, tool_usage,<br/> model_usage, cost_estimate, duration_sec}
+        Runner->>Judge: judge_agent_result(sample_meta,<br/> task_meta, bundle_manifest, agent_result)
+        Judge-->>Runner: judge_result<br/>{dimension_scores,<br/> overall_score_0_to_100, pass,<br/> unsupported_claims,<br/> missed_expected_points,<br/> strongest_points,<br/> technical_summary,<br/> writing_summary,<br/> confidence_0_to_1, cost_estimate}
+        Runner->>Report: build_sample_record(...)
+        Report-->>Runner: record<br/>{sample_task_id, task_query,<br/> difficulty, expected_evidence,<br/> acceptance_targets,<br/> metrics{analysis_status, judge_status,<br/> overall_score_0_to_100,<br/> task_success, tool_calls_total,<br/> total_duration_sec,<br/> task_wall_clock_duration_sec}}
+        Runner->>FS: write samples/sample_task_slug/<br/>agent_result.json,<br/>judge_result.json,<br/>record.json
+    end
+
+    Runner->>Report: aggregate_records(run_metadata, records)<br/>build_run_output_layout(...)
+    Report-->>Runner: aggregate + layout payload
+    Runner->>FS: write aggregate.json,<br/>summary.csv, report.md,<br/>result_layout.json,<br/>by_executable/exe_name/config_lineage_id/...

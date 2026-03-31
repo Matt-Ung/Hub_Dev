@@ -1,0 +1,20 @@
+{
+  "version": "budget_guardrails_v1",
+  "description": "Conservative budget guardrails for expensive API-backed evaluation runs. Token ceilings are hard limits on observed usage; projected cost values are coarse preflight heuristics intended to stop obviously too-large sweeps before they start.",
+  "defaults": {
+    "max_run_input_tokens": 450000,
+    "max_run_output_tokens": 120000,
+    "max_run_total_tokens": 550000,
+    "max_run_relative_cost_index": 3500.0,
+    "max_run_estimated_cost_usd": 2.5,
+    "max_experiment_relative_cost_index": 15000.0,
+    "max_experiment_estimated_cost_usd": 25.0,
+    "projected_relative_cost_per_sample_task": 35.0,
+    "projected_estimated_cost_usd_per_sample_task": 0.08,
+    "abort_on_run_budget_exceeded": true,
+    "abort_experiment_on_budget_exceeded": true,
+    "require_explicit_judge_model": true,
+    "allow_self_evaluation": false,
+    "allow_implicit_judge_model": false
+  }
+}

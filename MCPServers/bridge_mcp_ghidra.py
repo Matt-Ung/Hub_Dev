@@ -6,15 +6,26 @@
 # ]
 # ///
 
-import sys
-import requests
 import argparse
 import logging
+import os
+import re
+import sys
+from pathlib import Path
 from urllib.parse import urljoin
 
+import requests
 from fastmcp import FastMCP
+import artifactGhidraMCP as artifact_mcp
 
 DEFAULT_GHIDRA_SERVER = "http://127.0.0.1:8080/"
+DEFAULT_FALLBACK_MODE = "live_only"
+FALLBACK_MODES = {"live_only", "artifact_if_unavailable", "artifact_only"}
+UNAVAILABLE_MARKERS = (
+    "request failed:",
+    "no program loaded",
+    "error: no current gui selection",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +33,98 @@ mcp = FastMCP("ghidra-mcp")
 
 # Initialize ghidra_server_url with default value
 ghidra_server_url = DEFAULT_GHIDRA_SERVER
+ghidra_fallback_mode = str(os.environ.get("GHIDRA_MCP_FALLBACK_MODE") or DEFAULT_FALLBACK_MODE).strip().lower()
+ghidra_artifact_bundle_dir = str(os.environ.get("GHIDRA_ARTIFACT_BUNDLE_DIR") or "").strip()
+_artifact_bundle_loaded = False
+_FUNCTION_SELECTOR_WITH_ADDRESS_RE = re.compile(
+    r"^\s*(?P<name>.+?)\s*@\s*(?P<address>(?:0x)?[0-9A-Fa-f]+)\s*$"
+)
+
+
+def _normalize_fallback_mode(raw_mode: str) -> str:
+    candidate = str(raw_mode or DEFAULT_FALLBACK_MODE).strip().lower()
+    if candidate not in FALLBACK_MODES:
+        return DEFAULT_FALLBACK_MODE
+    return candidate
+
+
+def _artifact_fallback_enabled() -> bool:
+    return bool(ghidra_artifact_bundle_dir) and ghidra_fallback_mode in {"artifact_if_unavailable", "artifact_only"}
+
+
+def _ensure_artifact_bundle_loaded() -> bool:
+    global _artifact_bundle_loaded
+    if _artifact_bundle_loaded:
+        return True
+    bundle_dir = str(ghidra_artifact_bundle_dir or "").strip()
+    if not bundle_dir:
+        return False
+    try:
+        artifact_mcp._BUNDLE = artifact_mcp.ArtifactBundle(Path(bundle_dir))
+        _artifact_bundle_loaded = True
+        logger.info("Using artifact-backed Ghidra fallback bundle at %s", artifact_mcp._BUNDLE.analysis_path)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to initialize artifact-backed Ghidra fallback from %s: %s", bundle_dir, exc)
+        return False
+
+
+def _result_text(result) -> str:
+    if isinstance(result, str):
+        return result.lower()
+    if isinstance(result, list):
+        return "\n".join(str(item) for item in result).lower()
+    if isinstance(result, dict):
+        return str(result).lower()
+    return str(result).lower()
+
+
+def _live_result_unavailable(result) -> bool:
+    text = _result_text(result)
+    if not text:
+        return False
+    return any(marker in text for marker in UNAVAILABLE_MARKERS)
+
+
+def _call_with_fallback(tool_name: str, live_callable, *artifact_args, **artifact_kwargs):
+    if ghidra_fallback_mode == "artifact_only":
+        if _ensure_artifact_bundle_loaded():
+            return getattr(artifact_mcp, tool_name)(*artifact_args, **artifact_kwargs)
+        return "Error: artifact-only mode requested, but GHIDRA_ARTIFACT_BUNDLE_DIR is not configured or failed to load."
+
+    live_result = live_callable()
+    if _artifact_fallback_enabled() and _live_result_unavailable(live_result) and _ensure_artifact_bundle_loaded():
+        return getattr(artifact_mcp, tool_name)(*artifact_args, **artifact_kwargs)
+    return live_result
+
+
+def _read_only_mutation_error(tool_name: str) -> str:
+    return (
+        f"Error: {tool_name} is unavailable because live Ghidra is not available and the "
+        "artifact/headless fallback path is read-only. Use a live Ghidra session for renames, "
+        "comments, prototypes, or local type edits."
+    )
+
+
+def _call_mutating_with_fallback(tool_name: str, live_callable, *artifact_args, **artifact_kwargs):
+    if ghidra_fallback_mode == "artifact_only":
+        return _read_only_mutation_error(tool_name)
+
+    live_result = live_callable()
+    if _live_result_unavailable(live_result) and ghidra_fallback_mode == "artifact_if_unavailable":
+        if _artifact_fallback_enabled():
+            return _read_only_mutation_error(tool_name)
+    return live_result
+
+
+def _canonicalize_function_selector(value: str) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    match = _FUNCTION_SELECTOR_WITH_ADDRESS_RE.match(candidate)
+    if match:
+        return match.group("name").strip()
+    return candidate
 
 def safe_get(endpoint: str, params: dict = None) -> list:
     """
@@ -62,167 +165,225 @@ def list_methods(offset: int = 0, limit: int = 100) -> list:
     """
     List all function names in the program with pagination.
     """
-    return safe_get("methods", {"offset": offset, "limit": limit})
+    return _call_with_fallback("list_methods", lambda: safe_get("methods", {"offset": offset, "limit": limit}), offset, limit)
 
 @mcp.tool()
 def list_classes(offset: int = 0, limit: int = 100) -> list:
     """
     List all namespace/class names in the program with pagination.
     """
-    return safe_get("classes", {"offset": offset, "limit": limit})
+    return _call_with_fallback("list_classes", lambda: safe_get("classes", {"offset": offset, "limit": limit}), offset, limit)
 
 @mcp.tool()
 def decompile_function(name: str) -> str:
     """
     Decompile a specific function by name and return the decompiled C code.
     """
-    return safe_post("decompile", name)
+    canonical_name = _canonicalize_function_selector(name)
+    return _call_with_fallback("decompile_function", lambda: safe_post("decompile", canonical_name), canonical_name)
 
 @mcp.tool()
 def rename_function(old_name: str, new_name: str) -> str:
     """
     Rename a function by its current name to a new user-defined name.
     """
-    return safe_post("renameFunction", {"oldName": old_name, "newName": new_name})
+    return _call_mutating_with_fallback(
+        "rename_function",
+        lambda: safe_post("renameFunction", {"oldName": old_name, "newName": new_name}),
+        old_name,
+        new_name,
+    )
 
 @mcp.tool()
 def rename_data(address: str, new_name: str) -> str:
     """
     Rename a data label at the specified address.
     """
-    return safe_post("renameData", {"address": address, "newName": new_name})
+    return _call_mutating_with_fallback(
+        "rename_data",
+        lambda: safe_post("renameData", {"address": address, "newName": new_name}),
+        address,
+        new_name,
+    )
 
 @mcp.tool()
 def list_segments(offset: int = 0, limit: int = 100) -> list:
     """
     List all memory segments in the program with pagination.
     """
-    return safe_get("segments", {"offset": offset, "limit": limit})
+    return _call_with_fallback("list_segments", lambda: safe_get("segments", {"offset": offset, "limit": limit}), offset, limit)
 
 @mcp.tool()
 def list_imports(offset: int = 0, limit: int = 100) -> list:
     """
     List imported symbols in the program with pagination.
     """
-    return safe_get("imports", {"offset": offset, "limit": limit})
+    return _call_with_fallback("list_imports", lambda: safe_get("imports", {"offset": offset, "limit": limit}), offset, limit)
 
 @mcp.tool()
 def list_exports(offset: int = 0, limit: int = 100) -> list:
     """
     List exported functions/symbols with pagination.
     """
-    return safe_get("exports", {"offset": offset, "limit": limit})
+    return _call_with_fallback("list_exports", lambda: safe_get("exports", {"offset": offset, "limit": limit}), offset, limit)
 
 @mcp.tool()
 def list_namespaces(offset: int = 0, limit: int = 100) -> list:
     """
     List all non-global namespaces in the program with pagination.
     """
-    return safe_get("namespaces", {"offset": offset, "limit": limit})
+    return _call_with_fallback("list_namespaces", lambda: safe_get("namespaces", {"offset": offset, "limit": limit}), offset, limit)
 
 @mcp.tool()
 def list_data_items(offset: int = 0, limit: int = 100) -> list:
     """
     List defined data labels and their values with pagination.
     """
-    return safe_get("data", {"offset": offset, "limit": limit})
+    return _call_with_fallback("list_data_items", lambda: safe_get("data", {"offset": offset, "limit": limit}), offset, limit)
 
 @mcp.tool()
 def search_functions_by_name(query: str, offset: int = 0, limit: int = 100) -> list:
     """
     Search for functions whose name contains the given substring.
     """
-    if not query:
+    canonical_query = _canonicalize_function_selector(query)
+    if not canonical_query:
         return ["Error: query string is required"]
-    return safe_get("searchFunctions", {"query": query, "offset": offset, "limit": limit})
+    return _call_with_fallback(
+        "search_functions_by_name",
+        lambda: safe_get("searchFunctions", {"query": canonical_query, "offset": offset, "limit": limit}),
+        canonical_query,
+        offset,
+        limit,
+    )
 
 @mcp.tool()
 def rename_variable(function_name: str, old_name: str, new_name: str) -> str:
     """
     Rename a local variable within a function.
     """
-    return safe_post("renameVariable", {
-        "functionName": function_name,
-        "oldName": old_name,
-        "newName": new_name
-    })
+    return _call_mutating_with_fallback(
+        "rename_variable",
+        lambda: safe_post("renameVariable", {
+            "functionName": function_name,
+            "oldName": old_name,
+            "newName": new_name
+        }),
+        function_name,
+        old_name,
+        new_name,
+    )
 
 @mcp.tool()
 def get_function_by_address(address: str) -> str:
     """
     Get a function by its address.
     """
-    return "\n".join(safe_get("get_function_by_address", {"address": address}))
+    return _call_with_fallback(
+        "get_function_by_address",
+        lambda: "\n".join(safe_get("get_function_by_address", {"address": address})),
+        address,
+    )
 
 @mcp.tool()
 def get_current_address() -> str:
     """
     Get the address currently selected by the user.
     """
-    return "\n".join(safe_get("get_current_address"))
+    return _call_with_fallback("get_current_address", lambda: "\n".join(safe_get("get_current_address")))
 
 @mcp.tool()
 def get_current_function() -> str:
     """
     Get the function currently selected by the user.
     """
-    return "\n".join(safe_get("get_current_function"))
+    return _call_with_fallback("get_current_function", lambda: "\n".join(safe_get("get_current_function")))
 
 @mcp.tool()
 def list_functions() -> list:
     """
     List all functions in the database.
     """
-    return safe_get("list_functions")
+    return _call_with_fallback("list_functions", lambda: safe_get("list_functions"))
 
 @mcp.tool()
 def decompile_function_by_address(address: str) -> str:
     """
     Decompile a function at the given address.
     """
-    return "\n".join(safe_get("decompile_function", {"address": address}))
+    return _call_with_fallback(
+        "decompile_function_by_address",
+        lambda: "\n".join(safe_get("decompile_function", {"address": address})),
+        address,
+    )
 
 @mcp.tool()
 def disassemble_function(address: str) -> list:
     """
     Get assembly code (address: instruction; comment) for a function.
     """
-    return safe_get("disassemble_function", {"address": address})
+    return _call_with_fallback("disassemble_function", lambda: safe_get("disassemble_function", {"address": address}), address)
 
 @mcp.tool()
 def set_decompiler_comment(address: str, comment: str) -> str:
     """
     Set a comment for a given address in the function pseudocode.
     """
-    return safe_post("set_decompiler_comment", {"address": address, "comment": comment})
+    return _call_mutating_with_fallback(
+        "set_decompiler_comment",
+        lambda: safe_post("set_decompiler_comment", {"address": address, "comment": comment}),
+        address,
+        comment,
+    )
 
 @mcp.tool()
 def set_disassembly_comment(address: str, comment: str) -> str:
     """
     Set a comment for a given address in the function disassembly.
     """
-    return safe_post("set_disassembly_comment", {"address": address, "comment": comment})
+    return _call_mutating_with_fallback(
+        "set_disassembly_comment",
+        lambda: safe_post("set_disassembly_comment", {"address": address, "comment": comment}),
+        address,
+        comment,
+    )
 
 @mcp.tool()
 def rename_function_by_address(function_address: str, new_name: str) -> str:
     """
     Rename a function by its address.
     """
-    return safe_post("rename_function_by_address", {"function_address": function_address, "new_name": new_name})
+    return _call_mutating_with_fallback(
+        "rename_function_by_address",
+        lambda: safe_post("rename_function_by_address", {"function_address": function_address, "new_name": new_name}),
+        function_address,
+        new_name,
+    )
 
 @mcp.tool()
 def set_function_prototype(function_address: str, prototype: str) -> str:
     """
     Set a function's prototype.
     """
-    return safe_post("set_function_prototype", {"function_address": function_address, "prototype": prototype})
+    return _call_mutating_with_fallback(
+        "set_function_prototype",
+        lambda: safe_post("set_function_prototype", {"function_address": function_address, "prototype": prototype}),
+        function_address,
+        prototype,
+    )
 
 @mcp.tool()
 def set_local_variable_type(function_address: str, variable_name: str, new_type: str) -> str:
     """
     Set a local variable's type.
     """
-    return safe_post("set_local_variable_type", {"function_address": function_address, "variable_name": variable_name, "new_type": new_type})
+    return _call_mutating_with_fallback(
+        "set_local_variable_type",
+        lambda: safe_post("set_local_variable_type", {"function_address": function_address, "variable_name": variable_name, "new_type": new_type}),
+        function_address,
+        variable_name,
+        new_type,
+    )
 
 @mcp.tool()
 def get_xrefs_to(address: str, offset: int = 0, limit: int = 100) -> list:
@@ -237,7 +398,13 @@ def get_xrefs_to(address: str, offset: int = 0, limit: int = 100) -> list:
     Returns:
         List of references to the specified address
     """
-    return safe_get("xrefs_to", {"address": address, "offset": offset, "limit": limit})
+    return _call_with_fallback(
+        "get_xrefs_to",
+        lambda: safe_get("xrefs_to", {"address": address, "offset": offset, "limit": limit}),
+        address,
+        offset,
+        limit,
+    )
 
 @mcp.tool()
 def get_xrefs_from(address: str, offset: int = 0, limit: int = 100) -> list:
@@ -252,7 +419,13 @@ def get_xrefs_from(address: str, offset: int = 0, limit: int = 100) -> list:
     Returns:
         List of references from the specified address
     """
-    return safe_get("xrefs_from", {"address": address, "offset": offset, "limit": limit})
+    return _call_with_fallback(
+        "get_xrefs_from",
+        lambda: safe_get("xrefs_from", {"address": address, "offset": offset, "limit": limit}),
+        address,
+        offset,
+        limit,
+    )
 
 @mcp.tool()
 def get_function_xrefs(name: str, offset: int = 0, limit: int = 100) -> list:
@@ -267,7 +440,14 @@ def get_function_xrefs(name: str, offset: int = 0, limit: int = 100) -> list:
     Returns:
         List of references to the specified function
     """
-    return safe_get("function_xrefs", {"name": name, "offset": offset, "limit": limit})
+    canonical_name = _canonicalize_function_selector(name)
+    return _call_with_fallback(
+        "get_function_xrefs",
+        lambda: safe_get("function_xrefs", {"name": canonical_name, "offset": offset, "limit": limit}),
+        canonical_name,
+        offset,
+        limit,
+    )
 
 @mcp.tool()
 def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list:
@@ -285,7 +465,7 @@ def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list
     params = {"offset": offset, "limit": limit}
     if filter:
         params["filter"] = filter
-    return safe_get("strings", params)
+    return _call_with_fallback("list_strings", lambda: safe_get("strings", params), offset, limit, filter)
 
 @mcp.tool()
 def get_program_info() -> list:
@@ -314,8 +494,7 @@ def get_program_info() -> list:
         - "Endianness: big|little\\n"
         - "Image Base: <program.getImageBase().toString() or ''>\\n"
     """
-    print("Fetching program info from Ghidra server...")
-    return safe_get("program_info")
+    return _call_with_fallback("get_program_info", lambda: safe_get("program_info"))
 
 @mcp.tool()
 def get_call_graph(maxDepth: int, maxNodes: int = 3) -> list:
@@ -330,12 +509,22 @@ def get_call_graph(maxDepth: int, maxNodes: int = 3) -> list:
         A list of strings representing the call graph, where each string is formatted as:
         "caller_function -> callee_function"
     """
-    return safe_get("callgraph_json", {"maxDepth": maxDepth, "maxNodes": maxNodes})
+    return _call_with_fallback(
+        "get_call_graph",
+        lambda: safe_get("callgraph_json", {"maxDepth": maxDepth, "maxNodes": maxNodes}),
+        maxDepth,
+        maxNodes,
+    )
 
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
     parser.add_argument("--ghidra-server", type=str, default=DEFAULT_GHIDRA_SERVER,
                         help=f"Ghidra server URL, default: {DEFAULT_GHIDRA_SERVER}")
+    parser.add_argument("--artifact-bundle-dir", type=str, default=os.environ.get("GHIDRA_ARTIFACT_BUNDLE_DIR", ""),
+                        help="Optional artifact bundle dir for fallback when live Ghidra is unavailable")
+    parser.add_argument("--fallback-mode", type=str, default=os.environ.get("GHIDRA_MCP_FALLBACK_MODE", DEFAULT_FALLBACK_MODE),
+                        choices=sorted(FALLBACK_MODES),
+                        help="Fallback behavior: live_only, artifact_if_unavailable, or artifact_only")
     parser.add_argument("--mcp-host", type=str, default="127.0.0.1",
                         help="Host to run MCP server on (only used for sse), default: 127.0.0.1")
     parser.add_argument("--mcp-port", type=int,
@@ -345,10 +534,17 @@ def main():
     args = parser.parse_args()
     
     # Use the global variable to ensure it's properly updated
-    global ghidra_server_url
+    global ghidra_server_url, ghidra_artifact_bundle_dir, ghidra_fallback_mode
     if args.ghidra_server:
         ghidra_server_url = args.ghidra_server
-    
+    ghidra_artifact_bundle_dir = str(args.artifact_bundle_dir or "").strip()
+    ghidra_fallback_mode = _normalize_fallback_mode(args.fallback_mode)
+
+    if _artifact_fallback_enabled():
+        logger.info("Artifact fallback enabled in %s mode with bundle dir %s", ghidra_fallback_mode, ghidra_artifact_bundle_dir)
+    elif ghidra_fallback_mode == "artifact_only":
+        logger.warning("artifact_only mode selected but no artifact bundle directory is configured")
+
     if args.transport == "sse":
         try:
             # Set up logging
@@ -372,12 +568,11 @@ def main():
             logger.info(f"Starting MCP server on http://{mcp.settings.host}:{mcp.settings.port}/sse")
             logger.info(f"Using transport: {args.transport}")
 
-            mcp.run(transport="sse")
+            mcp.run(transport="sse", show_banner=False)
         except KeyboardInterrupt:
             logger.info("Server stopped by user")
     else:
-        mcp.run()
+        mcp.run(show_banner=False)
         
 if __name__ == "__main__":
     main()
-

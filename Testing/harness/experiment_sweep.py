@@ -1,0 +1,1391 @@
+from __future__ import annotations
+
+"""
+Baseline-first, one-variable-at-a-time experiment sweep runner.
+
+The single source of truth for the planned sweep is
+`Testing/config/experiment_sweeps.json`.
+
+Keep this file focused on orchestration and aggregation. When adding a new
+sweep dimension, prefer extending the config and only adding the minimal code
+needed here to validate, pass through, and report the new field.
+"""
+
+import argparse
+import csv
+import json
+import sys
+from collections import defaultdict
+from pathlib import Path
+from statistics import mean, pstdev
+from typing import Any, Dict, List, Tuple
+
+from .artifacts import prepare_corpus_bundles
+from .budgeting import (
+    evaluate_budget_status,
+    evaluate_projected_experiment_budget,
+    resolve_budget_config,
+    summarize_record_budget,
+    project_experiment_budget,
+)
+from .building import build_corpus
+from .lineage import compute_lineage_id, load_lineage_payload, normalize_run_lineage_payload, refresh_lineage_index_for_run
+from .output_comparison import build_task_output_comparisons
+from .paths import BUNDLE_ROOT, CONFIG_ROOT, REPO_ROOT, RESULTS_ROOT, build_run_id, ensure_dir, read_json, repo_python_executable, slugify, write_json
+from .preflight import _module_available_in_python, validate_run_configuration
+from .result_layout import build_experiment_output_layout
+from .reporting import aggregate_records
+from .significance import build_significance_outputs
+from .samples import build_evaluation_tasks, get_corpus_config, list_sample_binaries, load_sample_manifest
+from .subprocess_utils import run_command
+from .timing import build_timing_outputs
+from .visualization import generate_experiment_visuals
+
+
+def _parse_metadata(values: List[str]) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for item in values:
+        if "=" not in str(item):
+            continue
+        key, value = str(item).split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            parsed[key] = value
+    return parsed
+
+
+def _load_experiment_config(path: Path | None = None) -> Dict[str, Any]:
+    config_path = path or (CONFIG_ROOT / "experiment_sweeps.json")
+    return read_json(config_path)
+
+
+def _resolve_force_model(run_cfg: Dict[str, Any], model_profiles: Dict[str, Any]) -> str:
+    explicit_force = str(run_cfg.get("force_model") or "").strip()
+    if explicit_force:
+        return explicit_force
+    profile_name = str(run_cfg.get("model_profile") or "repo_default").strip()
+    profile = model_profiles.get(profile_name) if isinstance(model_profiles, dict) else None
+    if isinstance(profile, dict):
+        return str(profile.get("force_model") or "").strip()
+    return ""
+
+
+def _build_run_plan(
+    config: Dict[str, Any],
+    *,
+    variable_filters: List[str] | None = None,
+    corpus_override: str = "",
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], int]:
+    # Tutorial 5.1 in multi_agent_wf/extension_tutorial.md: add maintained
+    # sweep families in `Testing/config/experiment_sweeps.json`. If a family
+    # adds a new runner field, continue with Tutorial 5.3 as well.
+    baseline = dict(config.get("baseline") or {})
+    if corpus_override:
+        baseline["corpus"] = corpus_override
+    model_profiles = config.get("model_profiles") if isinstance(config.get("model_profiles"), dict) else {}
+    baseline["force_model"] = _resolve_force_model(baseline, model_profiles)
+    baseline["variant_id"] = "baseline"
+    baseline["variant_name"] = "baseline"
+    baseline["changed_variable"] = ""
+    baseline["is_baseline"] = True
+    baseline["is_family_baseline"] = False
+    baseline["comparison_baseline_id"] = ""
+    baseline["comparison_baseline_label"] = ""
+
+    selected_filters = {str(item).strip() for item in (variable_filters or []) if str(item).strip()}
+    planned_runs: List[Dict[str, Any]] = [baseline]
+    for sweep in config.get("sweeps") or []:
+        if not isinstance(sweep, dict):
+            continue
+        variable = str(sweep.get("variable") or "").strip()
+        if selected_filters and variable not in selected_filters:
+            continue
+        family_baseline_cfg: Dict[str, Any] | None = None
+        family_baseline_overrides = dict(sweep.get("baseline_overrides") or {})
+        comparison_baseline_id = "baseline"
+        comparison_baseline_label = "baseline"
+        if family_baseline_overrides:
+            family_base = dict(baseline)
+            family_base.update(family_baseline_overrides)
+            family_base["force_model"] = _resolve_force_model(family_base, model_profiles)
+            family_base["variant_id"] = f"{variable}__baseline"
+            family_base["variant_name"] = "baseline"
+            family_base["changed_variable"] = variable
+            family_base["variant_description"] = str(sweep.get("description") or "").strip()
+            family_base["is_baseline"] = False
+            family_base["is_family_baseline"] = True
+            family_base["comparison_baseline_id"] = "baseline"
+            family_base["comparison_baseline_label"] = "baseline"
+            planned_runs.append(family_base)
+            family_baseline_cfg = family_base
+            comparison_baseline_id = str(family_base["variant_id"])
+            comparison_baseline_label = f"{variable}:baseline"
+        for variant in sweep.get("variants") or []:
+            if not isinstance(variant, dict):
+                continue
+            run_cfg = dict(baseline)
+            if family_baseline_overrides:
+                run_cfg.update(family_baseline_overrides)
+            run_cfg.update(dict(variant.get("overrides") or {}))
+            run_cfg["force_model"] = _resolve_force_model(run_cfg, model_profiles)
+            run_cfg["variant_id"] = f"{variable}__{slugify(str(variant.get('name') or 'variant'))}"
+            run_cfg["variant_name"] = str(variant.get("name") or run_cfg["variant_id"]).strip()
+            run_cfg["changed_variable"] = variable
+            run_cfg["variant_description"] = str(sweep.get("description") or "").strip()
+            run_cfg["is_baseline"] = False
+            run_cfg["is_family_baseline"] = False
+            run_cfg["comparison_baseline_id"] = comparison_baseline_id
+            run_cfg["comparison_baseline_label"] = comparison_baseline_label
+            planned_runs.append(run_cfg)
+    repetitions = max(1, int(config.get("repetitions") or 1))
+    return baseline, planned_runs, repetitions
+
+
+def _parse_completion_payload(stdout: str) -> Dict[str, Any]:
+    marker = "EVAL_RUN_RESULT_JSON::"
+    for line in reversed(str(stdout or "").splitlines()):
+        if line.startswith(marker):
+            return json.loads(line[len(marker):].strip())
+    raise ValueError("run_evaluation.py did not emit the EVAL_RUN_RESULT_JSON marker")
+
+
+def _write_rows_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
+    ensure_dir(path.parent)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    fieldnames: List[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _score_or_none(record: Dict[str, Any] | None) -> float | None:
+    if not isinstance(record, dict):
+        return None
+    metrics = record.get("metrics") or {}
+    value = metrics.get("overall_score_0_to_100")
+    if value is not None:
+        try:
+            return float(value)
+        except Exception:
+            pass
+    if str(metrics.get("judge_status") or "") == "judge_error":
+        return 0.0
+    return None
+
+
+def _success_numeric(record: Dict[str, Any] | None) -> float:
+    if not isinstance(record, dict):
+        return 0.0
+    return 1.0 if (record.get("metrics") or {}).get("task_success") else 0.0
+
+
+def _record_key(record: Dict[str, Any]) -> str:
+    sample_task_id = str(record.get("sample_task_id") or "").strip()
+    if sample_task_id:
+        return sample_task_id
+    sample = str(record.get("sample") or "").strip()
+    task_id = str(record.get("task_id") or "").strip()
+    return f"{sample}::{task_id}" if sample and task_id else sample
+
+
+def _group_records(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        grouped[_record_key(record)].append(record)
+    return dict(grouped)
+
+
+def _mean_metric(records: List[Dict[str, Any]], path: str) -> float | None:
+    parts = path.split(".")
+    values: List[float] = []
+    for record in records:
+        value: Any = record
+        for part in parts:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(part)
+        try:
+            if value is not None:
+                values.append(float(value))
+        except Exception:
+            continue
+    return round(mean(values), 3) if values else None
+
+
+def _rate_metric(records: List[Dict[str, Any]], path: str) -> float | None:
+    if not records:
+        return None
+    parts = path.split(".")
+    total = 0
+    for record in records:
+        value: Any = record
+        for part in parts:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(part)
+        total += 1 if value else 0
+    return round(total / len(records), 3)
+
+
+def _status_summary(records: List[Dict[str, Any]]) -> str:
+    counts: Dict[str, int] = {}
+    for record in records:
+        status = str((record.get("metrics") or {}).get("analysis_status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    if not counts:
+        return ""
+    if len(counts) == 1:
+        return next(iter(counts.keys()))
+    return ", ".join(f"{key}:{counts[key]}" for key in sorted(counts.keys()))
+
+
+def _task_group_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    reference = records[0] if records else {}
+    scores = [_score_or_none(record) for record in records]
+    score_values = [float(value) for value in scores if value is not None]
+    wall_clock_duration = _mean_metric(records, "metrics.task_wall_clock_duration_sec")
+    if wall_clock_duration is None:
+        wall_clock_duration = _mean_metric(records, "metrics.total_duration_sec")
+    return {
+        "sample": str(reference.get("sample") or ""),
+        "task_id": str(reference.get("task_id") or ""),
+        "task_name": str(reference.get("task_name") or ""),
+        "sample_task_id": str(reference.get("sample_task_id") or _record_key(reference)),
+        "difficulty": str(reference.get("difficulty") or "unknown"),
+        "primary_techniques": "; ".join(reference.get("primary_techniques") or []),
+        "analysis_status": _status_summary(records),
+        "produced_result_rate": _rate_metric(records, "metrics.produced_result"),
+        "score": round(mean(score_values), 3) if score_values else None,
+        "task_success_rate": _rate_metric(records, "metrics.task_success"),
+        "relative_cost_index": _mean_metric(records, "metrics.total_relative_cost_index"),
+        "target_tool_hit_rate": _mean_metric(records, "metrics.target_tool_hit_rate"),
+        "analysis_duration_sec": _mean_metric(records, "metrics.analysis_duration_sec"),
+        "judge_duration_sec": _mean_metric(records, "metrics.judge_duration_sec"),
+        "total_duration_sec": _mean_metric(records, "metrics.total_duration_sec"),
+        "task_wall_clock_duration_sec": wall_clock_duration,
+    }
+
+
+def _merge_run_group(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    records: List[Dict[str, Any]] = []
+    manifests: List[Dict[str, Any]] = []
+    run_ids: List[str] = []
+    for entry in entries:
+        aggregate = entry.get("aggregate") if isinstance(entry.get("aggregate"), dict) else {}
+        records.extend(list(aggregate.get("records") or []))
+        manifests.append(dict(entry.get("run_manifest") or {}))
+        run_ids.append(str(entry.get("run_id") or ""))
+    base_manifest = manifests[0] if manifests else {}
+    group_metadata = dict(base_manifest)
+    group_metadata["replicate_count"] = len(entries)
+    group_metadata["replicate_run_ids"] = run_ids
+    aggregate = aggregate_records(group_metadata, records)
+    aggregate["replicate_count"] = len(entries)
+    aggregate["replicate_run_ids"] = run_ids
+    return {
+        "run_manifest": group_metadata,
+        "aggregate": aggregate,
+        "records": records,
+        "replicate_count": len(entries),
+        "run_ids": run_ids,
+    }
+
+
+def _build_experiment_report(
+    experiment_manifest: Dict[str, Any],
+    variant_rows: List[Dict[str, Any]],
+    task_rows: List[Dict[str, Any]],
+    output_path: Path,
+) -> None:
+    lines: List[str] = []
+    lines.append("# Experiment Sweep Report")
+    lines.append("")
+    lines.append(f"- Experiment ID: `{experiment_manifest.get('experiment_id', '')}`")
+    lines.append(f"- Corpus: `{experiment_manifest.get('corpus', '')}`")
+    lines.append(f"- Baseline variant: `{experiment_manifest.get('baseline_variant_id', 'baseline')}`")
+    lines.append(f"- Run count: `{len(variant_rows)}`")
+    lines.append("")
+
+    baseline_row = next((row for row in variant_rows if row.get("is_baseline")), None)
+    non_baseline = [row for row in variant_rows if not row.get("is_baseline")]
+
+    if baseline_row:
+        lines.append("## Baseline")
+        lines.append("")
+        lines.append(f"- Mean score: `{baseline_row.get('overall_score_mean')}`")
+        lines.append(f"- Task success rate: `{baseline_row.get('task_success_rate')}`")
+        lines.append(f"- Produced result rate: `{baseline_row.get('produced_result_rate')}`")
+        lines.append(f"- Validator blocked rate: `{baseline_row.get('validator_blocked_rate')}`")
+        lines.append(f"- Mean relative cost index: `{baseline_row.get('mean_relative_cost_index')}`")
+        lines.append("")
+
+    if non_baseline:
+        scored_variants = [row for row in non_baseline if not row.get("is_family_baseline")]
+        complete_scored_variants = [
+            row for row in scored_variants
+            if float(row.get("completion_rate") or 0.0) >= 1.0
+        ]
+        highlight_pool = complete_scored_variants or scored_variants or non_baseline
+        best_overall = max(highlight_pool, key=lambda row: float(row.get("overall_score_mean") or -1.0))
+        variable_impacts: Dict[str, List[float]] = {}
+        for row in scored_variants:
+            variable_impacts.setdefault(str(row.get("changed_variable") or "unknown"), []).append(abs(float(row.get("score_delta") or 0.0)))
+        strongest_variable = max(variable_impacts.items(), key=lambda item: mean(item[1]))[0] if variable_impacts else ""
+
+        cost_effective_candidates = [
+            row
+            for row in highlight_pool
+            if row.get("overall_score_mean") is not None
+            and baseline_row
+            and float(row.get("overall_score_mean") or 0.0) >= float(baseline_row.get("overall_score_mean") or 0.0) * 0.95
+        ]
+        cheapest_good = min(
+            cost_effective_candidates,
+            key=lambda row: float(row.get("mean_relative_cost_index") or 1e9),
+        ) if cost_effective_candidates else None
+
+        lines.append("## Highlights")
+        lines.append("")
+        lines.append(
+            f"- Best overall variant: `{best_overall.get('display_label')}` "
+            f"(mean score `{best_overall.get('overall_score_mean')}`, delta `{best_overall.get('score_delta')}`)"
+        )
+        if cheapest_good:
+            lines.append(
+                f"- Cheapest near-baseline-or-better variant: `{cheapest_good.get('display_label')}` "
+                f"(cost `{cheapest_good.get('mean_relative_cost_index')}`, score `{cheapest_good.get('overall_score_mean')}`)"
+            )
+        if strongest_variable:
+            lines.append(f"- Most influential variable by mean absolute score delta: `{strongest_variable}`")
+        most_blocked = max(highlight_pool, key=lambda row: float(row.get("validator_blocked_rate") or 0.0)) if highlight_pool else None
+        if most_blocked and float(most_blocked.get("validator_blocked_rate") or 0.0) > 0.0:
+            lines.append(
+                f"- Highest validator-blocked rate: `{most_blocked.get('display_label')}` "
+                f"(`{most_blocked.get('validator_blocked_rate')}`)"
+            )
+        lines.append("")
+
+        lines.append("## Variant Summary")
+        lines.append("")
+        lines.append("| Variant | Variable | Comparison Baseline | Replicates | Mean Score | Score Delta | Success Rate | Scored Rate | Produced Result Rate | Validator Blocked Rate | Judge Error Rate | Cost Index |")
+        lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for row in variant_rows:
+            lines.append(
+                "| {label} | {variable} | {baseline} | {replicates} | {score} | {delta} | {success} | {scored} | {produced} | {blocked} | {judge_error} | {cost} |".format(
+                    label=row.get("display_label", ""),
+                    variable=row.get("changed_variable", "baseline") or "baseline",
+                    baseline=row.get("comparison_baseline_label", "baseline") or "baseline",
+                    replicates=f"{row.get('completed_repetitions', 0)}/{row.get('planned_repetitions', 0)}",
+                    score=row.get("overall_score_mean", ""),
+                    delta=row.get("score_delta", ""),
+                    success=row.get("task_success_rate", ""),
+                    scored=row.get("scored_result_rate", ""),
+                    produced=row.get("produced_result_rate", ""),
+                    blocked=row.get("validator_blocked_rate", ""),
+                    judge_error=row.get("judge_error_rate", ""),
+                    cost=row.get("mean_relative_cost_index", ""),
+                )
+            )
+        lines.append("")
+
+    if task_rows:
+        lines.append("## Most Sensitive Sample-Tasks")
+        lines.append("")
+        sensitivity: Dict[str, float] = {}
+        for row in task_rows:
+            sample_task = str(row.get("sample_task_id") or row.get("sample") or "")
+            sensitivity[sample_task] = max(sensitivity.get(sample_task, 0.0), abs(float(row.get("score_delta") or 0.0)))
+        for sample_task, delta in sorted(sensitivity.items(), key=lambda item: item[1], reverse=True)[:10]:
+            lines.append(f"- `{sample_task}`: max absolute score delta `{round(delta, 3)}`")
+        lines.append("")
+
+    lines.append("## Drill-Down Artifacts")
+    lines.append("")
+    lines.append("- Executable/config/task artifact view: `by_executable/<exe>/<config_lineage_id>/tasks/<task_id>/runs/run_###/`")
+    lines.append("- Charts: `outputs/*.png`")
+    lines.append("- Timing tables: `outputs/task_timing_individual.csv`, `outputs/task_timing_summary.csv`, `outputs/task_tag_timing_summary.csv`, and `outputs/variant_timing_summary.csv`")
+    lines.append("- Per-task output comparisons: `outputs/task_output_comparisons/index.html`")
+    lines.append("- Per-task comparison tables: `outputs/task_output_comparisons/task_variant_summary.csv` and `outputs/task_output_comparisons/all_rows.csv`")
+    lines.append("- Statistical significance tables: `significance_overall.csv`, `significance_by_difficulty.csv`, `significance_by_task.csv`, and `variable_significance_summary.csv`")
+    lines.append("- Configuration lineage summary: `lineage_summary.csv`")
+    lines.append("- Statistical summary note: `significance_report.md`")
+    lines.append("")
+
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _value_series(entries: List[Dict[str, Any]], path: str) -> List[float]:
+    parts = path.split(".")
+    values: List[float] = []
+    for entry in entries:
+        value: Any = entry
+        for part in parts:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(part)
+        try:
+            if value is not None:
+                values.append(float(value))
+        except Exception:
+            continue
+    return values
+
+
+def run_experiment_sweep(argv: List[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run a baseline + one-variable-at-a-time experiment sweep across the binary analysis corpus.")
+    parser.add_argument("--config", default=str(CONFIG_ROOT / "experiment_sweeps.json"))
+    parser.add_argument("--corpus", choices=["prototype", "experimental"], default="")
+    parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict to")
+    parser.add_argument("--task", action="append", default=[], help="Optional task id(s) to restrict to when sample manifests define multiple evaluation tasks")
+    parser.add_argument("--difficulty-filter", action="append", default=[], help="Optional difficulty label(s) to restrict to, e.g. --difficulty-filter medium --difficulty-filter hard")
+    parser.add_argument("--variable", action="append", default=[], help="Optional variable name(s) to restrict the sweep to")
+    parser.add_argument("--label", default="", help="Optional short label for this experiment sweep")
+    parser.add_argument("--meta", action="append", default=[], help="Extra experiment metadata in key=value form")
+    parser.add_argument("--skip-build", action="store_true", help="Reuse existing built binaries")
+    parser.add_argument("--clean-build", action="store_true", help="Run make clean before rebuilding")
+    parser.add_argument("--skip-prepare", action="store_true", help="Reuse existing prepared bundles")
+    parser.add_argument("--skip-cli-tools", action="store_true", help="Skip optional CLI tools during bundle preparation")
+    parser.add_argument("--keep-project", action="store_true", help="Preserve temporary Ghidra projects during headless export")
+    parser.add_argument("--ghidra-install-dir", default="", help="Optional GHIDRA_INSTALL_DIR override")
+    parser.add_argument("--ghidra-headless", default="", help="Optional analyzeHeadless override")
+    parser.add_argument("--judge-model", default="", help="Optional judge model override")
+    parser.add_argument("--max-run-input-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative input tokens exceed this ceiling")
+    parser.add_argument("--max-run-output-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative output tokens exceed this ceiling")
+    parser.add_argument("--max-run-total-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative total tokens exceed this ceiling")
+    parser.add_argument("--max-run-relative-cost-index", type=float, default=None, help="Abort a child run after the current task if relative cost exceeds this ceiling")
+    parser.add_argument("--max-run-estimated-cost-usd", type=float, default=None, help="Abort a child run after the current task if estimated USD cost exceeds this ceiling")
+    parser.add_argument("--max-experiment-relative-cost-index", type=float, default=None, help="Abort the sweep when cumulative relative cost exceeds this ceiling")
+    parser.add_argument("--max-experiment-estimated-cost-usd", type=float, default=None, help="Abort the sweep when cumulative estimated USD cost exceeds this ceiling")
+    parser.add_argument("--timeout-sec", type=int, default=900)
+    parser.add_argument("--repetitions", type=int, default=0, help="Optional repetition-count override; 0 uses the config default")
+    parser.add_argument("--skip-visuals", action="store_true", help="Skip PNG chart generation")
+    parser.add_argument("--quiet-child-output", action="store_true", help="Do not stream child run status/output while the sweep is running")
+    parser.add_argument("--plan-only", action="store_true", help="Write the run plan but do not execute it")
+    parser.add_argument("--preflight-only", action="store_true", help="Validate rubric/config/build/bundle readiness and exit before launching child runs")
+    parser.add_argument("--resume", default="", help="Resume a previously started sweep by experiment directory path or experiment id. Skips already-completed runs.")
+    args = parser.parse_args(argv)
+
+    config = _load_experiment_config(Path(args.config))
+    baseline_cfg, planned_runs, config_repetitions = _build_run_plan(config, variable_filters=args.variable, corpus_override=args.corpus)
+    repetitions = max(1, int(args.repetitions or config_repetitions))
+    corpus_name = str(baseline_cfg.get("corpus") or "experimental").strip()
+    corpus = get_corpus_config(corpus_name)
+    manifest = load_sample_manifest(corpus_name)
+    budget_config = resolve_budget_config(
+        max_run_input_tokens=args.max_run_input_tokens,
+        max_run_output_tokens=args.max_run_output_tokens,
+        max_run_total_tokens=args.max_run_total_tokens,
+        max_run_relative_cost_index=args.max_run_relative_cost_index,
+        max_run_estimated_cost_usd=args.max_run_estimated_cost_usd,
+        max_experiment_relative_cost_index=args.max_experiment_relative_cost_index,
+        max_experiment_estimated_cost_usd=args.max_experiment_estimated_cost_usd,
+    )
+
+    # --resume: reuse an existing experiment directory instead of creating a new one
+    resume_path = str(args.resume or "").strip()
+    prior_run_entries: List[Dict[str, Any]] = []
+    if resume_path:
+        resume_dir = Path(resume_path)
+        if not resume_dir.is_dir():
+            # Treat as experiment_id under RESULTS_ROOT/experiments
+            resume_dir = RESULTS_ROOT / "experiments" / resume_path
+        if not resume_dir.is_dir():
+            raise SystemExit(f"--resume target not found: {resume_path}")
+        catalog_path = resume_dir / "run_catalog.json"
+        if catalog_path.exists():
+            prior_catalog = read_json(catalog_path)
+            prior_run_entries = [
+                entry for entry in (prior_catalog.get("runs") or [])
+                if entry.get("ok") and isinstance(entry.get("aggregate"), dict)
+            ]
+        experiment_root = resume_dir
+    else:
+        experiment_root = ensure_dir(RESULTS_ROOT / "experiments" / build_run_id("sweep", corpus_name, args.label))
+
+    experiment_id = experiment_root.name
+    outputs_root = ensure_dir(experiment_root / "outputs")
+
+    selected_samples_for_manifest = list(args.sample) or list(manifest.get("sample_order") or [])
+    experiment_manifest = {
+        "experiment_id": experiment_id,
+        "config_path": str(Path(args.config).resolve()),
+        "corpus": corpus_name,
+        "selected_samples": selected_samples_for_manifest,
+        "selected_tasks": list(args.task),
+        "selected_difficulties": list(args.difficulty_filter),
+        "repetitions": repetitions,
+        "budget_config": budget_config,
+        "meta": _parse_metadata(args.meta),
+        "baseline_variant_id": "baseline",
+        "planned_runs": planned_runs,
+    }
+    write_json(experiment_root / "experiment_manifest.json", experiment_manifest)
+
+    if args.plan_only:
+        print(json.dumps({"experiment_id": experiment_id, "experiment_root": str(experiment_root), "planned_runs": len(planned_runs), "repetitions": repetitions}, indent=2))
+        return
+
+    sample_paths = list_sample_binaries(
+        corpus_name,
+        selected=args.sample,
+        difficulty_filters=args.difficulty_filter,
+        manifest=manifest,
+    )
+    build_record: Dict[str, Any] = {"skipped": True}
+    if not args.skip_build:
+        build_record = build_corpus(
+            corpus_name,
+            clean_first=args.clean_build,
+            include_gcc=True,
+            timeout_sec=args.timeout_sec,
+        )
+        sample_paths = list_sample_binaries(
+            corpus_name,
+            selected=args.sample,
+            difficulty_filters=args.difficulty_filter,
+            manifest=manifest,
+        )
+    if not sample_paths:
+        raise SystemExit(f"No built sample binaries found for corpus={corpus_name} under {corpus.build_root}")
+    evaluation_tasks = build_evaluation_tasks(
+        corpus_name,
+        sample_paths,
+        manifest=manifest,
+        selected_task_ids=args.task,
+        selected_difficulties=args.difficulty_filter,
+    )
+    if not evaluation_tasks:
+        raise SystemExit(f"No evaluation tasks resolved for corpus={corpus_name}; check the manifest task definitions.")
+
+    bundle_root = ensure_dir(BUNDLE_ROOT / corpus_name)
+    prepare_record: Dict[str, Any] = {"skipped": True}
+    if not args.skip_prepare:
+        prepare_record = prepare_corpus_bundles(
+            corpus_name,
+            sample_paths,
+            manifest.get("samples") or {},
+            output_root=bundle_root,
+            timeout_sec=args.timeout_sec,
+            ghidra_install_dir=args.ghidra_install_dir,
+            ghidra_headless=args.ghidra_headless,
+            skip_cli_tools=args.skip_cli_tools,
+            keep_project=args.keep_project,
+        )
+
+    experiment_manifest["selected_samples"] = [path.name for path in sample_paths]
+    experiment_manifest["selected_task_keys"] = [f"{task.sample_name}::{task.task_id}" for task in evaluation_tasks]
+    write_json(experiment_root / "experiment_manifest.json", experiment_manifest)
+    write_json(experiment_root / "build_record.json", build_record)
+    write_json(experiment_root / "prepare_record.json", prepare_record)
+    python_exec = repo_python_executable()
+
+    preflight_variants: List[Dict[str, Any]] = []
+    for run_cfg in planned_runs:
+        preflight_variants.append(
+            {
+                "variant_id": str(run_cfg.get("variant_id") or ""),
+                "changed_variable": str(run_cfg.get("changed_variable") or ""),
+                "pipeline": str(run_cfg.get("pipeline") or corpus.default_pipeline),
+                "architecture": str(run_cfg.get("architecture") or corpus.default_architecture),
+                "validator_review_level": str(run_cfg.get("validator_review_level") or "default"),
+                "query_variant": str(run_cfg.get("query_variant") or "default"),
+                "checks": validate_run_configuration(
+                    corpus_name=corpus_name,
+                    sample_paths=sample_paths,
+                    manifest=manifest,
+                    selected_samples=args.sample,
+                    selected_task_ids=args.task,
+                    selected_difficulties=args.difficulty_filter,
+                    pipeline=str(run_cfg.get("pipeline") or corpus.default_pipeline),
+                    architecture=str(run_cfg.get("architecture") or corpus.default_architecture),
+                    query_variant=str(run_cfg.get("query_variant") or "default"),
+                    worker_persona_profile=str(run_cfg.get("worker_persona_profile") or "default"),
+                    validator_review_level=str(run_cfg.get("validator_review_level") or "default"),
+                    tool_profile=str(run_cfg.get("tool_profile") or "full"),
+                    judge_mode=str(run_cfg.get("judge_mode") or "agent"),
+                    explicit_judge_model=str(args.judge_model or "").strip(),
+                    forced_model=str(run_cfg.get("force_model") or "").strip(),
+                    python_executable=python_exec,
+                    bundle_root=bundle_root,
+                    require_ready_bundles=bool(args.skip_prepare or prepare_record),
+                ),
+            }
+        )
+    preflight_errors = [
+        f"{entry['variant_id']}: {message}"
+        for entry in preflight_variants
+        for message in (entry.get("checks") or {}).get("errors") or []
+    ]
+    preflight_warnings = [
+        f"{entry['variant_id']}: {message}"
+        for entry in preflight_variants
+        for message in (entry.get("checks") or {}).get("warnings") or []
+    ]
+    preflight_report = {
+        "ok": not preflight_errors,
+        "errors": list(dict.fromkeys(preflight_errors)),
+        "warnings": list(dict.fromkeys(preflight_warnings)),
+        "variants": preflight_variants,
+    }
+    if not args.skip_visuals:
+        missing_visual_modules: List[str] = []
+        for module_name in ("matplotlib", "pandas"):
+            if not _module_available_in_python(python_exec, module_name):
+                missing_visual_modules.append(module_name)
+        if missing_visual_modules:
+            preflight_report["ok"] = False
+            preflight_report.setdefault("errors", []).append(
+                "Visualization outputs require the following modules in the sweep interpreter: "
+                + ", ".join(missing_visual_modules)
+                + ". Install them or rerun with --skip-visuals."
+            )
+    write_json(experiment_root / "preflight.json", preflight_report)
+
+    # Build a set of (variant_id, replicate_index) pairs already completed in
+    # a prior sweep run so that --resume can skip them.
+    _completed_keys: set[tuple[str, int]] = set()
+    for prior_entry in prior_run_entries:
+        _completed_keys.add((
+            str(prior_entry.get("variant_id") or ""),
+            int(prior_entry.get("replicate_index") or 0),
+        ))
+
+    # Upfront cost projection so the researcher can see the planned spend
+    # before committing to real API calls.
+    total_planned_runs = len(planned_runs) * repetitions
+    skipped_runs = len(_completed_keys)
+    remaining_runs = total_planned_runs - skipped_runs
+    task_count = len(evaluation_tasks)
+    agent_judge_calls = remaining_runs * task_count
+    projected_budget = project_experiment_budget(
+        child_runs=remaining_runs,
+        tasks_per_child_run=task_count,
+        config=budget_config,
+    )
+    projected_budget_status = evaluate_projected_experiment_budget(projected_budget, budget_config)
+    cost_projection = {
+        "total_planned_child_runs": total_planned_runs,
+        "already_completed_runs": skipped_runs,
+        "remaining_child_runs": remaining_runs,
+        "tasks_per_child_run": task_count,
+        "estimated_agent_plus_judge_api_calls": agent_judge_calls,
+        "budget_projection": projected_budget,
+        "budget_projection_status": projected_budget_status,
+        "note": "Each sample-task run includes one analysis call path plus one judge call path. Projected cost values are coarse preflight heuristics, not billing-authoritative estimates.",
+    }
+    write_json(experiment_root / "cost_projection.json", cost_projection)
+
+    import sys as _sys
+    print(
+        f"\n--- Cost Projection ---\n"
+        f"  Planned child runs:        {total_planned_runs}\n"
+        f"  Already completed (resume): {skipped_runs}\n"
+        f"  Remaining child runs:       {remaining_runs}\n"
+        f"  Tasks per child run:        {task_count}\n"
+        f"  Total agent+judge API calls: {agent_judge_calls}\n"
+        f"  ---\n",
+        file=_sys.stderr,
+    )
+
+    if not projected_budget_status.get("ok"):
+        preflight_report["ok"] = False
+        preflight_report.setdefault("errors", []).extend(
+            [f"budget_projection: {item}" for item in (projected_budget_status.get("exceeded") or [])]
+        )
+        write_json(experiment_root / "preflight.json", preflight_report)
+
+    if args.preflight_only:
+        print(json.dumps({"experiment_id": experiment_id, "experiment_root": str(experiment_root), "preflight_ok": bool(preflight_report.get("ok")), "cost_projection": cost_projection}, indent=2))
+        if not preflight_report.get("ok"):
+            raise SystemExit("Preflight validation failed; see preflight.json for details.")
+        return
+    if not preflight_report.get("ok"):
+        raise SystemExit("Preflight validation failed; see preflight.json for details before launching paid runs.")
+
+    run_entries: List[Dict[str, Any]] = list(prior_run_entries)
+    experiment_budget_status: Dict[str, Any] = {
+        "scope": "experiment",
+        "ok": True,
+        "exceeded": [],
+        "observed": {},
+        "limits": budget_config,
+        "aborted_early": False,
+    }
+    for run_cfg in planned_runs:
+        variant_id = str(run_cfg.get("variant_id") or "variant")
+        variant_name = str(run_cfg.get("variant_name") or variant_id)
+        comparison_baseline_id = str(run_cfg.get("comparison_baseline_id") or "").strip()
+        comparison_baseline_label = str(run_cfg.get("comparison_baseline_label") or "").strip()
+        for repetition_index in range(repetitions):
+            if (variant_id, repetition_index + 1) in _completed_keys:
+                continue
+            label = f"{experiment_id}-{variant_id}-r{repetition_index + 1}"
+            cmd = [
+                python_exec,
+                "Testing/run_evaluation.py",
+                "--corpus",
+                corpus_name,
+                "--skip-build",
+                "--skip-prepare",
+                "--pipeline",
+                str(run_cfg.get("pipeline") or corpus.default_pipeline),
+                "--architecture",
+                str(run_cfg.get("architecture") or corpus.default_architecture),
+                "--query-variant",
+                str(run_cfg.get("query_variant") or "default"),
+                "--subagent-profile",
+                str(run_cfg.get("subagent_profile") or "default"),
+                "--worker-persona-profile",
+                str(run_cfg.get("worker_persona_profile") or "default"),
+                "--validator-review-level",
+                str(run_cfg.get("validator_review_level") or "default"),
+                "--tool-profile",
+                str(run_cfg.get("tool_profile") or "full"),
+                "--model-profile",
+                str(run_cfg.get("model_profile") or ""),
+                "--label",
+                label,
+                "--experiment-id",
+                experiment_id,
+                "--variant-name",
+                variant_name,
+                "--changed-variable",
+                str(run_cfg.get("changed_variable") or ""),
+                "--comparison-baseline-id",
+                comparison_baseline_id,
+                "--comparison-baseline-label",
+                comparison_baseline_label,
+                "--replicate-index",
+                str(repetition_index + 1),
+                "--replicate-count",
+                str(repetitions),
+                "--judge-mode",
+                str(run_cfg.get("judge_mode") or "agent"),
+                "--timeout-sec",
+                str(args.timeout_sec),
+            ]
+            if args.judge_model:
+                cmd.extend(["--judge-model", args.judge_model])
+            force_model = str(run_cfg.get("force_model") or "").strip()
+            if force_model:
+                cmd.extend(["--force-model", force_model])
+            for sample in args.sample:
+                cmd.extend(["--sample", sample])
+            for task_id in args.task:
+                cmd.extend(["--task", task_id])
+            for difficulty in args.difficulty_filter:
+                cmd.extend(["--difficulty-filter", difficulty])
+            if args.max_run_input_tokens is not None:
+                cmd.extend(["--max-run-input-tokens", str(args.max_run_input_tokens)])
+            if args.max_run_output_tokens is not None:
+                cmd.extend(["--max-run-output-tokens", str(args.max_run_output_tokens)])
+            if args.max_run_total_tokens is not None:
+                cmd.extend(["--max-run-total-tokens", str(args.max_run_total_tokens)])
+            if args.max_run_relative_cost_index is not None:
+                cmd.extend(["--max-run-relative-cost-index", str(args.max_run_relative_cost_index)])
+            if args.max_run_estimated_cost_usd is not None:
+                cmd.extend(["--max-run-estimated-cost-usd", str(args.max_run_estimated_cost_usd)])
+            cmd.extend(["--meta", f"model_profile={str(run_cfg.get('model_profile') or '')}"])
+            cmd.extend(["--meta", f"experiment_variant_id={variant_id}"])
+
+            child_timeout = args.timeout_sec * max(1, len(evaluation_tasks))
+            display_label = "baseline" if bool(run_cfg.get("is_baseline")) else (
+                f"{str(run_cfg.get('changed_variable') or '')}:baseline" if bool(run_cfg.get("is_family_baseline"))
+                else f"{str(run_cfg.get('changed_variable') or '')}:{variant_name}"
+            )
+            print(
+                f"[sweep] starting {display_label} replicate {repetition_index + 1}/{repetitions} "
+                f"(timeout={child_timeout}s)",
+                file=sys.stderr,
+                flush=True,
+            )
+            completed = run_command(
+                cmd,
+                cwd=REPO_ROOT,
+                timeout_sec=child_timeout,
+                stream_output=not args.quiet_child_output,
+                stream_prefix=f"[{display_label}] ",
+                stream_heartbeat_sec=30,
+            )
+            entry: Dict[str, Any] = {
+                "variant_id": variant_id,
+                "variant_name": variant_name,
+                "changed_variable": str(run_cfg.get("changed_variable") or ""),
+                "comparison_baseline_id": comparison_baseline_id,
+                "comparison_baseline_label": comparison_baseline_label,
+                "display_label": "",
+                "is_baseline": bool(run_cfg.get("is_baseline")),
+                "is_family_baseline": bool(run_cfg.get("is_family_baseline")),
+                "replicate_index": repetition_index + 1,
+                "planned_repetitions": repetitions,
+                "command": cmd,
+                "ok": bool(completed.get("ok")),
+                "stdout": str(completed.get("stdout") or ""),
+                "stderr": str(completed.get("stderr") or ""),
+            }
+            if entry["is_baseline"]:
+                entry["display_label"] = "baseline"
+            elif entry["is_family_baseline"]:
+                entry["display_label"] = f"{entry['changed_variable']}:baseline"
+            else:
+                entry["display_label"] = f"{entry['changed_variable']}:{variant_name}"
+            if completed.get("ok"):
+                try:
+                    payload = _parse_completion_payload(entry["stdout"])
+                    run_dir = Path(str(payload.get("run_dir") or "")).resolve()
+                    aggregate = read_json(run_dir / "aggregate.json")
+                    run_manifest = read_json(run_dir / "run_manifest.json")
+                    entry.update(
+                        {
+                            "run_id": str(payload.get("run_id") or ""),
+                            "run_dir": str(run_dir),
+                            "aggregate": aggregate,
+                            "run_manifest": run_manifest,
+                        }
+                    )
+                except Exception as exc:
+                    entry["ok"] = False
+                    entry["error"] = f"{type(exc).__name__}: {exc}"
+            print(
+                f"[sweep] finished {entry['display_label']} replicate {repetition_index + 1}/{repetitions} "
+                f"ok={entry.get('ok')}",
+                file=sys.stderr,
+                flush=True,
+            )
+            run_entries.append(entry)
+            if entry.get("ok") and isinstance(entry.get("aggregate"), dict):
+                successful_records: List[Dict[str, Any]] = []
+                for existing in run_entries:
+                    aggregate = existing.get("aggregate") if isinstance(existing.get("aggregate"), dict) else {}
+                    successful_records.extend(list(aggregate.get("records") or []))
+                experiment_budget_summary = summarize_record_budget(successful_records)
+                experiment_budget_status = evaluate_budget_status(experiment_budget_summary, budget_config, scope="experiment")
+                experiment_budget_status["aborted_early"] = False
+                write_json(experiment_root / "budget_status.json", experiment_budget_status)
+                if not experiment_budget_status.get("ok") and bool(budget_config.get("abort_experiment_on_budget_exceeded", True)):
+                    experiment_budget_status["aborted_early"] = True
+                    write_json(experiment_root / "budget_status.json", experiment_budget_status)
+                    break
+        if experiment_budget_status.get("aborted_early"):
+            break
+
+    write_json(experiment_root / "run_catalog.json", {"runs": run_entries})
+    write_json(experiment_root / "budget_status.json", experiment_budget_status)
+
+    grouped_all_runs: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for entry in run_entries:
+        grouped_all_runs[str(entry.get("variant_id") or "")].append(entry)
+
+    successful_runs = [entry for entry in run_entries if entry.get("ok") and isinstance(entry.get("aggregate"), dict)]
+    grouped_successful: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for entry in successful_runs:
+        grouped_successful[str(entry.get("variant_id") or "")].append(entry)
+    if "baseline" not in grouped_successful:
+        raise SystemExit("Baseline run did not complete successfully; cannot build comparisons.")
+
+    variant_rows: List[Dict[str, Any]] = []
+    dimension_rows: List[Dict[str, Any]] = []
+    task_rows: List[Dict[str, Any]] = []
+    technique_rows: List[Dict[str, Any]] = []
+    difficulty_rows: List[Dict[str, Any]] = []
+
+    grouped_results: Dict[str, Dict[str, Any]] = {variant_id: _merge_run_group(entries) for variant_id, entries in grouped_successful.items()}
+    global_baseline = grouped_results["baseline"]
+    global_baseline_aggregate = dict(global_baseline.get("aggregate") or {})
+    global_baseline_dimensions = dict(global_baseline_aggregate.get("dimension_means") or {})
+    global_baseline_score = global_baseline_aggregate.get("overall_score_mean")
+    global_baseline_success_rate = global_baseline_aggregate.get("task_success_rate")
+    global_baseline_cost = global_baseline_aggregate.get("mean_relative_cost_index")
+
+    planned_by_variant: Dict[str, Dict[str, Any]] = {}
+    for run_cfg in planned_runs:
+        planned_by_variant[str(run_cfg.get("variant_id") or "")] = run_cfg
+
+    ordered_variant_ids: List[str] = []
+    seen_variant_ids: set[str] = set()
+    for run_cfg in planned_runs:
+        variant_id = str(run_cfg.get("variant_id") or "")
+        if variant_id and variant_id not in seen_variant_ids:
+            seen_variant_ids.add(variant_id)
+            ordered_variant_ids.append(variant_id)
+
+    for variant_id in ordered_variant_ids:
+        planned_cfg = planned_by_variant.get(variant_id) or {}
+        group = grouped_results.get(variant_id)
+        comparison_baseline_id = str(planned_cfg.get("comparison_baseline_id") or "").strip() or "baseline"
+        comparison_group = grouped_results.get(comparison_baseline_id) or global_baseline
+        comparison_aggregate = dict(comparison_group.get("aggregate") or {})
+        comparison_dimensions = dict(comparison_aggregate.get("dimension_means") or {})
+        display_label = (
+            "baseline"
+            if planned_cfg.get("is_baseline")
+            else f"{str(planned_cfg.get('changed_variable') or '')}:baseline"
+            if planned_cfg.get("is_family_baseline")
+            else f"{str(planned_cfg.get('changed_variable') or '')}:{str(planned_cfg.get('variant_name') or variant_id)}"
+        )
+
+        if group is None:
+            attempted_repetitions = len(grouped_all_runs.get(variant_id) or [])
+            failed_repetitions = max(0, attempted_repetitions)
+            variant_rows.append(
+                {
+                    "variant_id": variant_id,
+                    "variant_name": str(planned_cfg.get("variant_name") or variant_id),
+                    "changed_variable": str(planned_cfg.get("changed_variable") or "") or "baseline",
+                    "display_label": display_label,
+                    "is_baseline": bool(planned_cfg.get("is_baseline")),
+                    "is_family_baseline": bool(planned_cfg.get("is_family_baseline")),
+                    "comparison_baseline_id": comparison_baseline_id,
+                    "comparison_baseline_label": str(planned_cfg.get("comparison_baseline_label") or "baseline"),
+                    "pipeline": str(planned_cfg.get("pipeline") or ""),
+                    "architecture": str(planned_cfg.get("architecture") or ""),
+                    "query_variant": str(planned_cfg.get("query_variant") or ""),
+                    "subagent_profile": str(planned_cfg.get("subagent_profile") or ""),
+                    "worker_persona_profile": str(planned_cfg.get("worker_persona_profile") or ""),
+                    "validator_review_level": str(planned_cfg.get("validator_review_level") or ""),
+                    "model_profile": str(planned_cfg.get("model_profile") or ""),
+                    "force_model": str(planned_cfg.get("force_model") or ""),
+                    "config_lineage_id": "",
+                    "planned_repetitions": repetitions,
+                    "attempted_repetitions": attempted_repetitions,
+                    "completed_repetitions": 0,
+                    "failed_repetitions": failed_repetitions,
+                    "completion_rate": (
+                        round(0.0 / attempted_repetitions, 3) if attempted_repetitions else None
+                    ),
+                    "run_ids": [],
+                    "overall_score_mean": None,
+                    "overall_score_stddev": None,
+                    "overall_score_min": None,
+                    "overall_score_max": None,
+                    "task_success_rate": None,
+                    "task_success_rate_stddev": None,
+                    "judge_pass_rate": None,
+                    "scored_result_rate": None,
+                    "produced_result_rate": None,
+                    "validator_blocked_rate": None,
+                    "analysis_failure_rate": None,
+                    "judge_error_rate": None,
+                    "mean_relative_cost_index": None,
+                    "mean_relative_cost_index_stddev": None,
+                    "mean_tool_calls": None,
+                    "mean_target_tool_hit_rate": None,
+                    "score_delta": None,
+                    "task_success_delta": None,
+                    "cost_delta": None,
+                    "global_score_delta": None,
+                }
+            )
+            continue
+
+        aggregate = dict(group.get("aggregate") or {})
+        attempted_repetitions = len(grouped_all_runs.get(variant_id) or [])
+        completed_repetitions = int(group.get("replicate_count") or 0)
+        replicate_entries = list(grouped_successful.get(variant_id) or [])
+        score_series = _value_series(replicate_entries, "aggregate.overall_score_mean")
+        success_series = _value_series(replicate_entries, "aggregate.task_success_rate")
+        cost_series = _value_series(replicate_entries, "aggregate.mean_relative_cost_index")
+        wall_clock_series = _value_series(replicate_entries, "aggregate.mean_task_wall_clock_duration_sec")
+        row = {
+            "variant_id": variant_id,
+            "variant_name": str(planned_cfg.get("variant_name") or variant_id),
+            "changed_variable": str(planned_cfg.get("changed_variable") or "") or "baseline",
+            "display_label": display_label,
+            "is_baseline": bool(planned_cfg.get("is_baseline")),
+            "is_family_baseline": bool(planned_cfg.get("is_family_baseline")),
+            "comparison_baseline_id": comparison_baseline_id,
+            "comparison_baseline_label": str(planned_cfg.get("comparison_baseline_label") or "baseline"),
+            "planned_repetitions": repetitions,
+            "completed_repetitions": int(group.get("replicate_count") or 0),
+            "run_ids": list(group.get("run_ids") or []),
+            "pipeline": ((group.get("run_manifest") or {}).get("pipeline") or ""),
+            "architecture": ((group.get("run_manifest") or {}).get("architecture") or ""),
+            "query_variant": ((group.get("run_manifest") or {}).get("query_variant") or ""),
+            "subagent_profile": ((group.get("run_manifest") or {}).get("subagent_profile") or ""),
+            "worker_persona_profile": ((group.get("run_manifest") or {}).get("worker_persona_profile") or ""),
+            "validator_review_level": ((group.get("run_manifest") or {}).get("validator_review_level") or ""),
+            "model_profile": ((group.get("run_manifest") or {}).get("model_profile") or ""),
+            "force_model": ((group.get("run_manifest") or {}).get("force_model") or ""),
+            "config_lineage_id": ((group.get("run_manifest") or {}).get("config_lineage_id") or ""),
+            "overall_score_mean": aggregate.get("overall_score_mean"),
+            "overall_score_stddev": round(pstdev(score_series), 3) if len(score_series) > 1 else (0.0 if score_series else None),
+            "overall_score_min": round(min(score_series), 3) if score_series else None,
+            "overall_score_max": round(max(score_series), 3) if score_series else None,
+            "task_success_rate": aggregate.get("task_success_rate"),
+            "task_success_rate_stddev": round(pstdev(success_series), 3) if len(success_series) > 1 else (0.0 if success_series else None),
+            "judge_pass_rate": aggregate.get("judge_pass_rate"),
+            "scored_result_rate": aggregate.get("scored_result_rate"),
+            "produced_result_rate": aggregate.get("produced_result_rate"),
+            "validator_blocked_rate": aggregate.get("validator_blocked_rate"),
+            "analysis_failure_rate": aggregate.get("analysis_failure_rate"),
+            "judge_error_rate": aggregate.get("judge_error_rate"),
+            "mean_relative_cost_index": aggregate.get("mean_relative_cost_index"),
+            "mean_relative_cost_index_stddev": round(pstdev(cost_series), 6) if len(cost_series) > 1 else (0.0 if cost_series else None),
+            "mean_tool_calls": aggregate.get("mean_tool_calls"),
+            "mean_target_tool_hit_rate": aggregate.get("mean_target_tool_hit_rate"),
+            "mean_analysis_duration_sec": aggregate.get("mean_analysis_duration_sec"),
+            "mean_judge_duration_sec": aggregate.get("mean_judge_duration_sec"),
+            "mean_total_duration_sec": aggregate.get("mean_total_duration_sec"),
+            "mean_task_wall_clock_duration_sec": aggregate.get("mean_task_wall_clock_duration_sec"),
+            "mean_task_wall_clock_duration_sec_stddev": round(pstdev(wall_clock_series), 6) if len(wall_clock_series) > 1 else (0.0 if wall_clock_series else None),
+            "attempted_repetitions": attempted_repetitions,
+            "failed_repetitions": max(0, attempted_repetitions - completed_repetitions),
+            "completion_rate": (
+                round(completed_repetitions / attempted_repetitions, 3)
+                if attempted_repetitions
+                else None
+            ),
+            "score_delta": (
+                round(float(aggregate.get("overall_score_mean") or 0.0) - float(comparison_aggregate.get("overall_score_mean") or 0.0), 3)
+                if aggregate.get("overall_score_mean") is not None and comparison_aggregate.get("overall_score_mean") is not None
+                else None
+            ),
+            "task_success_delta": (
+                round(float(aggregate.get("task_success_rate") or 0.0) - float(comparison_aggregate.get("task_success_rate") or 0.0), 3)
+                if aggregate.get("task_success_rate") is not None and comparison_aggregate.get("task_success_rate") is not None
+                else None
+            ),
+            "cost_delta": (
+                round(float(aggregate.get("mean_relative_cost_index") or 0.0) - float(comparison_aggregate.get("mean_relative_cost_index") or 0.0), 6)
+                if aggregate.get("mean_relative_cost_index") is not None and comparison_aggregate.get("mean_relative_cost_index") is not None
+                else None
+            ),
+            "global_score_delta": (
+                round(float(aggregate.get("overall_score_mean") or 0.0) - float(global_baseline_score or 0.0), 3)
+                if aggregate.get("overall_score_mean") is not None and global_baseline_score is not None
+                else None
+            ),
+            "global_task_success_delta": (
+                round(float(aggregate.get("task_success_rate") or 0.0) - float(global_baseline_success_rate or 0.0), 3)
+                if aggregate.get("task_success_rate") is not None and global_baseline_success_rate is not None
+                else None
+            ),
+            "global_cost_delta": (
+                round(float(aggregate.get("mean_relative_cost_index") or 0.0) - float(global_baseline_cost or 0.0), 6)
+                if aggregate.get("mean_relative_cost_index") is not None and global_baseline_cost is not None
+                else None
+            ),
+            "task_wall_clock_duration_delta_sec": (
+                round(float(aggregate.get("mean_task_wall_clock_duration_sec") or 0.0) - float(comparison_aggregate.get("mean_task_wall_clock_duration_sec") or 0.0), 6)
+                if aggregate.get("mean_task_wall_clock_duration_sec") is not None and comparison_aggregate.get("mean_task_wall_clock_duration_sec") is not None
+                else None
+            ),
+        }
+        variant_rows.append(row)
+
+        for dimension_name in sorted(set(list(comparison_dimensions.keys()) + list((aggregate.get("dimension_means") or {}).keys()) + list(global_baseline_dimensions.keys()))):
+            current_value = (aggregate.get("dimension_means") or {}).get(dimension_name)
+            baseline_value = comparison_dimensions.get(dimension_name)
+            global_baseline_value = global_baseline_dimensions.get(dimension_name)
+            dimension_rows.append(
+                {
+                    "variant_id": row["variant_id"],
+                    "display_label": row["display_label"],
+                    "changed_variable": row["changed_variable"],
+                    "comparison_baseline_id": comparison_baseline_id,
+                    "comparison_baseline_label": row["comparison_baseline_label"],
+                    "dimension": dimension_name,
+                    "value": current_value,
+                    "baseline_value": baseline_value,
+                    "global_baseline_value": global_baseline_value,
+                    "delta_from_baseline": (
+                        round(float(current_value or 0.0) - float(baseline_value or 0.0), 3)
+                        if current_value is not None and baseline_value is not None
+                        else None
+                    ),
+                    "delta_from_global_baseline": (
+                        round(float(current_value or 0.0) - float(global_baseline_value or 0.0), 3)
+                        if current_value is not None and global_baseline_value is not None
+                        else None
+                    ),
+                }
+            )
+
+        current_records = _group_records(list(group.get("records") or []))
+        baseline_records = _group_records(list(comparison_group.get("records") or []))
+        all_samples = sorted(set(current_records.keys()) | set(baseline_records.keys()))
+        for record_key in all_samples:
+            current_group = current_records.get(record_key) or []
+            baseline_group = baseline_records.get(record_key) or []
+            current_summary = _task_group_summary(current_group) if current_group else {}
+            baseline_summary = _task_group_summary(baseline_group) if baseline_group else {}
+            reference_summary = current_summary or baseline_summary
+            task_rows.append(
+                {
+                    "variant_id": row["variant_id"],
+                    "display_label": row["display_label"],
+                    "changed_variable": row["changed_variable"],
+                    "comparison_baseline_id": comparison_baseline_id,
+                    "comparison_baseline_label": row["comparison_baseline_label"],
+                    "sample": reference_summary.get("sample", ""),
+                    "task_id": reference_summary.get("task_id", ""),
+                    "task_name": reference_summary.get("task_name", ""),
+                    "sample_task_id": reference_summary.get("sample_task_id", record_key),
+                    "difficulty": reference_summary.get("difficulty", "unknown"),
+                    "primary_techniques": reference_summary.get("primary_techniques", ""),
+                    "analysis_status": current_summary.get("analysis_status"),
+                    "baseline_analysis_status": baseline_summary.get("analysis_status"),
+                    "produced_result_rate": current_summary.get("produced_result_rate"),
+                    "baseline_produced_result_rate": baseline_summary.get("produced_result_rate"),
+                    "score": current_summary.get("score"),
+                    "baseline_score": baseline_summary.get("score"),
+                    "score_delta": (
+                        round(float(current_summary.get("score") or 0.0) - float(baseline_summary.get("score") or 0.0), 3)
+                        if current_summary.get("score") is not None and baseline_summary.get("score") is not None
+                        else None
+                    ),
+                    "task_success_rate": current_summary.get("task_success_rate"),
+                    "baseline_task_success_rate": baseline_summary.get("task_success_rate"),
+                    "task_success_numeric": current_summary.get("task_success_rate"),
+                    "baseline_task_success_numeric": baseline_summary.get("task_success_rate"),
+                    "task_success_delta": (
+                        round(float(current_summary.get("task_success_rate") or 0.0) - float(baseline_summary.get("task_success_rate") or 0.0), 3)
+                        if current_summary.get("task_success_rate") is not None and baseline_summary.get("task_success_rate") is not None
+                        else None
+                    ),
+                    "relative_cost_index": current_summary.get("relative_cost_index"),
+                    "baseline_relative_cost_index": baseline_summary.get("relative_cost_index"),
+                    "target_tool_hit_rate": current_summary.get("target_tool_hit_rate"),
+                    "baseline_target_tool_hit_rate": baseline_summary.get("target_tool_hit_rate"),
+                    "mean_analysis_duration_sec": current_summary.get("analysis_duration_sec"),
+                    "baseline_mean_analysis_duration_sec": baseline_summary.get("analysis_duration_sec"),
+                    "mean_judge_duration_sec": current_summary.get("judge_duration_sec"),
+                    "baseline_mean_judge_duration_sec": baseline_summary.get("judge_duration_sec"),
+                    "mean_total_duration_sec": current_summary.get("total_duration_sec"),
+                    "baseline_mean_total_duration_sec": baseline_summary.get("total_duration_sec"),
+                    "mean_task_wall_clock_duration_sec": current_summary.get("task_wall_clock_duration_sec"),
+                    "baseline_mean_task_wall_clock_duration_sec": baseline_summary.get("task_wall_clock_duration_sec"),
+                    "task_wall_clock_duration_delta_sec": (
+                        round(float(current_summary.get("task_wall_clock_duration_sec") or 0.0) - float(baseline_summary.get("task_wall_clock_duration_sec") or 0.0), 6)
+                        if current_summary.get("task_wall_clock_duration_sec") is not None and baseline_summary.get("task_wall_clock_duration_sec") is not None
+                        else None
+                    ),
+                }
+            )
+
+        for difficulty_name in sorted(set((comparison_aggregate.get("by_difficulty") or {}).keys()) | set((aggregate.get("by_difficulty") or {}).keys())):
+            current_bucket = (aggregate.get("by_difficulty") or {}).get(difficulty_name) or {}
+            baseline_bucket = (comparison_aggregate.get("by_difficulty") or {}).get(difficulty_name) or {}
+            difficulty_rows.append(
+                {
+                    "variant_id": row["variant_id"],
+                    "display_label": row["display_label"],
+                    "changed_variable": row["changed_variable"],
+                    "comparison_baseline_id": comparison_baseline_id,
+                    "comparison_baseline_label": row["comparison_baseline_label"],
+                    "difficulty": difficulty_name,
+                    "mean_score": current_bucket.get("mean_score"),
+                    "baseline_mean_score": baseline_bucket.get("mean_score"),
+                    "score_delta": (
+                        round(float(current_bucket.get("mean_score") or 0.0) - float(baseline_bucket.get("mean_score") or 0.0), 3)
+                        if current_bucket.get("mean_score") is not None and baseline_bucket.get("mean_score") is not None
+                        else None
+                    ),
+                    "task_success_rate": current_bucket.get("task_success_rate"),
+                    "baseline_task_success_rate": baseline_bucket.get("task_success_rate"),
+                    "mean_task_wall_clock_duration_sec": current_bucket.get("mean_task_wall_clock_duration_sec"),
+                    "baseline_mean_task_wall_clock_duration_sec": baseline_bucket.get("mean_task_wall_clock_duration_sec"),
+                    "task_wall_clock_duration_delta_sec": (
+                        round(float(current_bucket.get("mean_task_wall_clock_duration_sec") or 0.0) - float(baseline_bucket.get("mean_task_wall_clock_duration_sec") or 0.0), 6)
+                        if current_bucket.get("mean_task_wall_clock_duration_sec") is not None and baseline_bucket.get("mean_task_wall_clock_duration_sec") is not None
+                        else None
+                    ),
+                }
+            )
+
+        for technique_name in sorted(set((comparison_aggregate.get("by_technique") or {}).keys()) | set((aggregate.get("by_technique") or {}).keys())):
+            current_bucket = (aggregate.get("by_technique") or {}).get(technique_name) or {}
+            baseline_bucket = (comparison_aggregate.get("by_technique") or {}).get(technique_name) or {}
+            technique_rows.append(
+                {
+                    "variant_id": row["variant_id"],
+                    "display_label": row["display_label"],
+                    "changed_variable": row["changed_variable"],
+                    "comparison_baseline_id": comparison_baseline_id,
+                    "comparison_baseline_label": row["comparison_baseline_label"],
+                    "technique": technique_name,
+                    "mean_score": current_bucket.get("mean_score"),
+                    "baseline_mean_score": baseline_bucket.get("mean_score"),
+                    "score_delta": (
+                        round(float(current_bucket.get("mean_score") or 0.0) - float(baseline_bucket.get("mean_score") or 0.0), 3)
+                        if current_bucket.get("mean_score") is not None and baseline_bucket.get("mean_score") is not None
+                        else None
+                    ),
+                    "task_success_rate": current_bucket.get("task_success_rate"),
+                    "baseline_task_success_rate": baseline_bucket.get("task_success_rate"),
+                    "mean_task_wall_clock_duration_sec": current_bucket.get("mean_task_wall_clock_duration_sec"),
+                    "baseline_mean_task_wall_clock_duration_sec": baseline_bucket.get("mean_task_wall_clock_duration_sec"),
+                    "task_wall_clock_duration_delta_sec": (
+                        round(float(current_bucket.get("mean_task_wall_clock_duration_sec") or 0.0) - float(baseline_bucket.get("mean_task_wall_clock_duration_sec") or 0.0), 6)
+                        if current_bucket.get("mean_task_wall_clock_duration_sec") is not None and baseline_bucket.get("mean_task_wall_clock_duration_sec") is not None
+                        else None
+                    ),
+                }
+            )
+
+    comparison_payload = {
+        "experiment_id": experiment_id,
+        "baseline_variant_id": "baseline",
+        "baseline_run_ids": list(global_baseline.get("run_ids") or []),
+        "variant_summary": variant_rows,
+        "dimension_summary": dimension_rows,
+        "task_comparison": task_rows,
+        "difficulty_summary": difficulty_rows,
+        "technique_summary": technique_rows,
+        "lineage_summary": [],
+    }
+    write_json(experiment_root / "comparison.json", comparison_payload)
+    _write_rows_csv(experiment_root / "variant_summary.csv", variant_rows)
+    _write_rows_csv(experiment_root / "dimension_summary.csv", dimension_rows)
+    _write_rows_csv(experiment_root / "task_comparison.csv", task_rows)
+    _write_rows_csv(experiment_root / "difficulty_summary.csv", difficulty_rows)
+    _write_rows_csv(experiment_root / "technique_summary.csv", technique_rows)
+
+    run_catalog_rows = [
+        {
+            "variant_id": entry.get("variant_id", ""),
+            "variant_name": entry.get("variant_name", ""),
+            "changed_variable": entry.get("changed_variable", ""),
+            "comparison_baseline_id": entry.get("comparison_baseline_id", ""),
+            "comparison_baseline_label": entry.get("comparison_baseline_label", ""),
+            "config_lineage_id": (((entry.get("run_manifest") or {}) if isinstance(entry.get("run_manifest"), dict) else {}).get("config_lineage_id") or ""),
+            "replicate_index": entry.get("replicate_index", ""),
+            "run_id": entry.get("run_id", ""),
+            "run_dir": entry.get("run_dir", ""),
+            "ok": entry.get("ok", False),
+            "overall_score_mean": ((entry.get("aggregate") or {}).get("overall_score_mean") if isinstance(entry.get("aggregate"), dict) else None),
+            "task_success_rate": ((entry.get("aggregate") or {}).get("task_success_rate") if isinstance(entry.get("aggregate"), dict) else None),
+            "scored_result_rate": ((entry.get("aggregate") or {}).get("scored_result_rate") if isinstance(entry.get("aggregate"), dict) else None),
+            "produced_result_rate": ((entry.get("aggregate") or {}).get("produced_result_rate") if isinstance(entry.get("aggregate"), dict) else None),
+            "validator_blocked_rate": ((entry.get("aggregate") or {}).get("validator_blocked_rate") if isinstance(entry.get("aggregate"), dict) else None),
+            "analysis_failure_rate": ((entry.get("aggregate") or {}).get("analysis_failure_rate") if isinstance(entry.get("aggregate"), dict) else None),
+            "judge_error_rate": ((entry.get("aggregate") or {}).get("judge_error_rate") if isinstance(entry.get("aggregate"), dict) else None),
+            "mean_total_duration_sec": ((entry.get("aggregate") or {}).get("mean_total_duration_sec") if isinstance(entry.get("aggregate"), dict) else None),
+            "mean_task_wall_clock_duration_sec": ((entry.get("aggregate") or {}).get("mean_task_wall_clock_duration_sec") if isinstance(entry.get("aggregate"), dict) else None),
+            "error": entry.get("error", ""),
+        }
+        for entry in run_entries
+    ]
+    _write_rows_csv(experiment_root / "run_catalog.csv", run_catalog_rows)
+
+    lineage_rows: List[Dict[str, Any]] = []
+    seen_lineages: set[str] = set()
+    for entry in successful_runs:
+        run_manifest = entry.get("run_manifest") if isinstance(entry.get("run_manifest"), dict) else {}
+        run_dir = Path(str(entry.get("run_dir") or "")).resolve() if entry.get("run_dir") else Path()
+        aggregate = entry.get("aggregate") if isinstance(entry.get("aggregate"), dict) else {}
+        lineage_id = str(run_manifest.get("config_lineage_id") or "").strip()
+        if not lineage_id and run_manifest and run_dir:
+            run_manifest["config_lineage_id"] = compute_lineage_id(run_manifest)
+            run_manifest["config_lineage_key"] = normalize_run_lineage_payload(run_manifest)
+            lineage_id = str(run_manifest.get("config_lineage_id") or "").strip()
+            write_json(run_dir / "run_manifest.json", run_manifest)
+            if aggregate:
+                refresh_lineage_index_for_run(
+                    run_dir=run_dir,
+                    run_manifest=run_manifest,
+                    aggregate=aggregate,
+                )
+        if not lineage_id or lineage_id in seen_lineages:
+            continue
+        seen_lineages.add(lineage_id)
+        lineage_payload = load_lineage_payload(lineage_id)
+        if not lineage_payload:
+            continue
+        lineage_aggregate = lineage_payload.get("aggregate") if isinstance(lineage_payload.get("aggregate"), dict) else {}
+        lineage_key = lineage_payload.get("config_lineage_key") if isinstance(lineage_payload.get("config_lineage_key"), dict) else {}
+        lineage_rows.append(
+            {
+                "config_lineage_id": lineage_id,
+                "path": str((RESULTS_ROOT / "lineages" / f"{lineage_id}.json").resolve()),
+                "run_count": lineage_payload.get("run_count"),
+                "records_count": lineage_payload.get("records_count"),
+                "overall_score_mean": lineage_aggregate.get("overall_score_mean"),
+                "task_success_rate": lineage_aggregate.get("task_success_rate"),
+                "mean_relative_cost_index": lineage_aggregate.get("mean_relative_cost_index"),
+                "mean_total_duration_sec": lineage_aggregate.get("mean_total_duration_sec"),
+                "mean_task_wall_clock_duration_sec": lineage_aggregate.get("mean_task_wall_clock_duration_sec"),
+                "corpus": lineage_key.get("corpus"),
+                "pipeline": lineage_key.get("pipeline"),
+                "architecture": lineage_key.get("architecture"),
+                "query_variant": lineage_key.get("query_variant"),
+                "worker_persona_profile": lineage_key.get("worker_persona_profile"),
+                "selected_samples": "; ".join(lineage_key.get("selected_samples") or []),
+                "selected_tasks": "; ".join(lineage_key.get("selected_tasks") or []),
+                "selected_difficulties": "; ".join(lineage_key.get("selected_difficulties") or []),
+            }
+        )
+    _write_rows_csv(experiment_root / "lineage_summary.csv", lineage_rows)
+    comparison_payload["lineage_summary"] = lineage_rows
+    write_json(experiment_root / "comparison.json", comparison_payload)
+
+    timing_result = build_timing_outputs(
+        outputs_root,
+        run_entries=successful_runs,
+        variant_rows=variant_rows,
+    )
+
+    build_task_output_comparisons(
+        outputs_root / "task_output_comparisons",
+        run_entries=successful_runs,
+    )
+
+    result_layout_payload = build_experiment_output_layout(
+        experiment_root=experiment_root,
+        experiment_id=experiment_id,
+        successful_entries=successful_runs,
+    )
+    write_json(experiment_root / "result_layout.json", result_layout_payload)
+
+    significance_result = build_significance_outputs(
+        experiment_root,
+        successful_entries=successful_runs,
+        variant_rows=variant_rows,
+    )
+
+    significance_payload = dict(significance_result.get("payload") or {})
+
+    if not args.skip_visuals:
+        generate_experiment_visuals(
+            outputs_root,
+            variant_rows=variant_rows,
+            dimension_rows=dimension_rows,
+            task_rows=task_rows,
+            difficulty_rows=difficulty_rows,
+            technique_rows=technique_rows,
+            significance_overall_rows=list(significance_payload.get("overall") or []),
+            significance_difficulty_rows=list(significance_payload.get("by_difficulty") or []),
+            significance_task_rows=list(significance_payload.get("by_task") or []),
+            paired_task_overall_rows=list(significance_payload.get("paired_task_overall") or []),
+            paired_task_difficulty_rows=list(significance_payload.get("paired_task_by_difficulty") or []),
+            timing_variant_rows=list(timing_result.get("variant_timing_rows") or []),
+            timing_task_rows=list(timing_result.get("task_summary_rows") or []),
+            timing_task_tag_rows=list(timing_result.get("task_tag_summary_rows") or []),
+        )
+
+    _build_experiment_report(experiment_manifest, variant_rows, task_rows, experiment_root / "report.md")
+
+    print(
+        json.dumps(
+            {
+                "experiment_id": experiment_id,
+                "experiment_root": str(experiment_root),
+                "run_count": len(run_entries),
+            },
+            indent=2,
+        )
+    )

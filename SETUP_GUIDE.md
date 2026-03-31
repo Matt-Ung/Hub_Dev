@@ -1,352 +1,320 @@
 # Setup Guide
 
-## Repo Overview
+This guide is for the active `multi_agent_wf` application.
 
-| Folder | Purpose |
-|---|---|
-| `GhidraMCP/` | Java/Maven Ghidra extension that exposes analysis data over HTTP for the bridge MCP server. |
-| `MCPServers/` | Python FastMCP wrappers for capa, FLOSS, strings, YARA, HashDB, Ghidra bridge, binwalk, gitleaks, searchsploit, trivy. |
-| `multi_agent_wf/` | Main deep-agent workflow app: config loading, runtime, pipeline orchestration, Gradio frontend, and JSON workflow configuration. |
-| `skills/` | Repo-local skill definitions that teach agents safe command construction and tool usage patterns. |
-| `Testing/Prototype_Test_Executables/` | Original regression sample corpus: 8 Windows PE samples covering static analysis, string obfuscation, API hashing, anti-debug, and control-flow flattening. Build scripts and Makefile included. |
-| `Testing/Experimental_Test_Executables/` | 8 new samples stratified by difficulty (easy / medium / hard). Designed to cover the full MCP server surface including binwalk, hashdb, YARA, and UPX. |
-| `Testing/` | `TESTING_PLAN.md`, `Testing_Documentation/`, and evidence from prior runs. |
+It is intentionally minimal:
 
----
+- first get the Gradio app running
+- then enable optional capabilities such as live Ghidra, richer rule corpora, automation triggers, and the testing harness
 
-## Python Environment Setup
+If you only want the evaluation harness, start with [Testing/START_HERE.md](Testing/START_HERE.md) instead.
 
-Replace `USR_PATH` with the parent directory where you cloned this repo, so the root becomes `USR_PATH/Hub_Dev`.
+## What `multi_agent_wf` Actually Is
+
+`multi_agent_wf/` is the main agentic app. The real runtime path is:
+
+1. [multi_agent_wf/main.py](multi_agent_wf/main.py)
+2. [multi_agent_wf/config.py](multi_agent_wf/config.py)
+3. [multi_agent_wf/frontend.py](multi_agent_wf/frontend.py)
+4. [multi_agent_wf/runtime.py](multi_agent_wf/runtime.py)
+5. [multi_agent_wf/pipeline.py](multi_agent_wf/pipeline.py)
+
+Important adjacent inputs:
+
+- [multi_agent_wf/workflow_config/](multi_agent_wf/workflow_config)
+- [MCPServers/servers.json](MCPServers/servers.json)
+- repo `.env`
+
+The UI is Gradio. MCP servers are launched over `stdio` from `servers.json`. Tool servers are loaded when a run actually needs them, not when the page first renders.
+
+## Minimal Quickstart
+
+These are the smallest required steps to get the app running locally.
+
+### 1. Create a venv and install Python deps
+
+From the repo root:
 
 ```bash
-cd "USR_PATH/Hub_Dev"
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-On Windows PowerShell:
+Windows PowerShell:
 
 ```powershell
-cd "USR_PATH\\Hub_Dev"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-**Dependency notes:**
-- `python-dotenv` — `config.py` loads `.env` on startup.
-- `pydantic-ai` / `pydantic-ai-backend` — agent runtime; `runtime.py` imports `pydantic_ai_backends`.
-- `gradio` — Gradio UI in `frontend.py`.
-- `PyYAML`, `PyGithub` — used by maintenance scripts under `MCPServers/capa-rules/.github/scripts`.
-- External CLI tools (`capa`, `floss`, `strings`, `yara`, `binwalk`, `gitleaks`, `searchsploit`, `trivy`) must be on `PATH` separately — they are not Python packages.
+### 2. Create a minimal `.env`
 
----
-
-## Environment Configuration (`.env`)
-
-Create a `.env` file in the repo root. All fields are optional unless marked required.
+Only one variable is effectively required for a normal launch:
 
 ```dotenv
-# ── Model ─────────────────────────────────────────────────────────────────────
-# Model ID in pydantic-ai format (provider:model-name)
-OPENAI_MODEL_ID=openai:gpt-4o-mini
-
-# ── Agent runtime ──────────────────────────────────────────────────────────────
-# Max messages kept in each agent's rolling chat history
-MAX_ROLE_HISTORY_MESSAGES=16
-
-# Max worker agents running in parallel
-MAX_PARALLEL_WORKERS=2
-
-# Max retries if the validation gate rejects worker output
-MAX_VALIDATION_REPLAN_RETRIES=1
-
-# ── Deep-agent features ────────────────────────────────────────────────────────
-# Enable persistent agent memory across turns
-DEEP_ENABLE_MEMORY=true
-
-# Enable agent skill loading from skill directories
-DEEP_ENABLE_SKILLS=true
-
-# Colon-separated list of skill directories
-DEEP_SKILL_DIRS=USR_PATH/Hub_Dev/skills
-
-# Max tokens of context passed to the deep-agent backend per agent
-DEEP_CONTEXT_MAX_TOKENS=18000
-
-# ── Defaults (overridable from UI) ─────────────────────────────────────────────
-# easy | default | intermediate | strict
-DEFAULT_VALIDATOR_REVIEW_LEVEL=default
-
-# none | ask | full
-DEFAULT_SHELL_EXECUTION_MODE=none
-
-# ── Gradio UI ─────────────────────────────────────────────────────────────────
-GRADIO_SERVER_NAME=0.0.0.0
-GRADIO_SERVER_PORT=7860
-
-# ── Automation trigger HTTP server ─────────────────────────────────────────────
-# Set to true to enable the HTTP endpoint that Ghidra can POST to
-AUTOMATION_TRIGGER_ENABLED=false
-AUTOMATION_TRIGGER_HOST=127.0.0.1
-AUTOMATION_TRIGGER_PORT=7861
+OPENAI_API_KEY=your_key_here
 ```
 
-**Validator review level effects:**
-- `easy` — passes most outputs; use for exploration.
-- `default` — balanced; recommended for normal runs.
-- `intermediate` — stricter evidence requirements; rejects weak claims.
-- `strict` — highest evidence bar; expect more replanning.
+Useful but optional defaults:
 
-**Shell execution mode effects:**
-- `none` — no shell access for agents; safest.
-- `ask` — agents can request shell access; a UI modal prompts you to approve each command.
-- `full` — agents execute shell commands without prompting.
+```dotenv
+OPENAI_MODEL_ID=openai:gpt-5-mini
+GRADIO_SERVER_PORT=7860
+AUTOMATION_TRIGGER_ENABLED=false
+```
 
----
+Notes:
 
-## Running the App
+- If `OPENAI_API_KEY` is missing, [config.py](multi_agent_wf/config.py) will prompt for it interactively.
+- `DEEP_SKILL_DIRS` is optional. The runtime already auto-discovers the repo-local `skills/` directory.
+- The automation HTTP sidecar is now opt-in. Leave it disabled unless you explicitly need Ghidra-triggered automation.
+
+### 3. Launch the app
 
 ```bash
-cd "USR_PATH/Hub_Dev"
-source .venv/bin/activate
+python -m multi_agent_wf.main
+```
+
+The UI should come up at:
+
+- [http://127.0.0.1:7860](http://127.0.0.1:7860) by default
+
+You can still use:
+
+```bash
 python multi_agent_wf/main.py
 ```
 
-The Gradio UI opens at `http://localhost:7860` (or the port set in `.env`).
+but `python -m multi_agent_wf.main` is the cleaner path.
 
----
+## Minimal Run Requirements vs Optional Capabilities
 
-## Rule Sources for capa and YARA
+Required for the UI to launch and build:
 
-### capa
+- Python dependencies from [requirements.txt](requirements.txt)
+- `OPENAI_API_KEY` or an interactive terminal prompt
 
-```bash
-cd "USR_PATH/Hub_Dev/MCPServers"
-git clone https://github.com/mandiant/capa capa-src
-git clone https://github.com/mandiant/capa-rules capa-rules
-mkdir -p capa-sigs
-cp -R capa-src/sigs/* capa-sigs/
-```
+Not required for the UI to launch:
 
-This gives you `MCPServers/capa-rules/` and `MCPServers/capa-sigs/` in the layout `capaMCP.py` expects.
+- live Ghidra plugin
+- headless Ghidra
+- capa rules/signatures
+- YARA corpus
+- FLOSS/capa/binwalk/gitleaks/searchsploit/trivy binaries on `PATH`
+- testing harness bundles/results
 
-### YARA
+Those become relevant only when you want the corresponding tools to work during an analysis run.
 
-```bash
-cd "USR_PATH/Hub_Dev/MCPServers"
-mkdir -p yara_rules
-git clone https://github.com/Neo23x0/signature-base yara-signature-base
-git clone https://github.com/Yara-Rules/rules yara-rules-community
+## Environment and Config Notes
 
-find yara-signature-base/yara -type f \( -name '*.yar' -o -name '*.yara' \) -exec cp {} yara_rules/ \;
-find yara-rules-community -type f \( -name '*.yar' -o -name '*.yara' \) -exec cp {} yara_rules/ \;
-```
+The real env/bootstrap behavior is in [multi_agent_wf/config.py](multi_agent_wf/config.py).
 
-**Notes:**
-- `Neo23x0/signature-base` includes rules that use external LOKI/THOR variables. If plain `yara` reports undefined identifiers, remove or isolate those files.
-- Combining corpora introduces duplicate rule names. Start with the curated baseline, then add breadth once scans are stable.
+### Frequently used variables
 
----
+| Variable | Required | What it does |
+|---|---:|---|
+| `OPENAI_API_KEY` | Yes, unless you want an interactive prompt | API key for the main agent model |
+| `OPENAI_MODEL_ID` | No | Primary agent model, default `openai:gpt-5-mini` |
+| `GRADIO_SERVER_NAME` | No | Bind host for the UI |
+| `GRADIO_SERVER_PORT` | No | Bind port for the UI |
+| `DEFAULT_VALIDATOR_REVIEW_LEVEL` | No | Default validator strictness in the UI |
+| `DEFAULT_SHELL_EXECUTION_MODE` | No | Default shell access mode in the UI |
+| `AUTOMATION_TRIGGER_ENABLED` | No | Enables the extra HTTP automation trigger server |
+| `MCP_SERVER_MANIFEST_PATH` | No | Alternative path to the MCP manifest; default is `MCPServers/servers.json` |
 
-## MCP Server Configuration
+### Advanced but real variables
 
-`MCPServers/servers.json` defines which MCP tool servers the workflow loads. Each entry is:
+These are implemented, but not needed for a basic launch:
 
-```json
-{
-  "server-id": {
-    "transport": "stdio",
-    "command": "python",
-    "args": ["path/to/server_script.py", "--transport", "stdio"]
-  }
-}
-```
+- `DEEP_AGENT_ARCHITECTURE_NAME`
+- `DEEP_AGENT_PIPELINE_NAME`
+- `DEEP_FORCE_MODEL_ID`
+- `DEEP_WORKER_SUBAGENT_PROFILE`
+- `DEEP_WORKER_PERSONA_PROFILE`
+- `DEEP_ENABLE_MEMORY`
+- `DEEP_PERSIST_BACKEND`
+- `DEEP_BACKEND_ROOT`
+- `DEEP_CONTEXT_MAX_TOKENS`
+- `DEEP_AGENT_PIPELINE_ROUTER_MODEL`
+- `DEEP_AGENT_RETRIES`
+- `HOST_PARALLEL_WORKER_EXECUTION`
 
-Server IDs containing `ghidra` are treated as requiring serial (non-concurrent) tool calls. Server IDs listed in the tool result cache allow-list will have their responses cached by the runtime.
+### Variables that do not belong in the minimal path
 
-Script paths in `args` are resolved relative to the location of `servers.json`.
+These are optional and should only be set when you need the feature:
 
----
+- `YARA_RULES_DIR`
+- `AGENT_ARTIFACT_DIR` and `AGENT_*_ARTIFACT_DIR`
+- `GHIDRA_INSTALL_DIR`, `GHIDRA_HEADLESS`, `GHIDRA_JAVA_HOME`
+- `GHIDRA_ARTIFACT_BUNDLE_DIR`, `GHIDRA_MCP_FALLBACK_MODE`
+- `ALT_MODEL_*`, `OPENAI_COMPAT_*`, `HF_*`
 
-## Ghidra MCP Extension Build
+## Frontend / Backend Wiring
 
-The Ghidra extension lives in `GhidraMCP/`. It exposes Ghidra analysis data over HTTP so `bridge_mcp_ghidra.py` can relay tool calls to it.
+The actual wiring is:
 
-### Prerequisites
+- [multi_agent_wf/frontend.py](multi_agent_wf/frontend.py) builds the Gradio UI
+- [multi_agent_wf/runtime.py](multi_agent_wf/runtime.py) loads MCP servers from [MCPServers/servers.json](MCPServers/servers.json)
+- [multi_agent_wf/workflow_config/](multi_agent_wf/workflow_config) is the source of truth for architectures, pipelines, prompts, and worker personas
 
-- Java/JDK on `PATH`
-- Maven on `PATH`
-- Ghidra 12.0.2 installed locally (the `pom.xml` is pinned to this version)
+Current defaults worth knowing:
 
-### Step 1: Populate `GhidraMCP/lib`
+- default architecture preset: `aws_collaboration`
+- default pipeline preset: `preflight_planner_workers_validators_reporter`
+- worker persona defaults to `default`
+- automation trigger defaults to disabled unless enabled in `.env`
 
-Copy these jars from your Ghidra install into `GhidraMCP/lib/`:
+The UI and runtime do not require a separate backend web server beyond Gradio. The only extra HTTP service is the optional automation trigger sidecar on port `7861`.
 
-| Jar | Source path in Ghidra install |
-|---|---|
-| `Base.jar` | `Ghidra/Features/Base/lib/Base.jar` |
-| `Decompiler.jar` | `Ghidra/Features/Decompiler/lib/Decompiler.jar` |
-| `Docking.jar` | `Ghidra/Framework/Docking/lib/Docking.jar` |
-| `Generic.jar` | `Ghidra/Framework/Generic/lib/Generic.jar` |
-| `Gui.jar` | `Ghidra/Framework/Gui/lib/Gui.jar` |
-| `Project.jar` | `Ghidra/Framework/Project/lib/Project.jar` |
-| `SoftwareModeling.jar` | `Ghidra/Framework/SoftwareModeling/lib/SoftwareModeling.jar` |
-| `Utility.jar` | `Ghidra/Framework/Utility/lib/Utility.jar` |
+## Optional Capability Enablement
 
-### Step 2: Build
+### Live Ghidra bridge
 
-```bash
-cd "USR_PATH/Hub_Dev/GhidraMCP"
-mvn clean package assembly:single
-```
+This is optional for startup but important for high-quality reverse-engineering runs.
 
-Output: `target/GhidraMCP-12.0.2-SNAPSHOT.zip`
+The live bridge path is:
 
-### Step 3: Install
+- [GhidraMCP/](GhidraMCP) Java plugin
+- [MCPServers/bridge_mcp_ghidra.py](MCPServers/bridge_mcp_ghidra.py) MCP wrapper
 
-Install the ZIP into Ghidra via the extension manager, restart Ghidra, and enable the plugin.
+Important:
 
----
+- the plugin build is currently pinned to Ghidra `12.0.2` in [GhidraMCP/pom.xml](GhidraMCP/pom.xml)
+- this is separate from the headless Ghidra path used by the testing harness
 
-## Workflow Configuration (JSON files)
+If you need the live bridge, build and install the plugin from `GhidraMCP/`. If you do not, the app can still launch; Ghidra-backed tool calls will just be unavailable or must rely on artifact fallback if configured.
 
-All agent behavior is driven by JSON files in `multi_agent_wf/workflow_config/`. You can modify these without touching Python code.
+### capa rules and signatures
 
-| File | What it controls |
-|---|---|
-| `architecture_presets.json` | Named agent swarms (role + count per swarm). 8 presets defined. |
-| `agent_archetype_specs.json` | Agent role definitions: tool_domain, model, complexity flag. 16 archetypes. |
-| `pipeline_presets.json` | Ordered stage sequences with architecture and model per stage. 4+ presets. |
-| `stage_kind_metadata.json` | Capability flags per stage kind (tool access, parallel, validation gate, etc.). |
-| `base_prompts.json` | Base system prompt templates for static and dynamic agents. |
-| `agent_archetype_prompts.json` | Role-specific prompt specializations that extend the base. |
-| `stage_manager_prompts.json` | Orchestration instructions for each stage kind. |
-| `stage_output_contracts.json` | Expected JSON output format per stage (planner work items, validator gate, etc.). |
+These are optional for startup. They are only needed if you want `capaMCP` scans to work well.
 
-### Architecture presets
+Supported lookup paths are implemented in [MCPServers/capaMCP.py](MCPServers/capaMCP.py):
 
-| Preset | Agents | Use case |
-|---|---|---|
-| `minimal` | 1× static_generalist | Fast broad pass |
-| `balanced` | triage, ghidra, control_flow, obfuscation, string | Normal default |
-| `aws_collaboration` | balanced + capability_analyst | Multi-angle investigation |
-| `runtime_enriched` | aws_collaboration + runtime_behavior_analyst | Static + dynamic |
-| `static_swarm` | 2× control_flow_analyst | Control-flow-heavy samples |
-| `ghidra_focused` | 2× ghidra_analyst + type_recovery_analyst | Ghidra-centric work |
-| `code_reconstruction` | c/cpp/type recovery specialists | Pseudocode cleanup |
-| `ghidra_editing` | code_reconstruction + ghidra_refactor_analyst | Rename/retype proposals |
+- `CAPA_RULES_DIR`
+- `CAPA_SIGS_DIR`
+- fallback repo-local `MCPServers/capa-rules` and `MCPServers/capa-sigs`
 
-### Pipeline presets
+Official upstream sources:
 
-| Preset | Stages | Use case |
-|---|---|---|
-| `preflight_direct_answer` | preflight → reporter | Quick metadata lookup |
-| `auto_triage` | preflight → presweeps → planner → workers → reporter | Post-Ghidra bootstrap triage |
-| `preflight_planner_workers_reporter` | preflight → planner → workers → reporter | Normal analysis |
-| `preflight_planner_workers_validators_reporter` | + validators (evidence gate) | Higher-confidence analysis |
-| `preflight_planner_workers_dual_validators_reporter` | + 2× validators | Strongest validation |
+- rules: [mandiant/capa-rules](https://github.com/mandiant/capa-rules)
+- signatures: [mandiant/capa-testfiles](https://github.com/mandiant/capa-testfiles) in its `sigs/` directory
 
----
-
-## Automation Trigger (HTTP API)
-
-When `AUTOMATION_TRIGGER_ENABLED=true`, the app starts an HTTP server on `AUTOMATION_TRIGGER_HOST:AUTOMATION_TRIGGER_PORT`.
-
-### Endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/automation/ghidra-load` | Trigger analysis from Ghidra or external tooling |
-| `GET` | `/automation/health` | Health check (returns 200 OK) |
-| `GET` | `/automation/status` | Returns current automation panel HTML (for JS polling) |
-
-### Payload for `/automation/ghidra-load`
-
-```json
-{
-  "program_key": "registered-program-name",
-  "executable_path": "C:\\path\\to\\sample.exe",
-  "sha256": "abc123...",
-  "ghidra_project_path": "C:\\path\\to\\project.gpr"
-}
-```
-
-`program_key` must be in the configured allow-list. Unregistered keys are rejected.
-
----
-
-## Ghidra Change Queue
-
-During analysis, agents may propose Ghidra edits (function renames, type changes, comments). These are queued and blocked from automatic execution.
-
-- The UI displays the pending queue with **Approve** and **Reject** buttons.
-- Approved changes are applied via `apply_ghidra_change_proposal_sync()`.
-- Rejected changes are removed from the queue.
-
-To enable agents to generate proposals, use the `ghidra_editing` architecture or any architecture containing `ghidra_refactor_analyst`.
-
----
-
-## Tool Log Files
-
-Each pipeline run writes structured tool logs to:
-
-```
-logs/agentToolBench_YYYYMMDD_HHMMSS/<stage_name>.log
-```
-
-Format: JSON lines. Each line is one of: `tool_call`, `tool_return`, `tool_cache_hit`, `tool_cache_wait`, `tool_cache_store`.
-
-These logs are the primary data source for efficiency metrics in the experimental testing plan.
-
----
-
-## Folder Reference
-
-### `GhidraMCP/`
-- `pom.xml` — Maven build definition
-- `src/assembly/ghidra-extension.xml` — extension ZIP layout
-- `lib/` — manually populated Ghidra jars
-
-### `MCPServers/`
-- `servers.json` — MCP server manifest
-- `bridge_mcp_ghidra.py` — HTTP bridge to Ghidra plugin
-- `capaMCP.py`, `flareFlossMCP.py`, `stringMCP.py`, `yaraMCP.py`, `hashDBMCP.py`, `binwalkMCP.py`, `gitleaksMCP.py`, `searchsploitMCP.py`, `trivyMCP.py` — per-tool MCP wrappers
-
-### `multi_agent_wf/`
-- `main.py` — entrypoint
-- `config.py` — env loading and settings bootstrap
-- `workflow_config_loader.py` — JSON config validation and loading
-- `runtime.py` — agent runtime, MCP loading, tool caching, auto-triage presweeps
-- `pipeline.py` — stage orchestration, planner/validator handling, parallel worker fan-out
-- `shared_state.py` — mutable pipeline state, tool logging, UI snapshots, parent input blocking
-- `frontend.py` — Gradio UI + automation trigger HTTP server
-- `workflow_config/*.json` — all prompt and configuration source of truth
-- `assets/frontend_head.html` — JavaScript injected into the Gradio page (polling, timers, queue alerts)
-
-### `skills/`
-- One `SKILL.md` per tool: `capa-mcp`, `floss-mcp`, `strings-mcp`, `yara-mcp`, `yara-rule-authoring`
-- Loaded by agents to learn safe command construction and tool usage patterns
-
-### `Testing/`
-- `TESTING_PLAN.md` — functional and experimental test plan (includes EXP-A through EXP-I)
-- `Prototype_Test_Executables/` — original 8-sample regression corpus, Makefile, build scripts
-- `Experimental_Test_Executables/` — 8 new difficulty-stratified samples, Makefile, `SAMPLE_INDEX.md`
-- `Testing_Documentation/` — screenshots, prompt examples, and evidence from prior runs
-
-### Build the test corpus
+Recommended repo-local layout:
 
 ```bash
-# Prototype samples (MinGW cross-compile)
-make -C Testing/Prototype_Test_Executables all-with-gcc
-
-# Experimental samples
-make -C Testing/Experimental_Test_Executables all-with-gcc
-
-# Optional: UPX-packed variant for upxmcp smoke test
-make -C Testing/Experimental_Test_Executables upx
+mkdir -p third_party
+git clone https://github.com/mandiant/capa-rules third_party/capa-rules
+git clone https://github.com/mandiant/capa-testfiles third_party/capa-testfiles
 ```
+
+Recommended `.env` values:
+
+```dotenv
+CAPA_RULES_DIR=./third_party/capa-rules
+CAPA_SIGS_DIR=./third_party/capa-testfiles/sigs
+```
+
+Notes:
+
+- `CAPA_SIGS_DIR` should point at the `sigs/` subdirectory, not just the root of `capa-testfiles`.
+- If you prefer, you can copy or symlink only that `sigs/` directory into another local folder and point `CAPA_SIGS_DIR` there instead.
+
+### YARA corpus
+
+Also optional for startup.
+
+Supported base path is implemented in [artifact_paths.py](artifact_paths.py):
+
+- `YARA_RULES_DIR`
+- otherwise repo-local `MCPServers/yara_rules`
+
+Official upstream source:
+
+- [Neo23x0/signature-base](https://github.com/Neo23x0/signature-base)
+
+Recommended repo-local layout:
+
+```bash
+mkdir -p third_party
+git clone https://github.com/Neo23x0/signature-base third_party/signature-base
+```
+
+Recommended `.env` value for this repo:
+
+```dotenv
+YARA_RULES_DIR=./third_party/signature-base
+```
+
+Notes:
+
+- This repo is already configured to work with `./third_party/signature-base` as the base YARA corpus.
+- [MCPServers/yaraMCP.py](MCPServers/yaraMCP.py) scans the configured directory recursively for `*.yar` and `*.yara`, so pointing at the repo root is fine even though most rules live under `yara/`.
+- Some `signature-base` rules are designed for LOKI/THOR-style external variables. If plain YARA reports `undefined identifier`, check the upstream repository README for the files it recommends excluding in non-LOKI/non-THOR setups.
+
+Generated rules are written under `agent_artifacts/yara/`.
+
+### Alternate-model lane
+
+[MCPServers/modelGatewayMCP.py](MCPServers/modelGatewayMCP.py) exists, but it is **not enabled by default** in [MCPServers/servers.json](MCPServers/servers.json).
+
+If you want alternate-model tools, add that server to `servers.json` and then configure the relevant `ALT_MODEL_*`, `OPENAI_COMPAT_*`, or `HF_*` variables.
+
+### Automation trigger server
+
+When enabled, the app starts an extra HTTP listener on:
+
+- `AUTOMATION_TRIGGER_HOST`
+- `AUTOMATION_TRIGGER_PORT`
+
+Implemented endpoints live in [multi_agent_wf/frontend.py](multi_agent_wf/frontend.py):
+
+- `POST /automation/ghidra-load`
+- `GET /automation/health`
+- `GET /automation/status`
+
+The automation status panel in the Gradio UI is only shown when `AUTOMATION_TRIGGER_ENABLED=true`.
+
+Important correction:
+
+- `program_key` is used for duplicate-run tracking
+- there is currently **no allow-list enforcement** in the implementation
+
+## Troubleshooting
+
+### The UI launches but analysis fails on first query
+
+That usually means one of these:
+
+- `OPENAI_API_KEY` is missing or invalid
+- an MCP server dependency from [requirements.txt](requirements.txt) is missing
+- a tool CLI such as `capa`, `floss`, `yara`, or `binwalk` is not on `PATH`
+- live Ghidra is not available and no artifact fallback is configured
+
+### The UI launches but remote automation status polling is broken
+
+That usually happens when you expose the UI remotely but leave the automation host as `127.0.0.1`. The frontend now resolves local-style automation hosts against the browser hostname, which is better for remote use, but you should still set explicit host/port values when deploying remotely.
+
+### You only want testing/evaluation
+
+Do not follow the whole app setup guide first. Use:
+
+- [Testing/START_HERE.md](Testing/START_HERE.md)
+- [Testing/README.md](Testing/README.md)
+
+## Minimal Correct Command List
+
+If you want the shortest accurate version:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+printf "OPENAI_API_KEY=your_key_here\nAUTOMATION_TRIGGER_ENABLED=false\n" > .env
+python -m multi_agent_wf.main
+```
+
+Everything else in this guide is optional capability enablement, not part of the critical path.

@@ -7,6 +7,7 @@
   "deterministic_presweeps": [
     "Produce a compact deterministic sweep bundle for the current sample.",
     "Include canonical sample identity, bounded Ghidra metadata, and the results or explicit unavailability of each enabled sweep such as strings, FLOSS, capa, HashDB candidate checks, entropy/packer heuristics, bounded unpacking attempts such as UPX, and baseline YARA.",
+    "When capa is available, include concise capability or technique leads derived from the strongest matched rules so later planner and worker stages can turn them into bounded follow-on work items.",
     "Include an explicit packed-binary assessment with indicators, likely packer family when justified, and whether an unpack attempt was or was not performed.",
     "Prefer reusable artifacts and compact summaries over long raw dumps, and clearly mark unavailable or failed sweeps instead of guessing."
   ],
@@ -26,11 +27,14 @@
     "Representative artifacts are usually sufficient; exhaustive appendices are optional unless the task or review profile explicitly requires exact proof depth.",
     "For capa/FLOSS evidence, include the relevant matches, strings, offsets, function addresses, and short raw excerpts that support the claim. Full raw tool output should normally be omitted from the main worker bundle.",
     "For rename/type/refactor tasks, include an approval-ready change list: target kind, address or function, current name/type, proposed name/type/prototype/comment, evidence, rationale, and whether the change was applied or remains a prose-only recommendation.",
+    "For each queued Ghidra edit proposal, `evidence` must be a non-empty list of short concrete support points. Prefer 1-3 bullets such as function/address anchors, strings, xrefs, imports/APIs, decoded constants, or short decompiler observations that justify the edit.",
     "Until a rename is actually applied, do not refer to the proposed symbol name as though it already exists in Ghidra. In prose, keep the current canonical function/address and, if helpful, show the suggested alias in parentheses.",
     "When the task includes Ghidra rename/type/comment/prototype improvements for later approval, include exactly one machine-readable JSON block delimited by `{{GHIDRA_CHANGE_PROPOSALS_START}}` and `{{GHIDRA_CHANGE_PROPOSALS_END}}`.",
     "The machine-readable Ghidra proposal block must contain only edits that map directly to supported host-side Ghidra MCP calls. Unsupported ideas such as creating brand-new struct definitions, enums, or arbitrary patches must stay in prose, not in the approval queue JSON.",
+    "Do not emit approval-queue proposals with empty `evidence` arrays. If the evidence is too weak to cite concretely, keep the idea in prose rather than the machine-readable queue.",
     "When the run produces a strong, narrow detection idea, include exactly one machine-readable JSON block delimited by `{{YARA_RULE_PROPOSALS_START}}` and `{{YARA_RULE_PROPOSALS_END}}`.",
     "The YARA rule proposal JSON payload must be an array of objects with keys: `id`, `summary`, `filename`, `rule_text`, and `rationale`.",
+    "Distinct YARA proposals should key on unique combinations of decoded strings, constants, imports, structural markers, or behavior-specific pivots confirmed during analysis; do not emit generic startup, DOS stub, CRT, or broad PE-only rules.",
     "If dynamic validation is proposed, include a concrete sandbox procedure with exact steps, monitoring points, and rollback/safety controls; otherwise mark it as a recommendation rather than completed validation.",
     "If sandbox support is unavailable, explicitly mark runnable dynamic scripts and runtime logs as unavailable or out of scope."
   ],
@@ -50,6 +54,7 @@
     "Do not present unapproved proposed function or variable names as if they already exist. Use the current canonical symbol/address and optionally note the suggested alias.",
     "If the run produced strong approval-ready rename/type/comment/prototype suggestions that map directly to supported host-side Ghidra MCP calls, include the machine-readable Ghidra proposal block. Keep unsupported struct or enum ideas in prose.",
     "If the run produced a strong, specific detection rule, include the machine-readable YARA rule proposal block so the host can write it through yaraMCP.",
+    "Only include YARA rules that identify the sample or its behavior through distinct analyst-relevant anchors rather than generic compiler or startup artifacts.",
     "Center the report on user-authored logic, meaningful control-flow pivots, concrete capabilities, and supported obfuscation mechanisms rather than scaffolding."
   ]
 }

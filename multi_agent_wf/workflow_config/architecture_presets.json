@@ -50,6 +50,20 @@
       ["runtime_behavior_analyst", 1]
     ]
   },
+  "model_augmented": {
+    "description": [
+      "Use when you want the normal static-analysis workflow plus an explicit secondary-model lane for decompilation cleanup, family/style labeling, or cross-model comparison.",
+      "Best for experiments involving Hugging Face, self-hosted, or GPU-hosted open-weight models as advisory companions to the default agent stack."
+    ],
+    "slots": [
+      ["triage_analyst", 1],
+      ["ghidra_analyst", 1],
+      ["control_flow_analyst", 1],
+      ["string_analyst", 1],
+      ["obfuscation_analyst", 1],
+      ["secondary_model_analyst", 1]
+    ]
+  },
   "static_swarm": {
     "description": [
       "Use for deeper static-analysis coverage when you want more parallel control-flow attention and higher breadth.",

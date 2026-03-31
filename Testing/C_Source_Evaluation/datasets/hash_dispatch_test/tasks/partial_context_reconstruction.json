@@ -1,0 +1,31 @@
+{
+  "program_id": "hash_dispatch_test",
+  "task_name": "partial_context_reconstruction",
+  "tier": "hard",
+  "domain": "systems",
+  "representation": "partial",
+  "correctness": "correct",
+  "reasoning_scope": "local",
+  "required_inputs": [
+    "partial/main_snippet.c",
+    "reference/annotations.json"
+  ],
+  "expected_outputs": [
+    "partial_reconstruction.md"
+  ],
+  "metrics": {
+    "reconstruction_fidelity": 30,
+    "uncertainty_calibration": 20,
+    "precision": 15,
+    "hallucination_control": 20,
+    "clarity_usefulness": 15
+  },
+  "pass_threshold": {
+    "task_score_min": 70,
+    "min_metric_scores": {
+      "reconstruction_fidelity": 3,
+      "uncertainty_calibration": 3
+    }
+  },
+  "prompt_template_id": "c_source_eval_v1:T5"
+}

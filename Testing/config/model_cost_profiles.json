@@ -1,0 +1,28 @@
+{
+  "version": "model_cost_profiles_v2",
+  "description": "Local cost-weight assumptions for experiment comparison. Relative cost values are repo-local heuristics for comparing runs; USD estimates are optional and intentionally omitted by default.",
+  "fallback": {
+    "relative_input_cost_per_1k": 1.0,
+    "relative_output_cost_per_1k": 4.0
+  },
+  "models": {
+    "openai:gpt-5-nano": {
+      "relative_input_cost_per_1k": 1.0,
+      "relative_output_cost_per_1k": 1.0,
+      "usd_input_per_1m_tokens": 0.05,
+      "usd_output_per_1m_tokens": 0.4
+    },
+    "openai:gpt-4o-mini": {
+      "relative_input_cost_per_1k": 3.0,
+      "relative_output_cost_per_1k": 1.5,
+      "usd_input_per_1m_tokens": 0.15,
+      "usd_output_per_1m_tokens": 0.6
+    },
+    "openai:gpt-5-mini": {
+      "relative_input_cost_per_1k": 5.0,
+      "relative_output_cost_per_1k": 5.0,
+      "usd_input_per_1m_tokens": 0.25,
+      "usd_output_per_1m_tokens": 2.0
+    }
+  }
+}

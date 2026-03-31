@@ -1,0 +1,51 @@
+flowchart LR
+    classDef stage fill:#eef3ff,stroke:#355caa,stroke-width:1.5,color:#14233c;
+    classDef data fill:#fff8e6,stroke:#b7791f,stroke-width:1.2,color:#3b2f14;
+    classDef store fill:#edf7ed,stroke:#2f855a,stroke-width:1.2,color:#173b2d;
+    classDef ext fill:#f7f0ff,stroke:#6b46c1,stroke-width:1.2,color:#2c1c54;
+    classDef decision fill:#ffecec,stroke:#b83232,stroke-width:1.5,color:#4a1919;
+
+    req["User request<br/>user_text"]:::data
+    env["Runtime settings<br/>DEEP_AGENT_PIPELINE_NAME<br/>DEEP_AGENT_ARCHITECTURE_NAME<br/>validator_review_level<br/>shell_execution_mode"]:::data
+    presets["Workflow config JSON<br/>pipeline_presets.json<br/>architecture_presets.json<br/>stage_kind_metadata.json<br/>stage_output_contracts.json"]:::store
+    runtime["get_runtime_sync(...)<br/>MultiAgentRuntime<br/>{pipeline_name,<br/> worker_architecture_name,<br/> stages[],<br/> static_tool_ids,<br/> dynamic_tool_ids,<br/> sandbox_tool_ids}"]:::stage
+    prompt["build_stage_prompt()<br/>stage input payload<br/>{user_text,<br/> prior_stage_outputs,<br/> stage contract,<br/> architecture,<br/> shared_state}"]:::data
+    shared["shared_state<br/>{validated_sample_path,<br/> pipeline_stage_progress,<br/> planned_work_items,<br/> planned_work_item_status,<br/> ghidra_change_proposals,<br/> generated_yara_rules,<br/> validation_history,<br/> model_usage_events,<br/> final_output}"]:::store
+
+    preflight["preflight<br/>light tool-backed reconnaissance<br/>output: short handoff<br/>+ validated_sample_path"]:::stage
+    planner["planner<br/>planning only<br/>output text + JSON block<br/>[{id, objective,<br/> recommended_roles,<br/> evidence_targets}]"]:::stage
+    workers["workers<br/>host-parallel assignment execution<br/>assignment payload:<br/>{index, work_item,<br/> slot_name, archetype_name}<br/>output: evidence bundle<br/>+ optional GHIDRA/YARA proposal blocks"]:::stage
+    validators["validators<br/>review only<br/>output JSON gate<br/>{decision, signoff_count,<br/> required_signoffs,<br/> accepted_findings,<br/> rejected_findings,<br/> rejection_reasons,<br/> planner_fixes, summary}"]:::decision
+    reporter["reporter<br/>synthesis only<br/>output: final report<br/>+ optional finalized proposal blocks"]:::stage
+    tools["MCP tool layer<br/>artifact/live Ghidra, strings,<br/>FLOSS, capa, hashdb, yara, ...<br/>request: {tool_name, args}<br/>response: text/json"]:::ext
+    final["Pipeline return<br/>final_output string<br/>shared_state snapshots<br/>status_log + tool_log_sections"]:::data
+
+    req --> runtime
+    env --> runtime
+    presets --> runtime
+    runtime --> prompt
+    req --> prompt
+    shared --> prompt
+
+    prompt --> preflight
+    preflight <--> shared
+    preflight -->|"preflight handoff"| planner
+
+    prompt --> planner
+    planner <--> shared
+    planner -->|"planned_work_items"| workers
+
+    prompt --> workers
+    workers <--> shared
+    workers <--> tools
+    workers -->|"worker evidence bundle"| validators
+
+    prompt --> validators
+    validators <--> shared
+    validators -->|"accept"| reporter
+    validators -.->|"reject + planner_fixes<br/>reset planner/workers/...<br/>replan up to MAX_VALIDATION_REPLAN_RETRIES"| planner
+
+    prompt --> reporter
+    reporter <--> shared
+    reporter --> final
+

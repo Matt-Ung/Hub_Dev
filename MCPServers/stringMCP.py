@@ -266,12 +266,12 @@ def main():
             mcp.settings.port = args.mcp_port or 8082
 
             logger.info(f"Starting MCP server on http://{mcp.settings.host}:{mcp.settings.port}/sse")
-            mcp.run(transport="sse")
+            mcp.run(transport="sse", show_banner=False)
         except KeyboardInterrupt:
             logger.info("Server stopped by user")
     else:
         # stdio transport
-        mcp.run()
+        mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":

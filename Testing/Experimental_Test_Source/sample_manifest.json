@@ -1,0 +1,620 @@
+{
+  "description": "Machine-readable metadata for the experimental executable corpus used by the Hub batch testing workflow.",
+  "query_defaults": {
+    "auto_triage_query": "Analyze this executable at the program level. Identify the main behaviors, important functions, likely obfuscation or packing, and which available tools were most informative.",
+    "followup_query": "Using the prior triage context, summarize what this sample does, explain the most relevant functions, and note any naming or type suggestions that would help future reverse-engineering."
+  },
+  "samples": [
+    {
+      "sample": "basic_loops_test.exe",
+      "difficulty": "easy",
+      "primary_techniques": [
+        "for/while/do-while loops",
+        "integer arithmetic",
+        "function calls",
+        "if/else branching"
+      ],
+      "expected_evidence": [
+        "Recovered for/while/do-while loop structure",
+        "Call graph linking main to compute_sum, classify_value, and accumulate",
+        "No unsupported obfuscation or packing claim"
+      ],
+      "acceptance_targets": [
+        "Explain the core loop structure accurately",
+        "Name the key functions and their roles",
+        "Treat the sample as a baseline decompilation case rather than an obfuscated binary"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "stringmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable and explain the core loop structure, key functions, and why it should be treated as a baseline decompilation sample.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the core loop structure, key functions, and why it should be treated as a baseline decompilation sample.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "Recovered for/while/do-while loop structure",
+            "Call graph linking main to compute_sum, classify_value, and accumulate",
+            "No unsupported obfuscation or packing claim"
+          ],
+          "acceptance_targets": [
+            "Explain the core loop structure accurately",
+            "Name the key functions and their roles",
+            "Treat the sample as a baseline decompilation case rather than an obfuscated binary"
+          ],
+          "tags": [
+            "baseline",
+            "control_flow"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "string_table_test.exe",
+      "difficulty": "easy",
+      "primary_techniques": [
+        "global strings",
+        "string pointer table",
+        "index-based lookup",
+        "stack buffer copy"
+      ],
+      "expected_evidence": [
+        "Recovery of the message-table strings and status strings",
+        "Identification of the pointer-table or array-backed lookup design",
+        "No false claim that the strings are encoded or packed"
+      ],
+      "acceptance_targets": [
+        "Explain how the string table is stored",
+        "Explain how the strings are accessed or indexed",
+        "Describe how the strings can be recovered without inventing extra encoding layers"
+      ],
+      "target_tools": [
+        "stringmcp",
+        "flareflossmcp",
+        "ghidramcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable and explain how the string table is stored, accessed, and recovered.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain how the string table is stored, accessed, and recovered.",
+          "target_tools": [
+            "stringmcp",
+            "flareflossmcp",
+            "ghidramcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "Recovery of the message-table strings and status strings",
+            "Identification of the pointer-table or array-backed lookup design",
+            "No false claim that the strings are encoded or packed"
+          ],
+          "acceptance_targets": [
+            "Explain how the string table is stored",
+            "Explain how the strings are accessed or indexed",
+            "Describe how the strings can be recovered without inventing extra encoding layers"
+          ],
+          "tags": [
+            "strings",
+            "data_layout"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "callback_dispatch_test.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "function pointer dispatch table",
+        "struct command descriptors",
+        "indirect calls",
+        "state machine"
+      ],
+      "expected_evidence": [
+        "Dispatch table or command-descriptor array recovered",
+        "Five handler routines identified",
+        "State transitions or callback-driven control flow explained"
+      ],
+      "acceptance_targets": [
+        "Explain the callback dispatch design",
+        "Name or distinguish the handlers accurately",
+        "Describe the underlying control flow and state progression"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "CapaMCP",
+        "stringmcp"
+      ],
+      "default_query": "Analyze this executable and explain the callback dispatch design, the handlers, and the underlying control flow.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the callback dispatch design, the handlers, and the underlying control flow.",
+          "target_tools": [
+            "ghidramcp",
+            "CapaMCP",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "Dispatch table or command-descriptor array recovered",
+            "Five handler routines identified",
+            "State transitions or callback-driven control flow explained"
+          ],
+          "acceptance_targets": [
+            "Explain the callback dispatch design",
+            "Name or distinguish the handlers accurately",
+            "Describe the underlying control flow and state progression"
+          ],
+          "tags": [
+            "indirect_calls",
+            "structs"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "config_decoder_test.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "single-byte XOR config blob",
+        "key=value parser",
+        "stack buffer decode",
+        "validation branching"
+      ],
+      "expected_evidence": [
+        "Recovered XOR key or decode loop mechanics for the single-byte XOR config blob",
+        "Decoded concrete config values such as C:\\ProgramData\\agent\\config.ini, 8443, or persist=true",
+        "Recognition of the key=value parser as a distinct analysis target"
+      ],
+      "acceptance_targets": [
+        "Explain the config decoding logic and the single-byte XOR stage",
+        "Recover the most relevant decoded values such as the config path, port, or persist flag",
+        "Describe the parser and any validation branching that gates the decoded config"
+      ],
+      "target_tools": [
+        "flareflossmcp",
+        "stringmcp",
+        "ghidramcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable, explain the config decoding logic, and recover the most relevant decoded values.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable, explain the config decoding logic, and recover the most relevant decoded values.",
+          "target_tools": [
+            "flareflossmcp",
+            "stringmcp",
+            "ghidramcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "Recovered XOR key or decode loop mechanics for the single-byte XOR config blob",
+            "Decoded concrete config values such as C:\\ProgramData\\agent\\config.ini, 8443, or persist=true",
+            "Recognition of the key=value parser as a distinct analysis target"
+          ],
+          "acceptance_targets": [
+            "Explain the config decoding logic and the single-byte XOR stage",
+            "Recover the most relevant decoded values such as the config path, port, or persist flag",
+            "Describe the parser and any validation branching that gates the decoded config"
+          ],
+          "tags": [
+            "decoding",
+            "config"
+          ]
+        },
+        {
+          "task_id": "config_value_recovery",
+          "name": "Config Value Recovery",
+          "query": "Recover the decoded configuration values from this executable, explain the decode loop and parser, and list the highest-confidence recovered values.",
+          "target_tools": [
+            "flareflossmcp",
+            "ghidramcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "Recovered XOR key or decode loop mechanics for the single-byte XOR config blob",
+            "Concrete decoded values such as C:\\ProgramData\\agent\\config.ini, 8443, or persist=true",
+            "Key=value parser logic tied to the decoded buffer handling"
+          ],
+          "acceptance_targets": [
+            "Report at least three concrete recovered config values",
+            "Explain how the decode loop feeds the parser",
+            "Avoid inventing a second encoding layer or unsupported network behavior"
+          ],
+          "tags": [
+            "decoding",
+            "config",
+            "extraction"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "multilayer_encode_test.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "ROL+XOR layered encoding",
+        "encoded URLs and commands",
+        "per-entry metadata",
+        "magic header"
+      ],
+      "expected_evidence": [
+        "Both encoding layers (ROL then XOR) identified instead of only one",
+        "Recovered concrete strings such as https://c2.example.net/beacon/checkin, the registry path, or the schtasks command",
+        "Mechanistic explanation of the decode path and metadata handling"
+      ],
+      "acceptance_targets": [
+        "Explain the layered encoding accurately",
+        "Recover multiple meaningful encoded strings",
+        "Reach strong behavioral conclusions without collapsing the sample into a single-pass XOR story"
+      ],
+      "target_tools": [
+        "flareflossmcp",
+        "stringmcp",
+        "ghidramcp",
+        "CapaMCP",
+        "yaramcp"
+      ],
+      "default_query": "Analyze this executable and explain the layered encoding, recovered strings, and the strongest behavioral conclusions.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the layered encoding, recovered strings, and the strongest behavioral conclusions.",
+          "target_tools": [
+            "flareflossmcp",
+            "stringmcp",
+            "ghidramcp",
+            "CapaMCP",
+            "yaramcp"
+          ],
+          "expected_evidence": [
+            "Both encoding layers (ROL then XOR) identified instead of only one",
+            "Recovered concrete strings such as https://c2.example.net/beacon/checkin, the registry path, or the schtasks command",
+            "Mechanistic explanation of the decode path and metadata handling"
+          ],
+          "acceptance_targets": [
+            "Explain the layered encoding accurately",
+            "Recover multiple meaningful encoded strings",
+            "Reach strong behavioral conclusions without collapsing the sample into a single-pass XOR story"
+          ],
+          "tags": [
+            "encoding",
+            "hard"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "hash_dispatch_test.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "DJB2 hash algorithm",
+        "hash-to-handler dispatch table",
+        "stack-built command strings",
+        "dead hash entries"
+      ],
+      "expected_evidence": [
+        "Recognition of the likely DJB2 algorithm including the characteristic seed/multiplier pattern",
+        "Hash constants such as 0x7C9C4733 or 0x7C967DAA mapped to handler or command behavior",
+        "Dead or decoy dispatch entries identified"
+      ],
+      "acceptance_targets": [
+        "Explain the hash-based dispatcher",
+        "Identify the likely algorithm",
+        "Describe the most relevant handlers, map at least some concrete hash values, and note the dead entries"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "hashdbmcp",
+        "flareflossmcp",
+        "CapaMCP",
+        "stringmcp"
+      ],
+      "default_query": "Analyze this executable and explain the hash-based dispatcher, the likely algorithm, and the most relevant handlers.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the hash-based dispatcher, the likely algorithm, and the most relevant handlers.",
+          "target_tools": [
+            "ghidramcp",
+            "hashdbmcp",
+            "flareflossmcp",
+            "CapaMCP",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "Recognition of the likely DJB2 algorithm including the characteristic seed/multiplier pattern",
+            "Hash constants such as 0x7C9C4733 or 0x7C967DAA mapped to handler or command behavior",
+            "Dead or decoy dispatch entries identified"
+          ],
+          "acceptance_targets": [
+            "Explain the hash-based dispatcher",
+            "Identify the likely algorithm",
+            "Describe the most relevant handlers, map at least some concrete hash values, and note the dead entries"
+          ],
+          "tags": [
+            "hashing",
+            "dispatch"
+          ]
+        },
+        {
+          "task_id": "hash_mapping_recovery",
+          "name": "Hash Mapping Recovery",
+          "query": "Resolve the hash dispatcher as concretely as possible. Identify the likely hashing algorithm, map the most important hash constants to handler or command behavior, and separate live entries from dead or decoy entries.",
+          "target_tools": [
+            "ghidramcp",
+            "hashdbmcp",
+            "stringmcp",
+            "flareflossmcp"
+          ],
+          "expected_evidence": [
+            "DJB2 seed/multiplier pattern or equivalent identified",
+            "Two or more hash constants mapped to live handler or command behavior",
+            "Dead or decoy entries separated from live dispatch targets"
+          ],
+          "acceptance_targets": [
+            "Distinguish algorithm evidence from speculation",
+            "Provide at least two concrete hash-to-behavior mappings",
+            "Note which entries appear dead or non-executed"
+          ],
+          "tags": [
+            "hashing",
+            "dispatch",
+            "extraction"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "embedded_payload_test.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "embedded blob",
+        "structured header",
+        "rolling checksum",
+        "per-record XOR keys",
+        "staged extraction"
+      ],
+      "expected_evidence": [
+        "Blob-header or magic value such as 0x504C4F44 identified",
+        "Rolling checksum or integrity logic described",
+        "Decoded records or staged extraction path recovered"
+      ],
+      "acceptance_targets": [
+        "Explain the embedded payload format",
+        "Describe the decode path and staged extraction behavior",
+        "Recover at least a subset of the decoded payload records"
+      ],
+      "target_tools": [
+        "binwalkmcp",
+        "flareflossmcp",
+        "stringmcp",
+        "ghidramcp",
+        "CapaMCP",
+        "upxmcp"
+      ],
+      "default_query": "Analyze this executable and explain the embedded payload format, decode path, and any staged extraction behavior.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the embedded payload format, decode path, and any staged extraction behavior.",
+          "target_tools": [
+            "binwalkmcp",
+            "flareflossmcp",
+            "stringmcp",
+            "ghidramcp",
+            "CapaMCP",
+            "upxmcp"
+          ],
+          "expected_evidence": [
+            "Blob-header or magic value such as 0x504C4F44 identified",
+            "Rolling checksum or integrity logic described",
+            "Decoded records or staged extraction path recovered"
+          ],
+          "acceptance_targets": [
+            "Explain the embedded payload format",
+            "Describe the decode path and staged extraction behavior",
+            "Recover at least a subset of the decoded payload records"
+          ],
+          "tags": [
+            "payload",
+            "blob"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "embedded_payload_test_upx.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "UPX packing",
+        "embedded blob",
+        "structured header",
+        "rolling checksum",
+        "per-record XOR keys",
+        "staged extraction"
+      ],
+      "expected_evidence": [
+        "UPX packing indicators recognized",
+        "Blob-header or magic value such as 0x504C4F44 identified after unpacking or static inspection",
+        "Decode path and staged extraction behavior recovered"
+      ],
+      "acceptance_targets": [
+        "Determine whether the binary is packed",
+        "Explain the embedded payload format",
+        "Describe the staged extraction behavior after unpacking or equivalent recovery"
+      ],
+      "target_tools": [
+        "upxmcp",
+        "binwalkmcp",
+        "flareflossmcp",
+        "stringmcp",
+        "ghidramcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this UPX-packed executable, determine whether it is packed, explain the embedded payload format, and describe the staged extraction behavior after unpacking.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this UPX-packed executable, determine whether it is packed, explain the embedded payload format, and describe the staged extraction behavior after unpacking.",
+          "target_tools": [
+            "upxmcp",
+            "binwalkmcp",
+            "flareflossmcp",
+            "stringmcp",
+            "ghidramcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "UPX packing indicators recognized",
+            "Blob-header or magic value such as 0x504C4F44 identified after unpacking or static inspection",
+            "Decode path and staged extraction behavior recovered"
+          ],
+          "acceptance_targets": [
+            "Determine whether the binary is packed",
+            "Explain the embedded payload format",
+            "Describe the staged extraction behavior after unpacking or equivalent recovery"
+          ],
+          "tags": [
+            "packing",
+            "payload"
+          ]
+        },
+        {
+          "task_id": "packing_tool_triage",
+          "name": "Packing and Tool Triage",
+          "query": "Determine whether this sample is packed, explain the concrete evidence for that conclusion, identify which tools are most informative for unpacking or post-pack analysis, and summarize the embedded payload format and staged extraction path.",
+          "target_tools": [
+            "upxmcp",
+            "binwalkmcp",
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "UPX or packer indicators called out with concrete evidence",
+            "Tool-specific contributions from at least two tools",
+            "Embedded payload header such as 0x504C4F44, the decode path, or staged extraction behavior described after or despite packing"
+          ],
+          "acceptance_targets": [
+            "Make a supported packed or not-packed determination",
+            "Identify at least two tools with concrete contributions rather than a generic tool list",
+            "Recover the payload format or staged extraction behavior well enough to separate packing from the underlying logic"
+          ],
+          "tags": [
+            "packing",
+            "payload",
+            "tool_selection",
+            "orchestration"
+          ]
+        },
+        {
+          "task_id": "behavior_classification",
+          "name": "Behavior Classification",
+          "query": "Classify this sample into the most defensible behavioral categories, such as packed wrapper, embedded-payload loader, staged decoder, or something else, and justify each category with concrete evidence from the binary and tool outputs.",
+          "target_tools": [
+            "upxmcp",
+            "binwalkmcp",
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "UPX or other packer indicators supported by concrete evidence",
+            "Embedded payload header or magic such as 0x504C4F44 and staged decode behavior",
+            "A clear distinction between the outer packing layer and the underlying payload-loader logic"
+          ],
+          "acceptance_targets": [
+            "Assign at least two defensible behavior categories and justify them with concrete evidence",
+            "Separate packing evidence from payload or staged-decoder evidence",
+            "Avoid collapsing the sample into a generic malware label without explaining why"
+          ],
+          "tags": [
+            "classification",
+            "packing",
+            "payload",
+            "orchestration"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "anti_analysis_suite_test.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "anti-debug APIs",
+        "timing probe",
+        "environment fingerprinting",
+        "rotating-key XOR config",
+        "dead code",
+        "misleading function names"
+      ],
+      "expected_evidence": [
+        "Anti-debug APIs such as IsDebuggerPresent or CheckRemoteDebuggerPresent recovered despite misleading names or stack strings",
+        "Opaque false or dead-code path identified",
+        "Rotating-key XOR config or behavioral config string recovered"
+      ],
+      "acceptance_targets": [
+        "Explain the anti-analysis features accurately",
+        "Call out the misleading names and dead-code behavior",
+        "State the strongest supported behavioral conclusions"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "CapaMCP",
+        "flareflossmcp",
+        "stringmcp",
+        "yaramcp",
+        "hashdbmcp"
+      ],
+      "default_query": "Analyze this executable and explain the anti-analysis features, misleading names, and the strongest behavioral conclusions.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the anti-analysis features, misleading names, and the strongest behavioral conclusions.",
+          "target_tools": [
+            "ghidramcp",
+            "CapaMCP",
+            "flareflossmcp",
+            "stringmcp",
+            "yaramcp",
+            "hashdbmcp"
+          ],
+          "expected_evidence": [
+            "Anti-debug APIs such as IsDebuggerPresent or CheckRemoteDebuggerPresent recovered despite misleading names or stack strings",
+            "Opaque false or dead-code path identified",
+            "Rotating-key XOR config or behavioral config string recovered"
+          ],
+          "acceptance_targets": [
+            "Explain the anti-analysis features accurately",
+            "Call out the misleading names and dead-code behavior",
+            "State the strongest supported behavioral conclusions"
+          ],
+          "tags": [
+            "anti_analysis",
+            "hard"
+          ]
+        }
+      ]
+    }
+  ]
+}

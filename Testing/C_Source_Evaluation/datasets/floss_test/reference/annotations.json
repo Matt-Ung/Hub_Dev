@@ -1,0 +1,39 @@
+{
+  "program_id": "floss_test",
+  "reference_status": "reviewed_concrete_anchor_v1",
+  "corpus": "prototype",
+  "gold_facts": [
+    "main prints the static string, the stack string, and the decoded buffer in order",
+    "The static literal is STATIC: https://example.com/api/v1/ping",
+    "The stack-built string is STACK: cmd.exe /c whoami",
+    "xor_decode recovers DECODED: kernel32.dll from bytes XORed with 0x55",
+    "Recover all three concrete strings",
+    "Distinguish the static, stack-built, and XOR-decoded storage styles",
+    "Identify xor_decode as the helper that produces the decoded library name"
+  ],
+  "key_functions": [
+    {
+      "name": "xor_decode",
+      "role": "decode or deobfuscation helper"
+    },
+    {
+      "name": "main",
+      "role": "entry point and orchestration"
+    }
+  ],
+  "inputs": [
+    "standard input"
+  ],
+  "outputs": [
+    "stdout status or diagnostic messages"
+  ],
+  "side_effects": [
+    "writes markers or diagnostics to stdout"
+  ],
+  "bugs_or_risks": [],
+  "related_binary_samples": [
+    "floss_test.exe",
+    "floss_test_02.exe",
+    "floss_test_stripped.exe"
+  ]
+}

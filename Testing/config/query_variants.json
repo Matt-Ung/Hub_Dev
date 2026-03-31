@@ -1,0 +1,21 @@
+{
+  "version": "query_variants_v1",
+  "description": "Prompt/query wrappers used by the experiment sweep to vary prompt detail while keeping the underlying task constant.",
+  "variants": {
+    "default": {
+      "description": "Use the sample default query as-is.",
+      "prefix": "",
+      "suffix": ""
+    },
+    "brief": {
+      "description": "Shorter prompt intended to reduce prompt budget and emphasize only the highest-value findings.",
+      "prefix": "Provide a concise, evidence-grounded reverse-engineering answer. ",
+      "suffix": " Keep the report focused on the most important findings, the strongest supporting evidence, and the main unknowns."
+    },
+    "detailed": {
+      "description": "Longer prompt intended to ask for broader coverage and more explicit structure.",
+      "prefix": "Perform a detailed, evidence-grounded reverse-engineering analysis. ",
+      "suffix": " Explain the likely program goal, key functions, inputs and outputs, major side effects, control-flow pivots, the most useful tools, and any remaining unknowns. Separate confirmed findings from unverified hypotheses."
+    }
+  }
+}

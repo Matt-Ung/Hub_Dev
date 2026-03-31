@@ -1,0 +1,50 @@
+{
+  "program_id": "config_decoder_test",
+  "reference_status": "reviewed_concrete_anchor_v1",
+  "corpus": "experimental",
+  "gold_facts": [
+    "ENCODED_CONFIG_LEN is the encoded byte length for the XOR-protected config blob",
+    "ParsedConfig has path[128], int port, and flag[64]",
+    "main prints marker:config_decoder before returning",
+    "xor_decode copies ENCODED_CONFIG into a local decoded buffer using XOR key 0x4B",
+    "parse_config splits the decoded buffer on '\\n' and routes each line to parse_line",
+    "parse_line recognizes the keys path, port, and flag and validates the port as digits only",
+    "The recovered configuration values are printed back to stdout",
+    "Recover C:\\ProgramData\\agent\\config.ini from the decoded config",
+    "Recover port 8443 and flag persist=true",
+    "Identify CONFIG_XOR_KEY as 0x4B",
+    "Explain that malformed numeric port values cause parse_line to return -1"
+  ],
+  "key_functions": [
+    {
+      "name": "xor_decode",
+      "role": "decode or deobfuscation helper"
+    },
+    {
+      "name": "parse_line",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "parse_config",
+      "role": "initialization or configuration"
+    },
+    {
+      "name": "main",
+      "role": "entry point and orchestration"
+    }
+  ],
+  "inputs": [
+    "standard input"
+  ],
+  "outputs": [
+    "stdout status or diagnostic messages",
+    "process exit status"
+  ],
+  "side_effects": [
+    "writes markers or diagnostics to stdout"
+  ],
+  "bugs_or_risks": [],
+  "related_binary_samples": [
+    "config_decoder_test.exe"
+  ]
+}
