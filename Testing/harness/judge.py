@@ -1,3 +1,17 @@
+"""
+File: judge.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Evaluate binary-analysis task outputs against the maintained judging rubric.
+
+Summary:
+  This module translates raw agent output and manifest expectations into the
+  canonical `judge_result.json` structure used by reporting and sweep
+  aggregation. It loads the rubric, builds the response schema, constructs the
+  judge prompt payload, and handles both normal and synthetic non-result cases.
+"""
+
 from __future__ import annotations
 
 import json
@@ -243,12 +257,36 @@ def _build_non_result_judge_result(
     agent_result: Dict[str, Any],
     rubric: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """
+    Function: _build_non_result_judge_result
+    Inputs:
+      - status: normalized non-result status such as `analysis_error` or
+        `validator_blocked`.
+      - model_id: judge model identifier for reporting.
+      - rubric_version: rubric version string associated with this result.
+      - failure_reason: human-readable reason the run failed to produce a final result.
+      - agent_result: canonical agent result payload for the failed case.
+      - rubric: parsed rubric definition used to size the zero-score payload.
+    Description:
+      Build the synthetic judge result used when the run did not produce an
+      accepted final answer, so downstream analysis still receives a complete
+      and explicit `judge_result.json`.
+    Outputs:
+      Returns the synthetic non-result judge payload.
+    Side Effects:
+      None.
+    """
     validator_summary = agent_result.get("validator_summary") if isinstance(agent_result.get("validator_summary"), dict) else {}
     validation = agent_result.get("validation") if isinstance(agent_result.get("validation"), dict) else {}
     technical_summary = failure_reason or "The run did not produce an accepted final output."
     if status == "validator_blocked":
         technical_summary = (
             "The run ended in a validator-gated failure and did not produce an accepted final result. "
+            + technical_summary
+        ).strip()
+    elif status == "worker_assignment_failed":
+        technical_summary = (
+            "The run produced a provisional report, but one or more host-parallel worker assignments failed. "
             + technical_summary
         ).strip()
     elif status == "analysis_error":
@@ -285,6 +323,8 @@ def _build_non_result_judge_result(
         "follow_up_recommendations": [
             "Review the validator feedback and reduce unsupported claims before retrying.",
         ] if status == "validator_blocked" else [
+            "Stabilize the host-parallel worker path and rerun the analysis.",
+        ] if status == "worker_assignment_failed" else [
             "Resolve the execution failure and rerun the analysis.",
         ],
         "confidence_0_to_1": 1.0,
@@ -302,11 +342,34 @@ def _build_non_result_judge_result(
 # ---------------------------------------------------------------------------
 
 def _load_judge_model_id(explicit_model: str = "") -> str:
+    """
+    Function: _load_judge_model_id
+    Inputs:
+      - explicit_model: optional explicit judge model override from the caller.
+    Description:
+      Resolve the judge model in priority order: explicit override, evaluation
+      env var, repo default env var, then the hardcoded fallback.
+    Outputs:
+      Returns the resolved judge model identifier string.
+    Side Effects:
+      Loads the repo `.env` file on first use.
+    """
     load_dotenv(REPO_ROOT / ".env", override=False)
     return str(explicit_model or os.environ.get("EVAL_JUDGE_MODEL") or os.environ.get("OPENAI_MODEL_ID") or "openai:gpt-5-mini").strip()
 
 
 def _load_prompt_template() -> str:
+    """
+    Function: _load_prompt_template
+    Inputs:
+      - None.
+    Description:
+      Load the maintained judge prompt template from disk.
+    Outputs:
+      Returns the prompt template text as a string.
+    Side Effects:
+      Reads the prompt template file from disk.
+    """
     return (PROMPTS_ROOT / "binary_judge_prompt.md").read_text(encoding="utf-8")
 
 
@@ -318,6 +381,23 @@ def _build_judge_payload(
     agent_result: Dict[str, Any],
     rubric: Dict[str, Any],
 ) -> str:
+    """
+    Function: _build_judge_payload
+    Inputs:
+      - sample_name / sample_meta / task_meta: manifest-derived identifiers and
+        expectations for the current evaluation case.
+      - bundle_manifest: prepared bundle metadata used as reference context.
+      - agent_result: canonical analysis output to be judged.
+      - rubric: parsed rubric definition that describes the scoring dimensions.
+    Description:
+      Assemble the full judge prompt by combining the template with a JSON
+      payload that describes the sample, task expectations, bundle context, and
+      agent output.
+    Outputs:
+      Returns the full judge prompt string sent to the model judge.
+    Side Effects:
+      None.
+    """
     prompt_template = _load_prompt_template()
     payload = {
         "sample_name": sample_name,
@@ -359,13 +439,35 @@ def judge_agent_result(
     judge_model: str = "",
     output_json: Path | None = None,
 ) -> Dict[str, Any]:
+    """
+    Function: judge_agent_result
+    Inputs:
+      - sample_name / sample_meta / task_meta: manifest-derived identifiers and
+        expectations for the current evaluation case.
+      - bundle_manifest: prepared bundle metadata used as evidence context.
+      - agent_result: canonical `agent_result.json` payload for the case.
+      - judge_model: optional explicit judge model override.
+      - output_json: optional artifact path where the result should be written.
+    Description:
+      Run the maintained judging workflow for one sample-task case, including
+      synthetic handling for non-results and rubric-based scoring for completed
+      agent outputs.
+    Outputs:
+      Returns the canonical `judge_result.json` dictionary. When `output_json`
+      is provided, the same payload is also written to disk.
+    Side Effects:
+      May call the configured judge model and may write the output artifact.
+    """
     rubric = _load_rubric()
     model_id = _load_judge_model_id(judge_model)
     rubric_version = str(rubric.get("version") or "binary_judge_v1")
     agent_status = str(agent_result.get("status") or "").strip() or ("completed" if agent_result.get("ok") else "analysis_error")
     produced_result = bool(agent_result.get("produced_result"))
 
-    if not produced_result or agent_status in {"validator_blocked", "analysis_error", "no_result"}:
+    # Non-results are normalized into synthetic judge payloads so downstream
+    # reporting can still reason about the run without special-casing missing
+    # judge artifacts everywhere.
+    if not produced_result or agent_status in {"validator_blocked", "analysis_error", "no_result", "worker_assignment_failed"}:
         result = _build_non_result_judge_result(
             status=agent_status,
             model_id=model_id,

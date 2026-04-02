@@ -1,3 +1,17 @@
+"""
+File: preflight.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Validate harness configuration and prerequisite readiness before paid runs.
+
+Summary:
+  This module implements the readiness gate shared by single runs, sweeps, and
+  the launch doctor. It checks config names, rubric/prompt consistency, sample
+  and task resolution, judge dependencies, and optional bundle readiness so
+  the harness can fail fast before expensive analysis work begins.
+"""
+
 from __future__ import annotations
 
 import os
@@ -20,10 +34,24 @@ from multi_agent_wf.config import (
     DEEP_AGENT_ARCHITECTURE_PRESETS,
     DEEP_AGENT_PIPELINE_PRESETS,
     VALIDATOR_REVIEW_LEVEL_LABELS,
+    WORKER_ROLE_PROMPT_MODE_LABELS,
+    _normalize_worker_role_prompt_mode,
 )
 
 
 def _rubric_dimension_map(rubric: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """
+    Function: _rubric_dimension_map
+    Inputs:
+      - rubric: parsed binary judge rubric dictionary.
+    Description:
+      Re-index rubric dimensions by name so later validation steps can perform
+      quick lookups without repeatedly scanning the dimension list.
+    Outputs:
+      Returns a map from dimension name to the original dimension object.
+    Side Effects:
+      None.
+    """
     result: Dict[str, Dict[str, Any]] = {}
     for dim in rubric.get("dimensions") or []:
         if not isinstance(dim, dict):
@@ -157,7 +185,12 @@ def _module_available_in_python(python_executable: str, module_name: str) -> boo
     executable = str(python_executable or "").strip()
     if executable:
         try:
-            if Path(executable).resolve() != Path(sys.executable).resolve():
+            # Compare the interpreter path without resolving symlinks. A repo
+            # virtualenv often points back to the same underlying Homebrew or
+            # system binary, and resolving both paths would incorrectly treat
+            # the venv interpreter as "the current interpreter" and skip the
+            # subprocess probe.
+            if Path(executable).absolute() != Path(sys.executable).absolute():
                 completed = subprocess.run(
                     [
                         executable,
@@ -196,6 +229,7 @@ def validate_run_configuration(
     architecture: str,
     query_variant: str,
     worker_persona_profile: str,
+    worker_role_prompt_mode: str,
     validator_review_level: str,
     tool_profile: str,
     judge_mode: str,
@@ -205,9 +239,37 @@ def validate_run_configuration(
     bundle_root: Optional[Path] = None,
     require_ready_bundles: bool = False,
 ) -> Dict[str, Any]:
+    """
+    Function: validate_run_configuration
+    Inputs:
+      - corpus_name: logical corpus identifier for the requested run.
+      - sample_paths: built sample binaries currently available on disk.
+      - manifest: parsed sample manifest for the corpus.
+      - selected_samples / selected_task_ids / selected_difficulties: optional
+        CLI filters that narrow the intended evaluation scope.
+      - pipeline / architecture / query_variant / worker_persona_profile /
+        worker_role_prompt_mode / validator_review_level / tool_profile:
+        requested runtime knobs to verify.
+      - judge_mode / explicit_judge_model / forced_model / python_executable:
+        judge and environment settings that affect launch viability.
+      - bundle_root: optional bundle directory tree to inspect.
+      - require_ready_bundles: whether missing or stale bundles should be
+        treated as hard errors instead of informational warnings.
+    Description:
+      Perform the shared readiness checks used before real evaluation work
+      starts. This includes config validation, task resolution, judge
+      prerequisites, and optional bundle-readiness inspection.
+    Outputs:
+      Returns a structured result containing `ok`, `errors`, `warnings`,
+      resolved task scope, and optional bundle-readiness details.
+    Side Effects:
+      Reads config files from disk and may inspect bundle directories.
+    """
     errors: List[str] = []
     warnings: List[str] = []
 
+    # Validate the rubric/prompt pair first so later run-specific errors are
+    # not hiding a broken judge configuration.
     rubric_check = validate_binary_judge_rubric()
     prompt_check = validate_binary_judge_prompt()
     errors.extend(rubric_check.get("errors") or [])
@@ -233,6 +295,31 @@ def validate_run_configuration(
         errors.append(
             f"Unknown worker_persona_profile {selected_persona_profile!r}. "
             f"Available: {', '.join(sorted(persona_profiles))}"
+        )
+
+    requested_worker_role_prompt_mode = str(worker_role_prompt_mode or "default").strip() or "default"
+    normalized_worker_role_prompt_mode = _normalize_worker_role_prompt_mode(requested_worker_role_prompt_mode)
+    allowed_worker_role_prompt_inputs = {
+        "default",
+        "blank",
+        "empty",
+        "none",
+        "off",
+        "disabled",
+        "disable",
+        "no_role",
+        "no_role_prompt",
+        "bare",
+    }
+    if requested_worker_role_prompt_mode.lower() not in allowed_worker_role_prompt_inputs:
+        errors.append(
+            f"Unknown worker_role_prompt_mode {requested_worker_role_prompt_mode!r}. "
+            f"Available canonical values: {', '.join(sorted(WORKER_ROLE_PROMPT_MODE_LABELS))}"
+        )
+    elif normalized_worker_role_prompt_mode not in WORKER_ROLE_PROMPT_MODE_LABELS:
+        errors.append(
+            f"Unknown worker_role_prompt_mode {requested_worker_role_prompt_mode!r}. "
+            f"Available canonical values: {', '.join(sorted(WORKER_ROLE_PROMPT_MODE_LABELS))}"
         )
 
     if validator_review_level not in VALIDATOR_REVIEW_LEVEL_LABELS:

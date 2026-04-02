@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -25,20 +26,22 @@ def build_corpus(
     *,
     clean_first: bool = False,
     include_gcc: bool = True,
-    timeout_sec: int = 900,
+    timeout_sec: int | None = None,
 ) -> Dict[str, Any]:
     config = get_corpus_config(corpus_name)
     ensure_dir(config.build_root)
     records: List[Dict[str, Any]] = []
+    make_env = {"OUT_DIR": os.path.relpath(config.build_root, config.source_root)}
 
     if clean_first:
         records.append(
             {
                 "step": "clean",
                 **run_command(
-                    ["make", "clean", f"OUT_DIR={config.build_root}"],
+                    ["make", "clean"],
                     cwd=config.source_root,
                     timeout_sec=timeout_sec,
+                    env=make_env,
                 ),
             }
         )
@@ -48,9 +51,10 @@ def build_corpus(
         {
             "step": target,
             **run_command(
-                ["make", target, f"OUT_DIR={config.build_root}"],
+                ["make", target],
                 cwd=config.source_root,
                 timeout_sec=timeout_sec,
+                env=make_env,
             ),
         }
     )
@@ -60,9 +64,10 @@ def build_corpus(
             "step": "upx",
             "optional": True,
             **run_command(
-                ["make", "upx", f"OUT_DIR={config.build_root}"],
+                ["make", "upx"],
                 cwd=config.source_root,
                 timeout_sec=timeout_sec,
+                env=make_env,
             ),
         }
         records.append(upx_record)

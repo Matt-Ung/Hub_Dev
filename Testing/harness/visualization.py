@@ -22,6 +22,7 @@ def generate_experiment_visuals(
     timing_variant_rows: List[Dict[str, Any]] | None = None,
     timing_task_rows: List[Dict[str, Any]] | None = None,
     timing_task_tag_rows: List[Dict[str, Any]] | None = None,
+    title_prefix: str = "",
 ) -> Dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -43,15 +44,42 @@ def generate_experiment_visuals(
         text = str(value or "")
         return "\n".join(textwrap.wrap(text, width=width)) or text
 
+    def _annotate_point_offset(
+        ax,
+        x: float,
+        y: float,
+        label: str,
+        *,
+        vertical_offset_points: int,
+        fontsize: int,
+        color: str = "#111111",
+    ) -> None:
+        ax.annotate(
+            label,
+            xy=(x, y),
+            xytext=(0, vertical_offset_points),
+            textcoords="offset points",
+            ha="center",
+            va="bottom" if vertical_offset_points >= 0 else "top",
+            fontsize=fontsize,
+            color=color,
+            annotation_clip=False,
+        )
+
     def _annotate_bars(ax, values: List[float], *, fmt: str = "{:.2f}") -> None:
         for patch, value in zip(ax.patches, values):
             if value is None:
                 continue
             x = patch.get_x() + patch.get_width() / 2
             y = patch.get_height()
-            va = "bottom" if float(value) >= 0 else "top"
-            offset = 0.5 if float(value) >= 0 else -0.5
-            ax.text(x, y + offset, fmt.format(float(value)), ha="center", va=va, fontsize=8)
+            _annotate_point_offset(
+                ax,
+                x,
+                y,
+                fmt.format(float(value)),
+                vertical_offset_points=6 if float(value) >= 0 else -6,
+                fontsize=8,
+            )
 
     def _annotate_heatmap(ax, data_frame, *, fmt: str = "{:.2f}") -> None:
         if data_frame.shape[0] > 14 or data_frame.shape[1] > 10:
@@ -106,10 +134,14 @@ def generate_experiment_visuals(
 
     def _save_current_figure(filename: str, title: str, description: str) -> None:
         path = output_dir / filename
-        plt.tight_layout()
+        plt.tight_layout(pad=1.2)
         plt.savefig(path, dpi=180, bbox_inches="tight")
         plt.close()
         created_files.append({"path": str(path), "title": title, "description": description})
+
+    def _title(value: str) -> str:
+        prefix = str(title_prefix or "").strip()
+        return f"{prefix} {value}".strip() if prefix else value
 
     variant_df = pd.DataFrame(variant_rows or [])
     if not variant_df.empty:
@@ -130,7 +162,7 @@ def generate_experiment_visuals(
         plt.ylabel("Mean score (0-100)")
         plt.xlabel("Configuration")
         plt.xticks(rotation=20, ha="right")
-        plt.title("Baseline vs Variant Mean Score")
+        plt.title(_title("Baseline vs Variant Mean Score"))
         _annotate_bars(ax, [float(value) for value in ordered["overall_score_mean"].fillna(0.0)], fmt="{:.1f}")
         _save_current_figure(
             "baseline_vs_variant_scores.png",
@@ -165,16 +197,21 @@ def generate_experiment_visuals(
             plt.ylabel("Score delta")
             plt.xlabel("Configuration")
             plt.xticks(rotation=20, ha="right")
-            plt.title("Variant Score Delta vs Comparison Baseline")
+            plt.title(_title("Variant Score Delta vs Comparison Baseline"))
             _annotate_bars(ax, [float(value) for value in delta_df["score_delta"].fillna(0.0)], fmt="{:+.1f}")
             for idx, (_, sig_row) in enumerate(delta_df.iterrows()):
                 marker = _significance_marker(sig_row.to_dict())
                 if not marker:
                     continue
                 y_val = float(sig_row["score_delta"] or 0.0)
-                y_pos = y_val + (3.0 if y_val >= 0.0 else -3.0)
-                va = "bottom" if y_val >= 0.0 else "top"
-                ax.text(idx, y_pos, marker, ha="center", va=va, fontsize=12, color="#111111")
+                _annotate_point_offset(
+                    ax,
+                    idx,
+                    y_val,
+                    marker,
+                    vertical_offset_points=18 if y_val >= 0.0 else -18,
+                    fontsize=12,
+                )
             _save_current_figure(
                 "variant_score_deltas.png",
                 "Variant Score Delta vs Comparison Baseline",
@@ -194,7 +231,7 @@ def generate_experiment_visuals(
         plt.xlabel("Configuration")
         plt.xticks(rotation=20, ha="right")
         plt.ylim(0, 1.05)
-        plt.title("Task Success Rate by Configuration")
+        plt.title(_title("Task Success Rate by Configuration"))
         _annotate_bars(ax, [float(value) for value in ordered["task_success_rate"].fillna(0.0)], fmt="{:.2f}")
         _save_current_figure(
             "task_success_rates.png",
@@ -212,7 +249,7 @@ def generate_experiment_visuals(
             plt.ylabel("Task success delta")
             plt.xlabel("Configuration")
             plt.xticks(rotation=20, ha="right")
-            plt.title("Variant Task Success Delta vs Comparison Baseline")
+            plt.title(_title("Variant Task Success Delta vs Comparison Baseline"))
             _annotate_bars(ax, [float(value) for value in success_delta_df["task_success_delta"].fillna(0.0)], fmt="{:+.2f}")
             _save_current_figure(
                 "variant_task_success_deltas.png",
@@ -250,7 +287,7 @@ def generate_experiment_visuals(
             plt.xticks(rotation=20, ha="right")
             plt.ylim(0, 1.05)
             plt.legend()
-            plt.title("Run Outcome Rates by Configuration")
+            plt.title(_title("Run Outcome Rates by Configuration"))
             _save_current_figure(
                 "run_outcome_rates.png",
                 "Run Outcome Rates by Configuration",
@@ -265,7 +302,7 @@ def generate_experiment_visuals(
                 plt.annotate(str(row["display_label"]), (row["mean_relative_cost_index"], row["overall_score_mean"]), fontsize=8)
             plt.xlabel("Mean relative cost index")
             plt.ylabel("Mean score (0-100)")
-            plt.title("Cost vs Performance")
+            plt.title(_title("Cost vs Performance"))
             _save_current_figure(
                 "cost_vs_performance.png",
                 "Cost vs Performance",
@@ -288,7 +325,7 @@ def generate_experiment_visuals(
             plt.ylabel("Mean absolute score delta")
             plt.xlabel("Changed variable")
             plt.xticks(rotation=25, ha="right")
-            plt.title("Aggregate Variable Impact")
+            plt.title(_title("Aggregate Variable Impact"))
             _save_current_figure(
                 "variable_impact_summary.png",
                 "Aggregate Variable Impact",
@@ -369,7 +406,7 @@ def generate_experiment_visuals(
         plt.colorbar(label="Delta from baseline")
         plt.xticks(range(len(pivot.columns)), list(pivot.columns), rotation=35, ha="right")
         plt.yticks(range(len(pivot.index)), list(pivot.index))
-        plt.title("Rubric Dimension Delta Heatmap")
+        plt.title(_title("Rubric Dimension Delta Heatmap"))
         _annotate_heatmap(ax, pivot)
         _save_current_figure(
             "rubric_dimension_deltas.png",
@@ -392,7 +429,7 @@ def generate_experiment_visuals(
         plt.colorbar(label="Score delta")
         plt.xticks(range(len(score_pivot.columns)), list(score_pivot.columns), rotation=35, ha="right")
         plt.yticks(range(len(score_pivot.index)), list(score_pivot.index))
-        plt.title("Per-Task Score Delta Heatmap")
+        plt.title(_title("Per-Task Score Delta Heatmap"))
         _annotate_heatmap(ax, score_pivot)
         _save_current_figure(
             "task_score_heatmap.png",
@@ -411,7 +448,7 @@ def generate_experiment_visuals(
         plt.colorbar(label="Task success rate")
         plt.xticks(range(len(success_pivot.columns)), list(success_pivot.columns), rotation=35, ha="right")
         plt.yticks(range(len(success_pivot.index)), list(success_pivot.index))
-        plt.title("Per-Task Success Rate Heatmap")
+        plt.title(_title("Per-Task Success Rate Heatmap"))
         _annotate_heatmap(ax, success_pivot)
         _save_current_figure(
             "task_success_heatmap.png",
@@ -443,7 +480,7 @@ def generate_experiment_visuals(
         cbar.set_ticklabels(["sig degrade", "degrade", "inconclusive", "improve", "sig improve"])
         plt.xticks(range(len(sig_pivot.columns)), list(sig_pivot.columns), rotation=35, ha="right")
         plt.yticks(range(len(sig_pivot.index)), list(sig_pivot.index))
-        plt.title("Per-Task Significance Status Heatmap")
+        plt.title(_title("Per-Task Significance Status Heatmap"))
         if sig_pivot.shape[0] <= 14 and sig_pivot.shape[1] <= 10:
             label_map = {-2.0: "*-", -1.0: "-", 0.0: "?", 1.0: "+", 2.0: "*+"}
             for y_index, row_name in enumerate(sig_pivot.index):
@@ -479,7 +516,7 @@ def generate_experiment_visuals(
         cbar.set_ticklabels(["sig degrade", "degrade", "inconclusive", "improve", "sig improve"])
         plt.xticks(range(len(difficulty_pivot_sig.columns)), list(difficulty_pivot_sig.columns), rotation=35, ha="right")
         plt.yticks(range(len(difficulty_pivot_sig.index)), list(difficulty_pivot_sig.index))
-        plt.title("Difficulty-Band Significance Status Heatmap")
+        plt.title(_title("Difficulty-Band Significance Status Heatmap"))
         if difficulty_pivot_sig.shape[0] <= 10 and difficulty_pivot_sig.shape[1] <= 10:
             label_map = {-2.0: "*-", -1.0: "-", 0.0: "?", 1.0: "+", 2.0: "*+"}
             for y_index, row_name in enumerate(difficulty_pivot_sig.index):
@@ -515,7 +552,7 @@ def generate_experiment_visuals(
         cbar.set_ticklabels(["sig degrade", "degrade", "inconclusive", "improve", "sig improve"])
         plt.xticks(range(len(paired_difficulty_pivot.columns)), list(paired_difficulty_pivot.columns), rotation=35, ha="right")
         plt.yticks(range(len(paired_difficulty_pivot.index)), list(paired_difficulty_pivot.index))
-        plt.title("Paired-Task Difficulty Significance Heatmap")
+        plt.title(_title("Paired-Task Difficulty Significance Heatmap"))
         if paired_difficulty_pivot.shape[0] <= 10 and paired_difficulty_pivot.shape[1] <= 10:
             label_map = {-2.0: "*-", -1.0: "-", 0.0: "?", 1.0: "+", 2.0: "*+"}
             for y_index, row_name in enumerate(paired_difficulty_pivot.index):
@@ -541,7 +578,7 @@ def generate_experiment_visuals(
         plt.colorbar(label="Score delta")
         plt.xticks(range(len(difficulty_pivot.columns)), list(difficulty_pivot.columns), rotation=35, ha="right")
         plt.yticks(range(len(difficulty_pivot.index)), list(difficulty_pivot.index))
-        plt.title("Difficulty-Band Score Delta Heatmap")
+        plt.title(_title("Difficulty-Band Score Delta Heatmap"))
         _annotate_heatmap(ax, difficulty_pivot)
         _save_current_figure(
             "difficulty_score_deltas.png",
@@ -562,7 +599,7 @@ def generate_experiment_visuals(
         plt.colorbar(label="Score delta")
         plt.xticks(range(len(technique_pivot.columns)), list(technique_pivot.columns), rotation=35, ha="right")
         plt.yticks(range(len(technique_pivot.index)), list(technique_pivot.index))
-        plt.title("Technique Score Delta Heatmap")
+        plt.title(_title("Technique Score Delta Heatmap"))
         _annotate_heatmap(ax, technique_pivot)
         _save_current_figure(
             "technique_score_deltas.png",
@@ -594,7 +631,7 @@ def generate_experiment_visuals(
             plt.ylabel("Mean wall-clock task duration (s)")
             plt.xlabel("Configuration")
             plt.xticks(rotation=20, ha="right")
-            plt.title("Mean Completion Time by Configuration")
+            plt.title(_title("Mean Completion Time by Configuration"))
             _annotate_bars(ax, [float(value) for value in timing_variant_df["mean_task_wall_clock_duration_sec"].fillna(0.0)], fmt="{:.1f}")
             _save_current_figure(
                 "variant_completion_time.png",
@@ -620,7 +657,7 @@ def generate_experiment_visuals(
         plt.colorbar(label="Mean wall-clock task duration (s)")
         plt.xticks(range(len(duration_pivot.columns)), list(duration_pivot.columns), rotation=35, ha="right")
         plt.yticks(range(len(duration_pivot.index)), list(duration_pivot.index))
-        plt.title("Per-Task Completion Time Heatmap")
+        plt.title(_title("Per-Task Completion Time Heatmap"))
         _annotate_heatmap(ax, duration_pivot)
         _save_current_figure(
             "task_completion_time_heatmap.png",
@@ -645,7 +682,7 @@ def generate_experiment_visuals(
         plt.colorbar(label="Mean wall-clock task duration (s)")
         plt.xticks(range(len(tag_pivot.columns)), list(tag_pivot.columns), rotation=35, ha="right")
         plt.yticks(range(len(tag_pivot.index)), list(tag_pivot.index))
-        plt.title("Task-Category Completion Time Heatmap")
+        plt.title(_title("Task-Category Completion Time Heatmap"))
         _annotate_heatmap(ax, tag_pivot)
         _save_current_figure(
             "task_category_completion_time_heatmap.png",

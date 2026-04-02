@@ -28,6 +28,13 @@ VALIDATOR_REVIEW_LEVEL_CHOICES = [
 VALIDATOR_REVIEW_LEVEL_LABELS = {
     value: label for label, value in VALIDATOR_REVIEW_LEVEL_CHOICES
 }
+WORKER_ROLE_PROMPT_MODE_CHOICES = [
+    ("default (Use worker archetype role prompt)", "default"),
+    ("blank (Suppress worker archetype role prompt)", "blank"),
+]
+WORKER_ROLE_PROMPT_MODE_LABELS = {
+    value: label for label, value in WORKER_ROLE_PROMPT_MODE_CHOICES
+}
 SHELL_EXECUTION_MODE_CHOICES = [
     ("None", "none"),
     ("Yes, with permission from user", "ask"),
@@ -80,6 +87,10 @@ def _parse_path_list(raw: str) -> List[str]:
     return [p.strip() for p in raw.split(sep) if p.strip()]
 
 
+def _parse_lower_marker_list(raw: str) -> Tuple[str, ...]:
+    return tuple(marker.strip().lower() for marker in str(raw or "").split(",") if marker.strip())
+
+
 def _resolve_repo_relative_path(raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
@@ -113,6 +124,15 @@ def _normalize_shell_execution_mode(value: Any) -> str:
     if normalized in {"on", "enabled", "enable", "yes", "full access", "unsafe", "use at risk"}:
         return "full"
     return "none"
+
+
+def _normalize_worker_role_prompt_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"default", "blank"}:
+        return normalized
+    if normalized in {"empty", "none", "off", "disabled", "disable", "no_role", "no_role_prompt", "bare"}:
+        return "blank"
+    return "default"
 
 
 def resolve_pipeline_definition(
@@ -325,24 +345,26 @@ def _build_runtime_settings(
         "MAX_TOOL_RESULT_CACHE_ENTRIES": int(env.get("MAX_TOOL_RESULT_CACHE_ENTRIES", "64")),
         "MAX_VALIDATION_REPLAN_RETRIES": int(env.get("MAX_VALIDATION_REPLAN_RETRIES", "2")),
         "MAX_PARALLEL_WORKERS": max(1, int(env.get("MAX_PARALLEL_WORKERS", "2"))),
-        "TOOL_RESULT_CACHE_SERVER_MARKERS": tuple(
-            marker.strip().lower()
-            for marker in str(
-                env.get(
-                    "TOOL_RESULT_CACHE_SERVER_MARKERS",
-                    "ghidra,capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy",
-                )
-            ).split(",")
-            if marker.strip()
+        "TOOL_RESULT_CACHE_SERVER_MARKERS": _parse_lower_marker_list(
+            env.get(
+                "TOOL_RESULT_CACHE_SERVER_MARKERS",
+                "ghidra,capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy",
+            )
         ),
-        "SERIAL_MCP_SERVER_MARKERS": tuple(
-            marker.strip().lower()
-            for marker in str(env.get("SERIAL_MCP_SERVER_MARKERS", "ghidra")).split(",")
-            if marker.strip()
+        "SERIAL_MCP_SERVER_MARKERS": _parse_lower_marker_list(
+            env.get("SERIAL_MCP_SERVER_MARKERS", "ghidra")
+        ),
+        "SERIAL_HOST_WORKER_ARCHETYPES": _parse_lower_marker_list(
+            env.get("SERIAL_HOST_WORKER_ARCHETYPES", "ghidra_analyst")
         ),
         "DEEP_ENABLE_MEMORY": _env_flag_from(env, "DEEP_ENABLE_MEMORY", True),
         "DEEP_MEMORY_DIR": env.get("DEEP_MEMORY_DIR", ".deep/memory"),
         "DEEP_PERSIST_BACKEND": _env_flag_from(env, "DEEP_PERSIST_BACKEND", True),
+        "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS": _env_flag_from(
+            env,
+            "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS",
+            True,
+        ),
         "DEEP_BACKEND_ROOT": env.get("DEEP_BACKEND_ROOT", "./.deep_backend"),
         "DEEP_ENABLE_SKILLS": _env_flag_from(env, "DEEP_ENABLE_SKILLS", True),
         "DEEP_INCLUDE_BUNDLED_SKILLS": _env_flag_from(env, "DEEP_INCLUDE_BUNDLED_SKILLS", True),
@@ -354,6 +376,9 @@ def _build_runtime_settings(
         "DEEP_AGENT_RETRIES": int(env.get("DEEP_AGENT_RETRIES", "4")),
         "DEEP_WORKER_SUBAGENT_PROFILE": str(env.get("DEEP_WORKER_SUBAGENT_PROFILE", "default")).strip().lower() or "default",
         "DEEP_WORKER_PERSONA_PROFILE": str(env.get("DEEP_WORKER_PERSONA_PROFILE", "default")).strip().lower() or "default",
+        "DEEP_WORKER_ROLE_PROMPT_MODE": _normalize_worker_role_prompt_mode(
+            env.get("DEEP_WORKER_ROLE_PROMPT_MODE", "default")
+        ),
         "DEEP_AGENT_AUTO_SELECT_PIPELINE": auto_select_pipeline,
         "DEEP_AGENT_PIPELINE_ROUTER_MODEL": env.get("DEEP_AGENT_PIPELINE_ROUTER_MODEL", "openai:gpt-4o-mini"),
         "DEFAULT_ALLOW_PARENT_INPUT": _env_flag_from(env, "DEFAULT_ALLOW_PARENT_INPUT", False),

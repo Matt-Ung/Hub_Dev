@@ -196,7 +196,9 @@ Supported lookup paths are implemented in [MCPServers/capaMCP.py](MCPServers/cap
 
 - `CAPA_RULES_DIR`
 - `CAPA_SIGS_DIR`
-- fallback repo-local `MCPServers/capa-rules` and `MCPServers/capa-sigs`
+- fallback repo-local `third_party/capa-rules`
+- fallback repo-local `third_party/capa-sigs/sigs` or `third_party/capa-testfiles/sigs`
+- legacy fallback `MCPServers/capa-rules` and `MCPServers/capa-sigs`
 
 Official upstream sources:
 
@@ -208,19 +210,20 @@ Recommended repo-local layout:
 ```bash
 mkdir -p third_party
 git clone https://github.com/mandiant/capa-rules third_party/capa-rules
-git clone https://github.com/mandiant/capa-testfiles third_party/capa-testfiles
+git clone https://github.com/mandiant/capa-testfiles third_party/capa-sigs
 ```
 
 Recommended `.env` values:
 
 ```dotenv
 CAPA_RULES_DIR=./third_party/capa-rules
-CAPA_SIGS_DIR=./third_party/capa-testfiles/sigs
+CAPA_SIGS_DIR=./third_party/capa-sigs/sigs
 ```
 
 Notes:
 
-- `CAPA_SIGS_DIR` should point at the `sigs/` subdirectory, not just the root of `capa-testfiles`.
+- `CAPA_SIGS_DIR` should point at the `sigs/` subdirectory, not just the root clone.
+- The code also accepts `./third_party/capa-testfiles/sigs` if you prefer to keep the upstream repo name as the local directory name.
 - If you prefer, you can copy or symlink only that `sigs/` directory into another local folder and point `CAPA_SIGS_DIR` there instead.
 
 ### YARA corpus
@@ -230,7 +233,8 @@ Also optional for startup.
 Supported base path is implemented in [artifact_paths.py](artifact_paths.py):
 
 - `YARA_RULES_DIR`
-- otherwise repo-local `MCPServers/yara_rules`
+- otherwise `./third_party/signature-base` when present
+- legacy fallback `MCPServers/yara_rules`
 
 Official upstream source:
 

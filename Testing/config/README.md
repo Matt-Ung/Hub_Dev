@@ -23,7 +23,7 @@ first, then return here to wire the new option into sweeps or launch presets.
 - `budget_guardrails.json`
   - launch-time token, cost, and spend ceilings
 - `launch_presets.json`
-  - named operational presets such as the recommended paid pilot
+  - named operational presets such as `sanity_core_slice_r1`, `budget_best_value_r1`, and `budget_best_value_r2`
 - `model_cost_profiles.json`
   - local relative-cost and optional USD heuristics used for reporting
 - `prompts/binary_judge_prompt.md`
@@ -106,4 +106,35 @@ Edit [budget_guardrails.json](budget_guardrails.json) when you want to change:
 - projected-cost heuristics
 - judge-model requirements
 
+Budget naming note:
+
+- `max_run_estimated_cost_usd` and `max_experiment_estimated_cost_usd`
+  - advisory warning thresholds
+  - shown in doctor output, preflight warnings, and `budget_status.json`
+  - do not abort a started run or sweep by themselves
+- `hard_max_run_estimated_cost_usd` and `hard_max_experiment_estimated_cost_usd`
+  - explicit hard-stop ceilings for estimated USD cost
+  - use these only when you intentionally want estimated-cost abort behavior
+- token ceilings and relative-cost-index ceilings remain hard guardrails when their abort flags are enabled
+
 Use [launch_presets.json](launch_presets.json) for named operational entry points, not for scientific sweep definitions.
+
+Launch presets can now target either:
+
+- `runner: "single_run"`
+  - good for default baselines and targeted one-configuration comparisons
+  - supports run-level overrides such as `pipeline`, `architecture`,
+    `query_variant`, `tool_profile`, `validator_review_level`, and
+    `force_model`
+- `runner: "sweep"`
+  - good for one-variable-at-a-time studies or broad full-suite launches
+  - supports sweep-scoping fields such as `variables`, `repetitions`,
+    `samples`, `tasks`, `difficulty_filters`, and optional alternate
+    sweep config paths via `config`
+
+If a preset should buffer child output by default when launched through
+`run_launch_preset.py`, set `quiet_child_output: true` in the preset entry.
+
+Remember that `tasks` in a launch preset are global task-id filters across the
+selected samples. If you want a curated multi-sample scope, prefer unique
+focused task IDs instead of mixing many `default_analysis` selections.

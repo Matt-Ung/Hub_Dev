@@ -5,6 +5,23 @@ from typing import Any, Dict, Iterable, List
 from .costing import add_usage_snapshots, coerce_usage_snapshot
 from .paths import CONFIG_ROOT, read_json
 
+_BUDGET_LIMIT_KEYS = (
+    "max_run_input_tokens",
+    "max_run_output_tokens",
+    "max_run_total_tokens",
+    "max_run_relative_cost_index",
+    "max_run_estimated_cost_usd",
+    "hard_max_run_estimated_cost_usd",
+    "max_experiment_relative_cost_index",
+    "max_experiment_estimated_cost_usd",
+    "hard_max_experiment_estimated_cost_usd",
+)
+
+_BUDGET_ABORT_KEYS = (
+    "abort_on_run_budget_exceeded",
+    "abort_experiment_on_budget_exceeded",
+)
+
 
 def load_budget_guardrails() -> Dict[str, Any]:
     path = CONFIG_ROOT / "budget_guardrails.json"
@@ -15,13 +32,16 @@ def load_budget_guardrails() -> Dict[str, Any]:
 
 def resolve_budget_config(
     *,
+    enable_budget_guardrails: bool = False,
     max_run_input_tokens: int | None = None,
     max_run_output_tokens: int | None = None,
     max_run_total_tokens: int | None = None,
     max_run_relative_cost_index: float | None = None,
     max_run_estimated_cost_usd: float | None = None,
+    hard_max_run_estimated_cost_usd: float | None = None,
     max_experiment_relative_cost_index: float | None = None,
     max_experiment_estimated_cost_usd: float | None = None,
+    hard_max_experiment_estimated_cost_usd: float | None = None,
 ) -> Dict[str, Any]:
     raw = load_budget_guardrails()
     defaults = dict((raw.get("defaults") if isinstance(raw.get("defaults"), dict) else {}) or {})
@@ -31,12 +51,20 @@ def resolve_budget_config(
         "max_run_total_tokens": max_run_total_tokens,
         "max_run_relative_cost_index": max_run_relative_cost_index,
         "max_run_estimated_cost_usd": max_run_estimated_cost_usd,
+        "hard_max_run_estimated_cost_usd": hard_max_run_estimated_cost_usd,
         "max_experiment_relative_cost_index": max_experiment_relative_cost_index,
         "max_experiment_estimated_cost_usd": max_experiment_estimated_cost_usd,
+        "hard_max_experiment_estimated_cost_usd": hard_max_experiment_estimated_cost_usd,
     }
     for key, value in overrides.items():
         if value is not None:
             defaults[key] = value
+    defaults["budget_guardrails_enabled"] = bool(enable_budget_guardrails)
+    if not enable_budget_guardrails:
+        for key in _BUDGET_LIMIT_KEYS:
+            defaults[key] = None
+        for key in _BUDGET_ABORT_KEYS:
+            defaults[key] = False
     return defaults
 
 
@@ -97,8 +125,26 @@ def summarize_record_budget(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]
     }
 
 
+def _budget_rule_specs(scope: str) -> List[tuple[str, str, str]]:
+    if scope == "run":
+        return [
+            ("max_run_input_tokens", "input_tokens", "hard"),
+            ("max_run_output_tokens", "output_tokens", "hard"),
+            ("max_run_total_tokens", "total_tokens", "hard"),
+            ("max_run_relative_cost_index", "relative_cost_index", "hard"),
+            ("max_run_estimated_cost_usd", "estimated_cost_usd", "warning"),
+            ("hard_max_run_estimated_cost_usd", "estimated_cost_usd", "hard"),
+        ]
+    if scope == "experiment":
+        return [
+            ("max_experiment_relative_cost_index", "relative_cost_index", "hard"),
+            ("max_experiment_estimated_cost_usd", "estimated_cost_usd", "warning"),
+            ("hard_max_experiment_estimated_cost_usd", "estimated_cost_usd", "hard"),
+        ]
+    raise ValueError(f"Unsupported budget scope {scope!r}")
+
+
 def evaluate_budget_status(summary: Dict[str, Any], config: Dict[str, Any], *, scope: str) -> Dict[str, Any]:
-    exceeded: List[str] = []
     observed = {
         "input_tokens": _int_or_none(summary.get("input_tokens")),
         "output_tokens": _int_or_none(summary.get("output_tokens")),
@@ -106,30 +152,32 @@ def evaluate_budget_status(summary: Dict[str, Any], config: Dict[str, Any], *, s
         "relative_cost_index": _float_or_none(summary.get("relative_cost_index")),
         "estimated_cost_usd": _float_or_none(summary.get("estimated_cost_usd")),
     }
-    checks = {
-        "max_run_input_tokens" if scope == "run" else None: observed["input_tokens"],
-        "max_run_output_tokens" if scope == "run" else None: observed["output_tokens"],
-        "max_run_total_tokens" if scope == "run" else None: observed["total_tokens"],
-        "max_run_relative_cost_index" if scope == "run" else None: observed["relative_cost_index"],
-        "max_run_estimated_cost_usd" if scope == "run" else None: observed["estimated_cost_usd"],
-        "max_experiment_relative_cost_index" if scope == "experiment" else None: observed["relative_cost_index"],
-        "max_experiment_estimated_cost_usd" if scope == "experiment" else None: observed["estimated_cost_usd"],
-    }
-    for key, observed_value in checks.items():
-        if not key or observed_value is None:
+    hard_exceeded: List[str] = []
+    warnings: List[str] = []
+    for key, observed_key, severity in _budget_rule_specs(scope):
+        observed_value = observed.get(observed_key)
+        if observed_value is None:
             continue
         limit = config.get(key)
         if limit is None:
             continue
         try:
             if float(observed_value) > float(limit):
-                exceeded.append(f"{key}: observed={observed_value} limit={limit}")
+                message = f"{key}: observed={observed_value} limit={limit}"
+                if severity == "warning":
+                    warnings.append(message)
+                else:
+                    hard_exceeded.append(message)
         except Exception:
             continue
     return {
         "scope": scope,
-        "ok": not exceeded,
-        "exceeded": exceeded,
+        "ok": not hard_exceeded,
+        "warnings_ok": not warnings,
+        "exceeded": hard_exceeded,
+        "hard_exceeded": hard_exceeded,
+        "warnings": warnings,
+        "all_exceeded": [*hard_exceeded, *warnings],
         "observed": observed,
         "limits": {
             key: config.get(key)
@@ -139,8 +187,10 @@ def evaluate_budget_status(summary: Dict[str, Any], config: Dict[str, Any], *, s
                 "max_run_total_tokens",
                 "max_run_relative_cost_index",
                 "max_run_estimated_cost_usd",
+                "hard_max_run_estimated_cost_usd",
                 "max_experiment_relative_cost_index",
                 "max_experiment_estimated_cost_usd",
+                "hard_max_experiment_estimated_cost_usd",
             )
             if config.get(key) is not None
         },
@@ -171,17 +221,25 @@ def project_experiment_budget(*, child_runs: int, tasks_per_child_run: int, conf
 
 
 def evaluate_projected_experiment_budget(projection: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
-    exceeded: List[str] = []
+    hard_exceeded: List[str] = []
+    warnings: List[str] = []
     projected_relative = _float_or_none(projection.get("projected_relative_cost_index"))
     projected_usd = _float_or_none(projection.get("projected_estimated_cost_usd"))
     rel_limit = _float_or_none(config.get("max_experiment_relative_cost_index"))
-    usd_limit = _float_or_none(config.get("max_experiment_estimated_cost_usd"))
+    advisory_usd_limit = _float_or_none(config.get("max_experiment_estimated_cost_usd"))
+    hard_usd_limit = _float_or_none(config.get("hard_max_experiment_estimated_cost_usd"))
     if projected_relative is not None and rel_limit is not None and projected_relative > rel_limit:
-        exceeded.append(f"projected_relative_cost_index: projected={projected_relative} limit={rel_limit}")
-    if projected_usd is not None and usd_limit is not None and projected_usd > usd_limit:
-        exceeded.append(f"projected_estimated_cost_usd: projected={projected_usd} limit={usd_limit}")
+        hard_exceeded.append(f"projected_relative_cost_index: projected={projected_relative} limit={rel_limit}")
+    if projected_usd is not None and advisory_usd_limit is not None and projected_usd > advisory_usd_limit:
+        warnings.append(f"projected_estimated_cost_usd: projected={projected_usd} limit={advisory_usd_limit}")
+    if projected_usd is not None and hard_usd_limit is not None and projected_usd > hard_usd_limit:
+        hard_exceeded.append(f"hard_projected_estimated_cost_usd: projected={projected_usd} limit={hard_usd_limit}")
     return {
-        "ok": not exceeded,
-        "exceeded": exceeded,
+        "ok": not hard_exceeded,
+        "warnings_ok": not warnings,
+        "exceeded": hard_exceeded,
+        "hard_exceeded": hard_exceeded,
+        "warnings": warnings,
+        "all_exceeded": [*hard_exceeded, *warnings],
         "projection": projection,
     }

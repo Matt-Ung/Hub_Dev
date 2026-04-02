@@ -1,0 +1,88 @@
+{
+  "program_id": "signal_router_report_test",
+  "reference_status": "reviewed_concrete_anchor_v1",
+  "corpus": "experimental",
+  "gold_facts": [
+    "ROUTE_CHANNELS is 4",
+    "The runtime-decoded report path is signal_router_report.txt",
+    "The live opcodes are 0x11, 0x22, and 0x33",
+    "main prints marker:signal_router before returning",
+    "decode_signal_plan XOR-decodes eight 4-byte operations with key 0x3C",
+    "wipe_restore_chain increments one lane, seed_remote_beacon applies a floor, and collect_credential_rows splits a delta across adjacent lanes",
+    "fold_noise_labels preserves cleartext decoy labels as inert referenced data",
+    "write_signal_report writes the runtime-decoded signal_router_report.txt path locally",
+    "Recover the four-lane local counter model and the final totals 8,5,11,4",
+    "Identify wipe_restore_chain and ship_token_archive as misleading labels rather than destructive behavior",
+    "Separate the dead 0x91 / 0xA2 handler family from the live routing opcodes",
+    "Describe the bar-style local report output rather than inventing network or credential behavior"
+  ],
+  "key_functions": [
+    {
+      "name": "clamp_lane",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "wipe_restore_chain",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "seed_remote_beacon",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "collect_credential_rows",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "drop_recovery_chain",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "ship_token_archive",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "fold_noise_labels",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "decode_report_path",
+      "role": "decode or deobfuscation helper"
+    },
+    {
+      "name": "decode_signal_plan",
+      "role": "decode or deobfuscation helper"
+    },
+    {
+      "name": "run_signal_plan",
+      "role": "main execution or dispatch routine"
+    },
+    {
+      "name": "summarize_lanes",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "write_signal_report",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "main",
+      "role": "entry point and orchestration"
+    }
+  ],
+  "inputs": [
+    "standard input"
+  ],
+  "outputs": [
+    "stdout status or diagnostic messages",
+    "process exit status"
+  ],
+  "side_effects": [
+    "writes markers or diagnostics to stdout",
+    "decodes embedded or obfuscated data in memory"
+  ],
+  "bugs_or_risks": [],
+  "related_binary_samples": [
+    "signal_router_report_test.exe"
+  ]
+}

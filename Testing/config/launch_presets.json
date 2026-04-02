@@ -1,9 +1,266 @@
 {
-  "version": "launch_presets_v1",
-  "description": "Named launch presets for safe testing-harness entry points. These presets are intentionally operational rather than scientific: they encode recommended launch shapes such as a cheap first paid pilot.",
+  "version": "launch_presets_v2",
+  "description": "Named operational launch shapes grouped by purpose and scale. Use smoke_* for the fastest checks, sanity_* for the smallest graph-producing sweeps, budget_* for the recommended decision-useful studies, standard_* for default single-configuration baselines, compare_* for targeted default-vs-variation checks, sweep_* for focused multi-run studies, and full_* for broad experiment launches. Legacy aliases are retained for compatibility.",
   "presets": {
-    "paid_narrow_pilot": {
-      "description": "Cheapest recommended first paid pilot. Uses one medium-difficulty focused recovery task and only the query-verbosity sweep family.",
+    "smoke_default_quick": {
+      "description": "Fastest maintained end-to-end sanity check. Runs the default configuration on the simplest easy sample and one default-analysis task.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "basic_loops_test.exe"
+      ],
+      "tasks": [
+        "default_analysis"
+      ],
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "sanity_core_slice_r1": {
+      "description": "Smallest maintained sweep that still produces useful comparison graphs. Uses four focused, unique-task samples spanning config recovery, deceptive strings, packing triage, and low-string behavior recovery.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe",
+        "stack_notice_scheduler_test.exe",
+        "embedded_payload_test_upx.exe",
+        "branch_weave_snapshot_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery",
+        "decoy_string_audit",
+        "packing_tool_triage",
+        "program_decode_recovery"
+      ],
+      "variables": [
+        "tool_availability",
+        "architecture_preset"
+      ],
+      "repetitions": 1,
+      "label": "sanity-core",
+      "max_run_estimated_cost_usd": 1.5,
+      "max_experiment_estimated_cost_usd": 6.0,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "budget_best_value_r2": {
+      "description": "Recommended under-budget study for decision-useful comparisons. Uses seven focused, unique-task samples spanning config recovery, deceptive cues, packing triage, hash dispatch, and low-leakage behavior recovery while comparing tool surface, architecture, and worker breadth across two repetitions.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe",
+        "signal_router_report_test.exe",
+        "stack_notice_scheduler_test.exe",
+        "hash_dispatch_test.exe",
+        "embedded_payload_test_upx.exe",
+        "maintenance_orchestrator_test.exe",
+        "branch_weave_snapshot_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery",
+        "routing_behavior_recovery",
+        "decoy_string_audit",
+        "hash_mapping_recovery",
+        "packing_tool_triage",
+        "decoy_signal_audit",
+        "program_decode_recovery"
+      ],
+      "variables": [
+        "tool_availability",
+        "architecture_preset",
+        "worker_subagents"
+      ],
+      "repetitions": 2,
+      "label": "budget-best-value",
+      "max_run_estimated_cost_usd": 2.5,
+      "max_experiment_estimated_cost_usd": 20.0,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "budget_best_value_r1": {
+      "description": "Cheaper one-repetition version of the recommended budget study. Uses the same seven focused, unique-task samples and the same three high-value sweep families, but trades replicate strength for lower cost and faster turnaround.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe",
+        "signal_router_report_test.exe",
+        "stack_notice_scheduler_test.exe",
+        "hash_dispatch_test.exe",
+        "embedded_payload_test_upx.exe",
+        "maintenance_orchestrator_test.exe",
+        "branch_weave_snapshot_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery",
+        "routing_behavior_recovery",
+        "decoy_string_audit",
+        "hash_mapping_recovery",
+        "packing_tool_triage",
+        "decoy_signal_audit",
+        "program_decode_recovery"
+      ],
+      "variables": [
+        "tool_availability",
+        "architecture_preset",
+        "worker_subagents"
+      ],
+      "repetitions": 1,
+      "label": "budget-best-value-r1",
+      "max_run_estimated_cost_usd": 2.5,
+      "max_experiment_estimated_cost_usd": 12.0,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "coverage_broad_r1_60usd": {
+      "description": "One-repetition medium+hard broad-coverage experiment that uses the maintained broad sweep config but limits the preset to the worker/prompt study families needed to keep the current 0.50-per-sample-task heuristic under 60 USD.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "config": "Testing/config/experiment_sweeps_broad_coverage_r1.json",
+      "difficulty_filters": [
+        "medium",
+        "hard"
+      ],
+      "variables": [
+        "query_verbosity",
+        "worker_subagents",
+        "worker_prompt_shape"
+      ],
+      "repetitions": 1,
+      "label": "coverage-broad-r1-60usd",
+      "max_run_estimated_cost_usd": 2.5,
+      "max_experiment_relative_cost_index": 30000.0,
+      "max_experiment_estimated_cost_usd": 65.0,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "standard_default_easy_suite": {
+      "description": "Default configuration across the easy corpus slice. Good day-to-day regression check before paying for broader sweeps.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "difficulty_filters": [
+        "easy"
+      ],
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "standard_default_decoder": {
+      "description": "Default configuration as-is on the focused config-value recovery task. Useful baseline before running comparison presets.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "compare_brief_decoder": {
+      "description": "Same narrow decoder task as the standard baseline, but with the brief query variant to test lower-detail prompting.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "query_variant": "brief",
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "compare_detailed_decoder": {
+      "description": "Same narrow decoder task as the standard baseline, but with the detailed query variant to test higher-detail prompting.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "query_variant": "detailed",
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "compare_core_static_decoder": {
+      "description": "Narrow decoder baseline with the core_static tool profile, useful for observing the effect of a reduced tool surface.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "tool_profile": "core_static",
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "compare_minimal_architecture_decoder": {
+      "description": "Narrow decoder baseline with the minimal worker architecture, useful for comparing broad specialist coverage against a smaller architecture.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "architecture": "minimal",
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "compare_light_validator_decoder": {
+      "description": "Narrow decoder baseline with the light validator topology enabled, useful for measuring validator overhead and block behavior against the default no-validator flow.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "pipeline": "preflight_planner_workers_light_validators_reporter",
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "compare_strict_validator_decoder": {
+      "description": "Narrow decoder baseline with validator gating and strict validator review. Useful for deliberately testing the harshest validation posture on one focused task.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "pipeline": "preflight_planner_workers_validators_reporter",
+      "validator_review_level": "strict",
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "compare_budget_model_decoder": {
+      "description": "Narrow decoder baseline with the budget model profile, forcing the cheaper model choice while keeping the task fixed.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "model_profile": "budget",
+      "force_model": "openai:gpt-5-nano",
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "compare_premium_model_decoder": {
+      "description": "Narrow decoder baseline with the premium model profile, forcing the stronger model choice while keeping the task fixed.",
+      "runner": "single_run",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "model_profile": "premium",
+      "force_model": "openai:gpt-5-mini",
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "sweep_pilot_query_verbosity_r1": {
+      "description": "Cheapest focused paid sweep. Uses one medium-difficulty recovery task and only the query-verbosity sweep family.",
       "runner": "sweep",
       "corpus": "experimental",
       "samples": [
@@ -16,11 +273,110 @@
         "query_verbosity"
       ],
       "repetitions": 1,
-      "skip_visuals": true,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "sweep_validator_focus_r1": {
+      "description": "Focused validator study on one medium task. Useful when you want to compare validator topology and validator review strictness without paying for the full suite.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "variables": [
+        "validator_topology",
+        "validator_review_level"
+      ],
+      "repetitions": 1,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "sweep_architecture_focus_r1": {
+      "description": "Focused worker-shape study on one medium task. Compares architecture preset, worker breadth, and worker prompt shape while holding the sample/task fixed.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "variables": [
+        "architecture_preset",
+        "worker_subagents",
+        "worker_prompt_shape"
+      ],
+      "repetitions": 1,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "sweep_easy_default_r1": {
+      "description": "Full maintained sweep, but only over the easy sample slice and with one repetition. Good medium-scale calibration run before the full suite.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "difficulty_filters": [
+        "easy"
+      ],
+      "repetitions": 1,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "full_suite_default_r1": {
+      "description": "Full maintained experimental sweep with one repetition. This is the best full-suite preset when you want broad coverage without replicate-heavy spend.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "repetitions": 1,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "full_suite_default_r3": {
+      "description": "Full maintained experimental sweep with three repetitions. Use this for the heaviest default launch when you want replicate-aware comparisons.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "repetitions": 3,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "paid_narrow_pilot": {
+      "description": "Compatibility alias for sweep_pilot_query_verbosity_r1.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "variables": [
+        "query_verbosity"
+      ],
+      "repetitions": 1,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "paid_narrow_pilot_quiet": {
+      "description": "Compatibility alias for the narrow paid pilot, but with wrapper-level child output buffering enabled by default.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test.exe"
+      ],
+      "tasks": [
+        "config_value_recovery"
+      ],
+      "variables": [
+        "query_verbosity"
+      ],
+      "repetitions": 1,
+      "skip_visuals": false,
+      "quiet_child_output": true,
       "recommended_judge_model": "openai:gpt-4o-mini"
     },
     "broad_default_sweep": {
-      "description": "Full default experimental sweep. Useful after the pilot passes, but intentionally expensive and likely to trip the default budget guardrails until thresholds are raised deliberately.",
+      "description": "Compatibility alias for full_suite_default_r3.",
       "runner": "sweep",
       "corpus": "experimental",
       "repetitions": 3,

@@ -9,6 +9,7 @@
     "query_variant": "default",
     "subagent_profile": "default",
     "worker_persona_profile": "default",
+    "worker_role_prompt_mode": "default",
     "validator_review_level": "default",
     "tool_profile": "full",
     "model_profile": "repo_default",
@@ -61,25 +62,21 @@
       ]
     },
     {
-      "variable": "worker_persona_prompt",
-      "description": "Change only the worker-stage persona overlay while keeping worker breadth, tools, and pipeline constant.",
+      "variable": "worker_prompt_shape",
+      "description": "Compare the maintained default worker prompts against an evidence-first overlay and an empty worker-role condition while keeping worker breadth, tools, and pipeline constant.",
       "variants": [
-        {
-          "name": "skeptical",
-          "overrides": {
-            "worker_persona_profile": "skeptical"
-          }
-        },
-        {
-          "name": "hypothesis_driven",
-          "overrides": {
-            "worker_persona_profile": "hypothesis_driven"
-          }
-        },
         {
           "name": "artifact_focused",
           "overrides": {
-            "worker_persona_profile": "artifact_focused"
+            "worker_persona_profile": "artifact_focused",
+            "worker_role_prompt_mode": "default"
+          }
+        },
+        {
+          "name": "empty",
+          "overrides": {
+            "worker_persona_profile": "default",
+            "worker_role_prompt_mode": "blank"
           }
         }
       ]

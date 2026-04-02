@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+File: render_test_catalog.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Render a static catalog of maintained test samples, tasks, and sweep axes.
+
+Summary:
+  This script turns the manifest and sweep configuration into an inspection
+  artifact for developers. It exists to make the benchmark surface readable
+  before a run begins by exporting the sample/task inventory, prompt variants,
+  and active experiment dimensions as JSON, CSV, Markdown, and HTML.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -45,6 +59,21 @@ def _fmt_list(items: Iterable[str]) -> str:
 
 
 def _build_catalog(corpus_name: str) -> Dict[str, Any]:
+    """
+    Function: _build_catalog
+    Inputs:
+      - corpus_name: logical corpus identifier such as `experimental` or
+        `prototype`.
+    Description:
+      Collect the maintained manifest, prompt-variant, and sweep-definition
+      data into one normalized catalog structure that downstream renderers can
+      write in multiple formats.
+    Outputs:
+      Returns a dictionary containing summary metadata plus normalized sample,
+      task, query-variant, and sweep-dimension rows.
+    Side Effects:
+      None.
+    """
     corpus = get_corpus_config(corpus_name)
     manifest = load_sample_manifest(corpus_name)
     query_variants = load_query_variants()
@@ -185,6 +214,18 @@ def _build_catalog(corpus_name: str) -> Dict[str, Any]:
 
 
 def _render_markdown(catalog: Dict[str, Any]) -> str:
+    """
+    Function: _render_markdown
+    Inputs:
+      - catalog: normalized catalog payload produced by `_build_catalog`.
+    Description:
+      Convert the catalog into a documentation-friendly Markdown summary that
+      developers can browse in the repo or attach to planning notes.
+    Outputs:
+      Returns the rendered Markdown document as one string.
+    Side Effects:
+      None.
+    """
     summary = catalog["summary"]
     baseline = catalog["baseline"]
     lines: List[str] = []
@@ -256,6 +297,18 @@ def _render_markdown(catalog: Dict[str, Any]) -> str:
 
 
 def _render_html(catalog: Dict[str, Any]) -> str:
+    """
+    Function: _render_html
+    Inputs:
+      - catalog: normalized catalog payload produced by `_build_catalog`.
+    Description:
+      Render the catalog as a richer standalone HTML document with scrollable
+      tables and expandable prompt details for local inspection.
+    Outputs:
+      Returns the rendered HTML document as one string.
+    Side Effects:
+      None.
+    """
     summary = catalog["summary"]
     baseline = catalog["baseline"]
 
@@ -468,6 +521,19 @@ def _render_html(catalog: Dict[str, Any]) -> str:
 
 
 def main() -> None:
+    """
+    Function: main
+    Inputs:
+      - None directly. Command-line flags choose the corpus and optional output
+        directory override for the catalog artifacts.
+    Description:
+      Build the catalog for one corpus and write the JSON, CSV, Markdown, and
+      HTML versions to the chosen output directory.
+    Outputs:
+      Returns nothing. Prints a small JSON summary describing what was written.
+    Side Effects:
+      Writes catalog artifacts under `Testing/results/catalog` by default.
+    """
     parser = argparse.ArgumentParser(description="Render an easy-to-read catalog of test samples, tasks, and sweep dimensions.")
     parser.add_argument("--corpus", choices=["prototype", "experimental"], default="experimental")
     parser.add_argument("--output-dir", default="", help="Optional output directory override")

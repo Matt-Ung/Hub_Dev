@@ -6,8 +6,13 @@ FastMCP server that exposes Mandiant capa via:
 - runCapa(command: str, rules_dir: Optional[str] = None): execute a caller-supplied capa command string (argv[0] must be capa)
   - If rules_dir is not provided, the server will try:
       1) CAPA_RULES_DIR env var
-      2) ./MCPServers/capa-rules (relative to CWD)
-      3) MCPServers/capa-rules relative to this file (and one directory up)
+      2) ./third_party/capa-rules (relative to CWD or repo root)
+      3) legacy repo-local MCPServers/capa-rules
+  - Signatures follow the same pattern via CAPA_SIGS_DIR, preferring:
+      1) CAPA_SIGS_DIR env var
+      2) ./third_party/capa-sigs/sigs
+      3) ./third_party/capa-testfiles/sigs
+      4) legacy repo-local MCPServers/capa-sigs
   - If a rules directory is found and the command does NOT already include -r/--rules, the server injects -r <rules_dir>.
 - capaHelp(): returns `capa --help` output for flag discovery
 
@@ -28,6 +33,12 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastmcp import FastMCP
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency
+    def load_dotenv(*args, **kwargs):  # type: ignore[no-redef]
+        return False
+
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
@@ -37,6 +48,34 @@ mcp = FastMCP(
 
 CAPA_COMPACT_MAX_RULES = int(os.environ.get("CAPA_COMPACT_MAX_RULES", "80"))
 CAPA_STREAM_MAX_CHARS = int(os.environ.get("CAPA_STREAM_MAX_CHARS", "25000"))
+
+
+def _fallback_load_dotenv(path: Path) -> bool:
+    if not path.exists():
+        return False
+    loaded = False
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded = True
+    return loaded
+
+
+def _load_repo_dotenv() -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    env_path = repo_root / ".env"
+    loaded = bool(load_dotenv(env_path, override=False))
+    if not loaded:
+        _fallback_load_dotenv(env_path)
+
+
+_load_repo_dotenv()
 
 # ----------------------------
 # Command parsing + validation
@@ -64,8 +103,8 @@ def _find_rules_dir(user_rules_dir: Optional[str]) -> Optional[str]:
     Resolve rules directory (best-effort):
       - explicit tool arg wins
       - then CAPA_RULES_DIR env var
-      - then ./MCPServers/capa-rules relative to CWD
-      - then MCPServers/capa-rules relative to this file (and one directory up)
+      - then ./third_party/capa-rules relative to CWD / repo root
+      - then legacy repo-local MCPServers/capa-rules
     Returns an absolute path string if found and looks like a directory; otherwise None.
     """
     candidates: List[Path] = []
@@ -78,12 +117,12 @@ def _find_rules_dir(user_rules_dir: Optional[str]) -> Optional[str]:
         candidates.append(Path(os.path.expandvars(os.path.expanduser(env.strip()))))
 
     # Relative to CWD
-    candidates.append(Path.cwd() / "MCPServers" / "capa-rules")
+    candidates.append(Path.cwd() / "third_party" / "capa-rules")
 
     # Relative to this file
     here = Path(__file__).resolve().parent
-    candidates.append(here / "MCPServers" / "capa-rules")
-    candidates.append(here.parent / "MCPServers" / "capa-rules")
+    candidates.append(here / "third_party" / "capa-rules")
+    candidates.append(here.parent / "third_party" / "capa-rules")
     candidates.append(here / "capa-rules")
     candidates.append(here.parent / "capa-rules")
 
@@ -137,17 +176,29 @@ def _inject_signatures(argv: List[str], signatures_dir: Optional[str]) -> List[s
 
 
 def _find_signatures_dir() -> Optional[str]:
+    def _signature_dir_candidates(base: Path) -> List[Path]:
+        if base.name == "sigs":
+            return [base]
+        return [base / "sigs", base]
+
     env = os.environ.get("CAPA_SIGS_DIR")
     candidates: List[Path] = []
     if env and env.strip():
-        candidates.append(Path(os.path.expandvars(os.path.expanduser(env.strip()))))
+        candidates.extend(_signature_dir_candidates(Path(os.path.expandvars(os.path.expanduser(env.strip())))))
 
+    candidates.extend(_signature_dir_candidates(Path.cwd() / "third_party" / "capa-sigs"))
+    candidates.extend(_signature_dir_candidates(Path.cwd() / "third_party" / "capa-testfiles"))
+    candidates.extend(_signature_dir_candidates(Path.cwd() / "third_party" / "capa-testfiles" / "sigs"))
     candidates.append(Path.cwd() / "MCPServers" / "capa-sigs")
     here = Path(__file__).resolve().parent
+    candidates.extend(_signature_dir_candidates(here / "third_party" / "capa-sigs"))
+    candidates.extend(_signature_dir_candidates(here.parent / "third_party" / "capa-sigs"))
+    candidates.extend(_signature_dir_candidates(here / "third_party" / "capa-testfiles"))
+    candidates.extend(_signature_dir_candidates(here.parent / "third_party" / "capa-testfiles"))
     candidates.append(here / "MCPServers" / "capa-sigs")
     candidates.append(here.parent / "MCPServers" / "capa-sigs")
-    candidates.append(here / "capa-sigs")
-    candidates.append(here.parent / "capa-sigs")
+    candidates.extend(_signature_dir_candidates(here / "capa-sigs"))
+    candidates.extend(_signature_dir_candidates(here.parent / "capa-sigs"))
 
     for c in candidates:
         try:
@@ -379,7 +430,7 @@ RUN_CAPA_DESCRIPTION = (
     "  - Use the exact target path from the current user request/task.\n"
     "    Do not invent a path and do not reuse placeholder/example paths.\n"
     "  - Prefer using `--` before the target path.\n"
-    "  - If you pass rules_dir (or the server finds ./MCPServers/capa-rules), and your command does not include -r/--rules,\n"
+    "  - If you pass rules_dir (or the server finds ./third_party/capa-rules), and your command does not include -r/--rules,\n"
     "    the server will inject `-r <rules_dir>` automatically.\n"
     "  - `output_mode='json_compact'` (default) forces JSON output and returns a reduced capability summary.\n"
     "  - Use `output_mode='json_full'` to return full capa JSON, or `output_mode='text'` for raw text.\n"

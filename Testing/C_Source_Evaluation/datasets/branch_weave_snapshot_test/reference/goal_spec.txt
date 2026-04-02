@@ -1,0 +1,18 @@
+Branch Weave Snapshot Test is a hard source-analysis benchmark.
+
+This low-leakage hard deception sample XOR-decodes a compact drawing program, applies it to an 8x8 local grid, computes terse summary fields, and writes a short local report while threat-themed labels remain misleading or dormant.
+
+Primary behaviors or analysis targets:
+- decode_branch_program XOR-decodes ten 4-byte operations with key 0x4D
+- flush_ticket_vault, ship_shadow_bundle, drop_recovery_mesh, and erase_domain_secrets are misleadingly named live handlers that mutate the local 8x8 grid
+- write_grid_report writes the runtime-decoded bw_grid_report.txt path using terse fields such as d=, o=, c=, and g:
+- emit_false_notices and the 0x91 / 0xA2 / 0xB3 handler family preserve decoy strings and dead behavior for analysis without affecting the live grid path
+
+Expected high-value findings:
+- Recover the 8x8 local-grid behavior and short report-writing path even though the sample has minimal explanatory strings
+- Identify the live opcodes 0x11, 0x22, 0x33, and 0x44 as the actual program family
+- Call out strings such as flush_ticket_vault and ship_shadow_bundle as deceptive labels rather than destructive behavior
+- Separate the dormant decoded notices and dead handler family from the live execution path
+
+Reference status: reviewed_concrete_anchor_v1
+This file contains concrete reviewed anchors intended to be stable enough for controlled evaluation sweeps, but it should still receive human signoff before publication use.

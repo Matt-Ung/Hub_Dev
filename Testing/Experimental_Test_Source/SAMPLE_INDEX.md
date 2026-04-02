@@ -2,120 +2,142 @@
 
 ## Overview
 
-8 source samples grouped by analysis difficulty, producing 9 executable variants in the experimental build corpus because `embedded_payload_test` also has a UPX-packed variant. Compiled outputs are written to `Testing/build/experimental/`. The manifest now defines 13 evaluation tasks across those executables so the benchmark includes both broad program-analysis prompts and a small number of focused recovery/tool-triage prompts.
+11 source samples grouped by analysis difficulty currently produce 15 executable variants in the maintained experimental corpus. The extra variants come from one UPX-packed sample and three explicit stripped hard variants. Compiled outputs are written to `Testing/build/experimental/`. The manifest now defines 24 evaluation tasks across those executables, mixing broad program-analysis prompts with focused recovery, deception-audit, and symbol-light tasks.
 
-All samples are benign — they simulate malware techniques without performing any destructive or network-active operations.
+All samples are benign. They simulate malware-like analysis patterns without performing destructive, persistent, privileged, or network-active operations.
 
 ## Sample Matrix
 
 | # | Executable | Difficulty | Primary Techniques | Target MCP Tools | What It Validates |
 |---|---|---|---|---|---|
-| 1 | `basic_loops_test.exe` | Easy | For/while/do-while loops, function calls, if/else branching, integer arithmetic | ghidramcp, stringmcp, CapaMCP | Decompilation accuracy baseline.  If the pipeline can't cleanly reconstruct this, nothing else will work. |
-| 2 | `string_table_test.exe` | Easy | Global strings, string pointer table, index-based lookup, stack buffer copy | stringmcp, flareflossmcp, ghidramcp, CapaMCP | String extraction baseline.  Every string is cleartext.  Tools should find all of them. |
-| 3 | `callback_dispatch_test.exe` | Medium | Function pointer table, struct command descriptors, indirect calls, state machine, error handling | ghidramcp, CapaMCP, stringmcp | Indirect call resolution.  Tests whether Ghidra/agents can resolve function pointers through a dispatch table. |
-| 4 | `config_decoder_test.exe` | Medium | Single-byte XOR config blob, key=value parsing, stack buffer decode, validation branching | flareflossmcp, stringmcp, ghidramcp, CapaMCP | Simplest non-trivial encoding.  FLOSS should recover decoded config strings.  Planner should decompose decode vs. parse. |
-| 5 | `multilayer_encode_test.exe` | Hard | Two-layer encoding (ROL + XOR), encoded C2 URLs / registry paths / shell commands, per-entry metadata, magic header | flareflossmcp, stringmcp, ghidramcp, CapaMCP, yaramcp | Multi-layer decode challenge.  Tests whether FLOSS handles ROL+XOR.  YARA may match decoded indicators. |
-| 6 | `hash_dispatch_test.exe` | Hard | DJB2 hash algorithm, hash-to-handler dispatch table, stack-built command strings, dead/decoy hash entries, indirect call | ghidramcp, hashdbmcp, flareflossmcp, CapaMCP, stringmcp | API hashing pattern.  Tests hash algorithm identification, hashdb lookup, and stack string recovery. |
-| 7 | `embedded_payload_test.exe` | Hard | Embedded blob with structured header, rolling checksum, per-record XOR keys, dead/padding records, staged extraction | binwalkmcp, flareflossmcp, stringmcp, ghidramcp, CapaMCP, upxmcp | Dropper/loader pattern.  Tests blob detection (binwalk), checksum identification, staged decode analysis.  UPX variant exercises upxmcp. |
-| 8 | `anti_analysis_suite_test.exe` | Hard | IsDebuggerPresent, timing probe, environment fingerprinting, rotating-key XOR config, dead code, misleading function names, stack strings | ghidramcp, CapaMCP, flareflossmcp, stringmcp, yaramcp, hashdbmcp | Composite anti-analysis.  Forces multi-tool coordination.  Misleading names test whether agents reason about behavior, not symbols. |
+| 1 | `basic_loops_test.exe` | Easy | For/while/do-while loops, function calls, if/else branching, integer arithmetic | ghidramcp, stringmcp, CapaMCP | Decompilation accuracy baseline. If the pipeline cannot reconstruct this cleanly, nothing else will be trustworthy. |
+| 2 | `maintenance_orchestrator_test.exe` | Hard | Misleading names, cleartext decoy labels, dormant decoded strings, dispatcher with live/dead entries, deterministic local report generation | ghidramcp, stringmcp, flareflossmcp, CapaMCP | Deception-resistance benchmark with moderate answer leakage. Tests whether agents separate threatening surface cues from the real benign snapshot/report workflow. |
+| 3 | `maintenance_orchestrator_test_stripped.exe` | Hard | Stripped symbols, deceptive strings, dormant decoded notices, live/dead dispatcher entries | ghidramcp, stringmcp, flareflossmcp, CapaMCP | Symbol-light control for the same deception task. Measures whether the analysis can recover the real behavior without preserved symbol names. |
+| 4 | `callback_dispatch_test.exe` | Medium | Function pointer table, struct command descriptors, indirect calls, state machine, error handling | ghidramcp, CapaMCP, stringmcp | Indirect-call resolution. Tests whether Ghidra/agents can resolve function pointers through a dispatch table. |
+| 5 | `config_decoder_test.exe` | Medium | Single-byte XOR config blob, key=value parsing, stack buffer decode, validation branching | flareflossmcp, stringmcp, ghidramcp, CapaMCP | Simplest non-trivial decode-and-parse sample. FLOSS should recover concrete config values and the planner should separate decode from parser logic. |
+| 6 | `signal_router_report_test.exe` | Medium | Deceptive cleartext labels, small opcode dispatcher, XOR-decoded routing plan, runtime-decoded output path | ghidramcp, stringmcp, CapaMCP | Mid-tier deception sample where strings alone overstate the threat model. Tests behavior grounding from the live routing logic. |
+| 7 | `stack_notice_scheduler_test.exe` | Medium | Stack-built decoy strings, dormant decoded notices, XOR-decoded schedule data, insertion sort | flareflossmcp, ghidramcp, stringmcp, CapaMCP | FLOSS-overtrust control. Tests whether the agent can separate recovered decoy strings from the actual local scheduling behavior. |
+| 8 | `multilayer_encode_test.exe` | Hard | Two-layer encoding (ROL + XOR), encoded URLs / commands, per-entry metadata, magic header | flareflossmcp, stringmcp, ghidramcp, CapaMCP, yaramcp | Multi-layer decode challenge. Tests whether the analysis recovers both layers instead of collapsing the sample into simple XOR. |
+| 9 | `hash_dispatch_test.exe` | Hard | DJB2 hash algorithm, hash-to-handler dispatch table, stack-built command strings, dead/decoy entries, indirect call | ghidramcp, hashdbmcp, flareflossmcp, CapaMCP, stringmcp | Hash-based dispatch and concrete hash mapping recovery. |
+| 10 | `hash_dispatch_test_stripped.exe` | Hard | Stripped symbols, DJB2 hashing, stack strings, hash-to-handler dispatch, dead entries | ghidramcp, hashdbmcp, flareflossmcp, CapaMCP, stringmcp | Symbol-light hash-dispatch control. Separates algorithm/data-flow recovery from name recovery. |
+| 11 | `embedded_payload_test.exe` | Hard | Embedded blob with structured header, rolling checksum, per-record XOR keys, staged extraction | binwalkmcp, flareflossmcp, stringmcp, ghidramcp, CapaMCP, upxmcp | Dropper/loader pattern. Tests blob detection, staged decode reasoning, and checksum recovery. |
+| 12 | `embedded_payload_test_upx.exe` | Hard | UPX packing layered over embedded blob extraction | upxmcp, binwalkmcp, flareflossmcp, stringmcp, ghidramcp, CapaMCP | Packed-wrapper control. Separates packing evidence from underlying payload-loader behavior. |
+| 13 | `branch_weave_snapshot_test.exe` | Hard | Encoded operation stream, misleading names, minimal true-behavior strings, live/dead dispatcher entries, dormant notices | ghidramcp, flareflossmcp, stringmcp, CapaMCP | Low-leakage deception benchmark. True behavior should not be recoverable mainly from strings/FLOSS. |
+| 14 | `branch_weave_snapshot_test_stripped.exe` | Hard | Stripped symbols, low true-behavior string leakage, encoded operation stream, deceptive notices | ghidramcp, flareflossmcp, stringmcp, CapaMCP | Hardest symbol-light deception variant in the maintained corpus. |
+| 15 | `anti_analysis_suite_test.exe` | Hard | Anti-debug APIs, timing probe, environment fingerprinting, rotating-key XOR config, dead code, misleading names | ghidramcp, CapaMCP, flareflossmcp, stringmcp, yaramcp, hashdbmcp | Composite anti-analysis sample requiring broad tool coordination. |
 
 ## MCP Server Coverage
 
 | MCP Server | Directly Exercised By | Coverage Notes |
 |---|---|---|
-| **ghidramcp** | All 8 source samples / all 9 executable variants | Decompilation, call graph, xrefs, function pointer resolution |
-| **stringmcp** | All 8 source samples / all 9 executable variants | Cleartext string extraction from .rdata / .rodata |
-| **flareflossmcp** | 2, 4, 5, 6, 7, 8 | Stack strings, XOR-decoded strings, encoded blob recovery |
-| **CapaMCP** | All 8 source samples / all 9 executable variants | Behavioral rule matching (XOR decode, anti-debug, indirect call, etc.) |
-| **hashdbmcp** | 6, 8 | DJB2 hash value lookup, hash algorithm identification |
-| **binwalkmcp** | 7 | Embedded blob / magic signature detection |
-| **upxmcp** | 7 (UPX variant) | Packing detection and unpacking.  Requires `make upx` to produce packed binary. |
-| **yaramcp** | 5, 8 | Pattern matching on decoded C2 indicators, anti-debug API names |
-| **gitleaksmcp** | — | Not applicable to binary analysis.  Designed for source/repo scanning. |
-| **searchsploitmcp** | — | Not applicable.  Requires known CVE/vulnerability patterns.  A future sample embedding a known vulnerable library version could cover this. |
-| **trivymcp** | — | Not applicable.  Requires container images or filesystem vulnerability scanning.  Not exercisable by standalone PE samples. |
+| **ghidramcp** | All 11 source samples / all 15 executable variants | Decompilation, call graph, xrefs, dispatcher recovery, and control/data-flow analysis |
+| **stringmcp** | All 11 source samples / all 15 executable variants | Cleartext decoy-label extraction, residual literals, and report-format hints |
+| **flareflossmcp** | `maintenance_orchestrator*`, `config_decoder_test`, `stack_notice_scheduler_test`, `multilayer_encode_test`, `hash_dispatch*`, `embedded_payload_test*`, `branch_weave_snapshot_test*`, `anti_analysis_suite_test` | Stack strings, dormant decoded notices, XOR-decoded config/data recovery |
+| **CapaMCP** | All 11 source samples / all 15 executable variants | Structural rule matching (decode helpers, indirect calls, anti-analysis, packing-adjacent behavior) |
+| **hashdbmcp** | `hash_dispatch*`, `anti_analysis_suite_test` | Hash algorithm identification and concrete hash lookup |
+| **binwalkmcp** | `embedded_payload_test`, `embedded_payload_test_upx` | Embedded blob / magic signature detection |
+| **upxmcp** | `embedded_payload_test_upx` | Packing detection and unpacking |
+| **yaramcp** | `multilayer_encode_test`, `anti_analysis_suite_test` | Pattern matching on decoded indicators and anti-debug API names |
+| **gitleaksmcp** | — | Not applicable to standalone binary samples |
+| **searchsploitmcp** | — | Not applicable without a vulnerable-library or CVE-oriented target |
+| **trivymcp** | — | Not applicable to standalone PE-style binaries |
 
 ### Gap Analysis
 
-Three MCP servers are not directly exercised by any binary sample:
+Three MCP servers remain intentionally uncovered by this corpus:
 
-- **gitleaksmcp**: Operates on git repositories, not binaries.  Not feasible to exercise with a compiled sample.
-- **searchsploitmcp**: Operates on CVE/exploit database lookups.  A future sample linking against a known-vulnerable library (e.g., an old OpenSSL version) could trigger relevant results.
-- **trivymcp**: Operates on container images and filesystem vulnerability scanning.  Would require a Docker image or package manifest as the analysis target, not a PE binary.
+- **gitleaksmcp**: repository-scanning tool, not a binary-analysis tool.
+- **searchsploitmcp**: requires a vulnerability-oriented target rather than a synthetic standalone benchmark binary.
+- **trivymcp**: requires a container or filesystem/package target, not a PE-style executable.
 
 ## Build Instructions
 
 ### Prerequisites
 
 - **Full PE output**: `x86_64-w64-mingw32-gcc` (MinGW-w64 cross-compiler)
-- **Fallback**: Native `gcc` or `clang` on macOS/Linux.  Compiles everything except real Windows API calls (uses stubs instead).
-- **UPX variant**: `upx` on PATH for `make upx`
+- **Fallback**: native `gcc` or `clang` on macOS/Linux
+- **UPX variant**: `upx` on `PATH` for `make upx`
 
 ### Build commands
 
 ```bash
-# Build all baseline binaries
+# Build all baseline and stripped variants
 make -C Testing/Experimental_Test_Source all
 
-# Build GCC-variant binaries
+# Build GCC-variant binaries for the unstripped source samples
 make -C Testing/Experimental_Test_Source all-gcc
 
 # Build both sets
 make -C Testing/Experimental_Test_Source all-with-gcc
 
-# Build UPX-packed variant of embedded_payload_test
+# Build the UPX-packed embedded_payload variant
 make -C Testing/Experimental_Test_Source upx
 
-# Clean all binaries
+# Clean all generated binaries
 make -C Testing/Experimental_Test_Source clean
 ```
 
 ### Platform notes
 
-- `anti_analysis_suite_test.c` uses Windows APIs (IsDebuggerPresent, QueryPerformanceCounter, etc.).  On non-Windows, stubs return "not detected" defaults.  The code structure and string patterns are preserved for analysis regardless.
-- `config_decoder_test` is compiled at `-O0` to preserve the XOR decode loop structure.  At higher optimization levels, the compiler may partially unroll or vectorize the loop.
-- All other samples compile at `-O2`.
+- `anti_analysis_suite_test.c` uses Windows APIs. On non-Windows platforms, safe stubs preserve code structure and analysis signals.
+- `config_decoder_test` is compiled at `-O0` to preserve the decode loop structure.
+- All other maintained samples compile at `-O2`.
+- The explicit stripped hard variants are compiled with `-s` so symbol recovery is intentionally reduced without changing source behavior.
 
 ## Difficulty Rationale
 
 ### Easy
 
-Intended as decompilation and string-extraction baselines.  If the pipeline scores poorly on these, the issue is in the tool integration or fundamental agent behavior, not in the sample's analysis challenge.
+Decompilation baseline only. This tier exists to catch integration failures early.
 
 ### Medium
 
-Realistic complexity: indirect calls, state management, simple encoding.  These test whether the planner correctly decomposes work items and whether Ghidra agents follow function pointers through data.
+The medium tier now includes both ordinary non-trivial analysis and deception-oriented midpoint cases:
+
+- **callback_dispatch_test**: indirect-call resolution and state tracking
+- **config_decoder_test**: decode-plus-parse reconstruction
+- **signal_router_report_test**: deceptive cleartext labels with recoverable live behavior
+- **stack_notice_scheduler_test**: FLOSS-recoverable decoys that do not reflect the true scheduling logic
 
 ### Hard
 
-Deliberately challenging patterns drawn from real malware:
-- **multilayer_encode_test**: Multi-pass encoding defeats single-pass FLOSS recovery.  Agents must identify the layered decode from Ghidra and correlate with FLOSS output.
-- **hash_dispatch_test**: Hash-based dispatch hides command names.  Agents must identify the algorithm and correlate with hashdb.
-- **embedded_payload_test**: Staged extraction with per-record keys.  Tests whether the pipeline handles blob-within-binary patterns.
-- **anti_analysis_suite_test**: Composite sample requiring coordination across Ghidra, capa, FLOSS, YARA, and strings.  Misleading function names test whether agents trust behavior over symbols.
+The hard tier now mixes multiple distinct failure modes:
 
-## Expected Scoring Ranges (Automated Judge, 0–100)
+- **maintenance_orchestrator_test** and **maintenance_orchestrator_test_stripped**: deception with moderate answer leakage
+- **multilayer_encode_test**: layered decoding
+- **hash_dispatch_test** and **hash_dispatch_test_stripped**: hash-based dispatch and symbol-light recovery
+- **embedded_payload_test** and **embedded_payload_test_upx**: staged extraction and packing separation
+- **branch_weave_snapshot_test** and **branch_weave_snapshot_test_stripped**: low true-behavior string leakage, requiring control/data-flow recovery
+- **anti_analysis_suite_test**: broad anti-analysis coordination problem
 
-These are approximate ranges using the current automated baseline configuration (balanced architecture, `auto_triage` pipeline, default validator review level):
+## Expected Scoring Ranges (Automated Judge, 0-100)
+
+These are approximate ranges using the maintained baseline configuration (`auto_triage`, balanced architecture, default validator review):
 
 | Difficulty | Expected score range | Notes |
 |---|---|---|
-| Easy | 80–100 | Should score near-perfect. Anything below roughly 70 usually indicates a tool, bundle, or integration problem rather than sample difficulty. |
-| Medium | 65–90 | Indirect-call resolution and XOR/config recovery may reduce specificity or coverage modestly. |
-| Hard | 45–80 | Wide variance is expected. Multi-layer encoding, hash dispatch, packing, and anti-analysis behaviors are genuine challenges. |
+| Easy | 80-100 | Should remain near-perfect. Large drops usually indicate tooling or harness regressions. |
+| Medium | 60-88 | Medium now includes deception-oriented cases, so simple string-led summaries should separate more cleanly from behavior-grounded reports. |
+| Hard | 35-80 | Wide variance is expected. Stripped and low-leakage variants are intended to reduce trivial full-credit outcomes. |
 
 ## Task Coverage Notes
 
 The experimental manifest now mixes:
 
-- 9 broad `default_analysis` tasks, one per executable variant
-- 3 focused tasks that emphasize more discriminative evaluation modes:
-  - concrete decoded-value recovery (`config_decoder_test.exe`)
+- 15 broad `default_analysis` tasks, one per executable variant
+- 9 focused tasks that emphasize more discriminative evaluation modes:
+  - config value recovery (`config_decoder_test.exe`)
+  - actual-behavior recovery and decoy-signal audit (`maintenance_orchestrator_test.exe`)
+  - routing behavior recovery (`signal_router_report_test.exe`)
+  - decoy-string auditing with FLOSS surfaces (`stack_notice_scheduler_test.exe`)
   - hash-to-behavior mapping recovery (`hash_dispatch_test.exe`)
-  - packing evidence + tool-triage reasoning (`embedded_payload_test_upx.exe`)
+  - packing/tool-triage and behavior classification (`embedded_payload_test_upx.exe`)
+  - low-leakage program-decode recovery (`branch_weave_snapshot_test.exe`)
 
-This keeps the default sweep broad enough to test high-level analysis quality while adding a small number of tasks that are better at separating:
+This gives the maintained sweep broader discriminative coverage across:
 
-- extraction accuracy vs. general explanation quality
-- control-flow/dispatch reasoning vs. simple summarization
-- tool-selection/orchestration quality vs. final narrative quality
+- extraction accuracy vs. generic summarization
+- behavior grounding vs. trust in deceptive strings/names
+- symbol-light recovery vs. symbol-assisted recovery
+- FLOSS-overtrust vs. control-flow-based reasoning
+- packed-wrapper analysis vs. underlying payload behavior

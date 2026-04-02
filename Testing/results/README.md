@@ -2,6 +2,26 @@
 
 `Testing/results/` stores structured outputs from the unified evaluation runner.
 
+If you only need the shortest path for later analysis, start here:
+
+1. single run:
+   - `aggregate.json`
+   - `summary.csv`
+   - `samples/<sample_task_slug>/record.json`
+2. sweep:
+   - `variant_summary.csv`
+   - `task_comparison.csv`
+   - `significance_overall.csv`
+   - `outputs/`
+
+Main sweep aggregates now exclude incomplete comparison groups by default. If a
+sweep is interrupted or some variants only finish partially, those rows are
+written separately as `partial_*.csv`, `partial_comparison.json`,
+`partial_report.md`, and `outputs/partial/`.
+
+Everything else in this tree should be read as either a derived inspection view
+or an operational/debug artifact.
+
 ## Source-Control Policy
 
 This directory mixes tracked documentation with generated result trees.
@@ -19,6 +39,16 @@ This directory mixes tracked documentation with generated result trees.
 
 If you want to keep a specific result artifact in git, copy or distill it into
 `reference_examples/` instead of committing the live generated run tree.
+
+To reset generated run state locally while preserving tracked docs/templates,
+use:
+
+```bash
+bash Testing/clean_results.sh
+```
+
+Add `--include-catalog` to also remove generated benchmark catalog outputs, or
+`--include-logs` to remove generated `logs/agentToolBench_*` folders as well.
 
 ## Active Layout
 
@@ -43,6 +73,7 @@ results/
   runs/
     <run_id>/
       run_manifest.json
+      live_status.json
       build_record.json
       prepare_record.json
       bundle_readiness.json
@@ -81,14 +112,25 @@ results/
       experiment_manifest.json
       run_catalog.json
       run_catalog.csv
+      live_view/
+        index.html
+        live_view_url.txt
+        logs/
+          <run_id>.log
       preflight.json
       comparison.json
+      partial_comparison.json
       result_layout.json
       variant_summary.csv
+      partial_variant_summary.csv
       dimension_summary.csv
+      partial_dimension_summary.csv
       task_comparison.csv
+      partial_task_comparison.csv
       difficulty_summary.csv
+      partial_difficulty_summary.csv
       technique_summary.csv
+      partial_technique_summary.csv
       lineage_summary.csv
       significance.json
       significance_overall.csv
@@ -97,6 +139,7 @@ results/
       variable_significance_summary.csv
       significance_report.md
       report.md
+      partial_report.md
       by_executable/
         index.json
         index.csv
@@ -157,6 +200,12 @@ For baseline + one-variable-at-a-time sweeps, run:
 python Testing/run_experiment_sweep.py --corpus experimental
 ```
 
+For a lightweight local browser monitor during the sweep:
+
+```bash
+python Testing/run_experiment_sweep.py --corpus experimental --live-view
+```
+
 That will:
 
 1. build binaries into `Testing/build/<corpus>/`
@@ -168,15 +217,48 @@ That will:
 
 ## Important Files
 
-- `run_manifest.json` — run configuration and experiment metadata
-- `build_record.json` — build step results
-- `prepare_record.json` — bundle-preparation results
-- `bundle_readiness.json` — required vs optional bundle files for each selected sample
-- `Testing/results/lineages/<config_lineage_id>.json` — persistent cross-run grouping of equivalent configurations
-- `preflight.json` — harness/rubric/dependency/bundle validation report written before agent execution
-- `aggregate.json` — machine-readable aggregate metrics and all sample records
-- `result_layout.json` — summary pointer to the generated executable/config/task filesystem view
-- `by_executable/index.csv` — flat index of every executable/config/task/run slot emitted in that layout
+Read this section in three buckets instead of treating every artifact as equally
+important.
+
+### Canonical machine-readable outputs
+
+These are the files later analysis should usually start from:
+
+- `run_manifest.json`
+- `aggregate.json`
+- `summary.csv`
+- `samples/<sample_task_slug>/agent_result.json`
+- `samples/<sample_task_slug>/judge_result.json`
+- `samples/<sample_task_slug>/record.json`
+- `variant_summary.csv`
+- `task_comparison.csv`
+- `significance_overall.csv`
+
+### Inspection-oriented mirrors and convenience views
+
+These are useful for browsing and manual review, but they are mostly derived
+from the canonical outputs above:
+
+- `result_layout.json`
+- `by_executable/`
+- `report.md`
+- `outputs/*.png`
+- `outputs/task_output_comparisons/`
+- `lineage_summary.csv`
+
+### Operational / debug / preflight artifacts
+
+These explain how a run was prepared or what happened while it was executing.
+They are valuable when something goes wrong, but they are not the first place
+to start for normal experiment analysis:
+
+- `build_record.json`
+- `prepare_record.json`
+- `bundle_readiness.json`
+- `preflight.json`
+- `live_status.json`
+- `live_view/`
+- `doctor_report.json`
 - `summary.csv` — one row per sample-task for quick comparison across runs
 - `report.md` — compact human-readable report
 - `by_executable/<exe>/<config_lineage_id>/tasks/<task_id>/runs/run_###/agent_raw_output.md` — raw final report text for a specific executable/config/task/run
@@ -185,8 +267,12 @@ That will:
 - `by_executable/<exe>/<config_lineage_id>/aggregate_summary.json` — config-level aggregate for one executable within a run or experiment
 - `by_executable/<exe>/<config_lineage_id>/tasks/<task_id>/aggregate_summary.json` — task-level aggregate across replicated runs within that executable/config folder
 - `comparison.json` — experiment-level baseline vs variant deltas
+- `partial_comparison.json` — incomplete or interrupted comparison groups kept separate from the main aggregate outputs
+- `live_view/live_view_url.txt` — local browser URL for the live progress monitor
+- `live_view/logs/<run_id>.log` — streamed child-run output captured for the live monitor
 - `lineage_summary.csv` — experiment-local view of the persistent configuration lineage groups touched by this sweep
 - `variant_summary.csv` — one row per configuration variant in a sweep
+- `partial_variant_summary.csv` — incomplete or interrupted configuration rows excluded from the main aggregate summary
 - `task_comparison.csv` — per-sample-task comparison table across variants
 - `outputs/task_timing_individual.csv` — one row per completed sample-task record with timing fields preserved
 - `outputs/task_timing_summary.csv` — timing aggregated by configuration and sample-task across replicate runs
@@ -201,6 +287,7 @@ That will:
 - `variable_significance_summary.csv` — summary table showing which changed-variable families produced statistically significant improvements or degradations
 - `significance_report.md` — human-readable explanation of the statistical test configuration and outcome table
 - `outputs/*.png` — generated comparison visuals
+- `outputs/partial/*.png` — clearly labeled visuals for incomplete or interrupted comparison groups
 - `outputs/task_output_comparisons/index.html` — browsable per-task comparison view of the actual agent outputs across configurations
 - `outputs/task_output_comparisons/task_variant_summary.csv` — per-task, per-configuration summary with score, success, cost, and representative-run info
 - `outputs/task_output_comparisons/all_rows.csv` — every captured sample-task output row across runs/replicates
@@ -220,6 +307,21 @@ If `bundle_readiness.json` shows missing required files such as `ghidra_analysis
 
 The new `by_executable/` view is intentionally additive. The original run-centric files under `samples/` remain the canonical machine-readable outputs used by the harness, while `by_executable/` is the inspection-oriented mirror that groups those artifacts by executable and stable configuration lineage id.
 
+## What New Contributors Usually Need First
+
+If you only need to answer “did this run work and how did it score?”, open:
+
+1. `summary.csv`
+2. `aggregate.json`
+3. the matching `samples/<sample_task_slug>/record.json`
+
+If you only need to answer “why did this run fail or behave strangely?”, open:
+
+1. `preflight.json`
+2. `bundle_readiness.json`
+3. `live_status.json`
+4. `live_view/logs/<run_id>.log` or `logs/agentToolBench_*`
+
 ## CSV Columns
 
 Single-run `summary.csv` includes:
@@ -236,6 +338,7 @@ Single-run `summary.csv` includes:
 - `query_variant`
 - `subagent_profile`
 - `worker_persona_profile`
+- `worker_role_prompt_mode`
 - `validator_review_level`
 - `model_profile`
 - `force_model`
@@ -274,6 +377,7 @@ Experiment outputs add:
 - task-tag/category timing summaries
 - persistent configuration lineage summaries
 - repetition counts and merged replicate aggregates
+- coverage metadata separating fully covered comparisons from partial/incomplete rows
 
 The default v6 sweep plans 21 configuration groups and runs each group 3 times unless `--repetitions` overrides the config default.
 
@@ -308,7 +412,7 @@ Bundle integrity now distinguishes between:
 - missing required files
 - present but stale bundles
 
-The bundle freshness check is based on the current binary identity plus the current Ghidra headless export script/preparer version. Prompt-only changes, including worker persona prompt overlays, do not invalidate bundles.
+The bundle freshness check is based on the current binary identity plus the current Ghidra headless export script/preparer version. Prompt-only changes, including worker persona overlays or worker role prompt mode changes, do not invalidate bundles.
 
 Statistical significance now uses a two-sided permutation test over replicate-level score series. The default interpretation target is 95% confidence, which corresponds to `p <= 0.05`, not `p >= 0.95`. When repetitions are too small to support a credible test, the significance rows are still written but marked `insufficient_repetitions`.
 

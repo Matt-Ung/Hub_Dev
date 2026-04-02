@@ -90,7 +90,14 @@ BINWALK_OUTPUT_DIR=
 
 # Base YARA corpus directory used for scanning foundation rules.
 # Generated YARA rules are written to the generated-artifact YARA directory above.
-YARA_RULES_DIR=
+YARA_RULES_DIR=./third_party/signature-base
+
+# Base capa rule and signature directories.
+# `CAPA_SIGS_DIR` should point at the nested `sigs/` directory.
+# This repo accepts either `third_party/capa-sigs/sigs` or
+# `third_party/capa-sigs/sigs`; the first matches the current local layout.
+CAPA_RULES_DIR=./third_party/capa-rules
+CAPA_SIGS_DIR=./third_party/capa-sigs/sigs
 
 # Alternate-model MCP defaults.
 # Provider options:
@@ -128,6 +135,13 @@ DEEP_WORKER_PERSONA_PROFILE=default
 # Upper bound when host-side worker parallelism is enabled.
 # Higher values can reduce wall-clock time but may increase token burn and stress MCP backends.
 MAX_PARALLEL_WORKERS=2
+
+# Host-parallel workers for these archetypes run one-at-a-time even when the
+# worker stage is otherwise parallel. Useful for roles that still hit
+# task-scope teardown bugs under overlapping `agent.run(...)` calls. This is a
+# runtime-safety mitigation, not a semantic workflow requirement. Remove an
+# archetype only after representative runs complete cleanly with this list empty.
+SERIAL_HOST_WORKER_ARCHETYPES=ghidra_analyst
 
 # How much recent role conversation history to keep.
 # Higher = more context retention, but more tokens.

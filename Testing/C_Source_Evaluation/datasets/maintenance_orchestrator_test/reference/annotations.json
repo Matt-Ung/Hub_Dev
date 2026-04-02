@@ -1,0 +1,105 @@
+{
+  "program_id": "maintenance_orchestrator_test",
+  "reference_status": "reviewed_concrete_anchor_v1",
+  "corpus": "experimental",
+  "gold_facts": [
+    "The snapshot dimensions are 12 columns by 8 rows",
+    "NOISE_LABELS includes wipe_restore_points, schedule_hidden_boot_task, export_credential_cache, archive_domain_token, and disable_recovery_console",
+    "query_recovery_slot uses a volatile gate and evaluates false at runtime, so prime_recovery_notices does not execute",
+    "main prints marker:maintenance_snapshot before returning",
+    "unlock_quarantine_schedule XOR-decodes eight 4-byte SnapshotOp records with key 0x5A",
+    "install_boot_autorun, wipe_shadow_catalog, stage_domain_cache, and queue_remote_archive actually manipulate the local 12x8 cell grid",
+    "export_credential_sheet computes checksum, nonzero count, max value, and row sums over the rendered grid",
+    "ship_archive_to_control writes maintenance_snapshot_report.txt locally, while audit_quarantine_manifest and prime_recovery_notices only preserve threatening labels as inert noise or dead-branch decoys",
+    "Recover maintenance_snapshot_report.txt as the real local output path",
+    "Identify the live opcodes 0x11, 0x22, 0x33, and 0x44 as the ones present in the decoded script",
+    "Call out strings such as wipe_restore_points and schedule_hidden_boot_task as misleading labels rather than evidence of executed malicious behavior",
+    "Separate the dormant 0x90/0x91/0x92 handler family and the query_recovery_slot branch from the live snapshot-rendering path"
+  ],
+  "key_functions": [
+    {
+      "name": "clamp_cell_value",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "install_boot_autorun",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "wipe_shadow_catalog",
+      "role": "output or logging"
+    },
+    {
+      "name": "stage_domain_cache",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "queue_remote_archive",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "disable_recovery_checkpoints",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "export_credential_cache",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "schedule_reboot_persistence",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "audit_quarantine_manifest",
+      "role": "anti-analysis or debug-related"
+    },
+    {
+      "name": "recover_notice_block",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "query_recovery_slot",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "prime_recovery_notices",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "unlock_quarantine_schedule",
+      "role": "anti-analysis or debug-related"
+    },
+    {
+      "name": "run_maintenance_cycle",
+      "role": "main execution or dispatch routine"
+    },
+    {
+      "name": "export_credential_sheet",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "ship_archive_to_control",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "main",
+      "role": "entry point and orchestration"
+    }
+  ],
+  "inputs": [
+    "standard input"
+  ],
+  "outputs": [
+    "stdout status or diagnostic messages",
+    "process exit status"
+  ],
+  "side_effects": [
+    "writes markers or diagnostics to stdout",
+    "decodes embedded or obfuscated data in memory"
+  ],
+  "bugs_or_risks": [],
+  "related_binary_samples": [
+    "maintenance_orchestrator_test.exe",
+    "maintenance_orchestrator_test_stripped.exe"
+  ]
+}

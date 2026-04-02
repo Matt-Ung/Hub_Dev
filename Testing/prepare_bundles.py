@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+File: prepare_bundles.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Build binaries if needed and prepare analysis bundles for a corpus.
+
+Summary:
+  This script packages the maintained bundle-preparation workflow behind one
+  CLI entry point. It optionally rebuilds the selected corpus, prepares the
+  artifact-backed analysis bundles consumed by the runtime, and writes the
+  readiness records later used by preflight checks and evaluation runs.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -12,6 +26,20 @@ from harness.samples import get_corpus_config, list_sample_binaries, load_sample
 
 
 def main() -> None:
+    """
+    Function: main
+    Inputs:
+      - None directly. Command-line flags choose the corpus, optional sample
+        subset, build behavior, and bundle-preparation tool settings.
+    Description:
+      Build the requested corpus when needed, prepare bundle artifacts for the
+      selected samples, and write machine-readable preparation records.
+    Outputs:
+      Returns nothing. Prints a JSON summary describing the preparation run.
+    Side Effects:
+      May rebuild binaries, run Ghidra and CLI analysis tools, create bundle
+      directories, and write preparation artifacts under `Testing/bundles`.
+    """
     parser = argparse.ArgumentParser(description="Build sample binaries if needed and prepare artifact bundles for the binary testing harness.")
     parser.add_argument("--corpus", choices=["prototype", "experimental"], default="experimental")
     parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict to")
@@ -21,7 +49,7 @@ def main() -> None:
     parser.add_argument("--keep-project", action="store_true", help="Preserve temporary Ghidra headless projects")
     parser.add_argument("--ghidra-install-dir", default="", help="Optional GHIDRA_INSTALL_DIR override")
     parser.add_argument("--ghidra-headless", default="", help="Optional analyzeHeadless override")
-    parser.add_argument("--timeout-sec", type=int, default=900)
+    parser.add_argument("--timeout-sec", type=int, default=0, help="Optional subprocess timeout in seconds; 0 disables it")
     args = parser.parse_args()
 
     config = get_corpus_config(args.corpus)
@@ -30,6 +58,8 @@ def main() -> None:
     output_root = ensure_dir(BUNDLE_ROOT / args.corpus)
     prep_root = ensure_dir(output_root / "_prepare_runs" / prep_id)
 
+    # The build step is optional so bundle-prep can be rerun cheaply against
+    # already-built binaries during debugging.
     build_record = {"skipped": True}
     if not args.skip_build:
         build_record = build_corpus(
@@ -43,6 +73,9 @@ def main() -> None:
     if not sample_paths:
         raise SystemExit(f"No built sample binaries found for corpus={args.corpus} under {config.build_root}")
 
+    # Bundle preparation is the main payload of this command. The resulting
+    # directory tree is what later analysis runs mount through the artifact MCP
+    # manifest instead of scanning raw binaries on demand.
     prepare_record = prepare_corpus_bundles(
         args.corpus,
         sample_paths,
