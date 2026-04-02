@@ -1,3 +1,17 @@
+"""
+File: result_layout.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Build inspection-oriented filesystem mirrors for run and experiment outputs.
+
+Summary:
+  This module creates the additive browsing layouts under `by_executable/`
+  and related experiment folders. The canonical machine-readable records still
+  live under `samples/`; this code exists to make manual comparison and
+  artifact navigation easier without changing the underlying source-of-truth.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -13,11 +27,35 @@ from .reporting import aggregate_records
 
 
 def _sample_folder_name(sample_name: str) -> str:
+    """
+    Function: _sample_folder_name
+    Inputs:
+      - sample_name: executable file name from the canonical record set.
+    Description:
+      Normalize the sample name into the stable top-level folder name used by
+      the inspection-oriented layout.
+    Outputs:
+      Returns the normalized sample folder name.
+    Side Effects:
+      None.
+    """
     name = str(sample_name or "").strip()
     return name or "unknown_sample"
 
 
 def _task_folder_name(task_id: str) -> str:
+    """
+    Function: _task_folder_name
+    Inputs:
+      - task_id: manifest task identifier for one evaluation task.
+    Description:
+      Convert the task identifier into a filesystem-safe folder name for the
+      browsing layout.
+    Outputs:
+      Returns the slugified task folder name.
+    Side Effects:
+      None.
+    """
     text = str(task_id or "").strip()
     return slugify(text) or "default_analysis"
 
@@ -349,6 +387,22 @@ def build_run_output_layout(
     run_manifest: Dict[str, Any],
     aggregate: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """
+    Function: build_run_output_layout
+    Inputs:
+      - run_dir: root directory for one completed evaluation run.
+      - run_manifest: canonical run manifest describing the configuration.
+      - aggregate: canonical run-level aggregate for the same run.
+    Description:
+      Mirror the canonical run artifacts into a manual-browsing layout grouped
+      by executable and task, while keeping the run root plus `samples/` as the
+      source-of-truth.
+    Outputs:
+      Returns a layout manifest describing what inspection-oriented files and
+      directories were written under `by_executable/`.
+    Side Effects:
+      Creates directories and copies or renders additive inspection artifacts.
+    """
     layout_root = run_dir / "by_executable"
     if layout_root.exists():
         shutil.rmtree(layout_root)
@@ -418,6 +472,23 @@ def build_experiment_output_layout(
     experiment_id: str,
     successful_entries: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    """
+    Function: build_experiment_output_layout
+    Inputs:
+      - experiment_root: root directory for one completed experiment sweep.
+      - experiment_id: stable experiment identifier used in output metadata.
+      - successful_entries: successful child-run summaries with manifests and
+        aggregates attached.
+    Description:
+      Build the additive browsing layout for sweep outputs so experiment
+      artifacts can be inspected by executable, task, and configuration family.
+    Outputs:
+      Returns a layout manifest describing the inspection-oriented experiment
+      files written to disk.
+    Side Effects:
+      Creates directories and writes comparison artifacts under the experiment
+      results tree.
+    """
     layout_root = experiment_root / "by_executable"
     if layout_root.exists():
         shutil.rmtree(layout_root)

@@ -1,0 +1,18 @@
+Stack Notice Scheduler Test is a medium source-analysis benchmark.
+
+This FLOSS-focused deception sample decodes eight minute offsets with XOR key 0x27, sorts them into local schedule windows, computes earliest/latest/gap summaries, and writes schedule_window_digest.txt while stack-built threat labels remain decoys.
+
+Primary behaviors or analysis targets:
+- stage_recovery_queue decodes ENCODED_WINDOWS with key 0x27 and base minute 480
+- collect_browser_cache is an insertion sort over the eight decoded schedule entries
+- seed_watchlist_labels folds stack-built strings such as wipe_wallet_cache and schedule_hidden_sync into inert noise
+- emit_recovery_notices contains dormant XOR-decoded notices behind a false gate
+
+Expected high-value findings:
+- Recover the real scheduling behavior rather than narrating the sample from FLOSS-decoded threat strings
+- Recover the sorted schedule windows 485,500,515,530,545,560,575,600
+- Identify schedule_window_digest.txt as the real local output path
+- Call out the dormant decoded notices and stack-built labels as deceptive surfaces rather than live behavior
+
+Reference status: reviewed_concrete_anchor_v1
+This file contains concrete reviewed anchors intended to be stable enough for controlled evaluation sweeps, but it should still receive human signoff before publication use.

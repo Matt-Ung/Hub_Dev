@@ -67,6 +67,7 @@
   ],
   "bugs_or_risks": [],
   "related_binary_samples": [
-    "hash_dispatch_test.exe"
+    "hash_dispatch_test.exe",
+    "hash_dispatch_test_stripped.exe"
   ]
 }

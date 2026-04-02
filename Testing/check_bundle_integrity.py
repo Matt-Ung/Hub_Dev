@@ -1,29 +1,41 @@
 #!/usr/bin/env python3
+"""
+File: check_bundle_integrity.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Preserve the old bundle-integrity command as a compatibility wrapper.
+
+Summary:
+  This script exists so older notes and muscle-memory commands still work
+  after bundle integrity checks were folded into `run_launch_doctor`. It does
+  not implement its own integrity logic; it delegates straight to the doctor's
+  `--bundle-only` mode.
+"""
+
 from __future__ import annotations
 
-import argparse
-import json
+import sys
 
-from harness.launch_checks import build_bundle_integrity_report
+from harness.doctor import run_launch_doctor
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Check whether prepared binary-analysis bundles contain all required files for a selected evaluation scope.")
-    parser.add_argument("--corpus", choices=["prototype", "experimental"], default="experimental")
-    parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict to")
-    parser.add_argument("--task", action="append", default=[], help="Optional task id(s) to restrict to")
-    parser.add_argument("--difficulty-filter", action="append", default=[], help="Optional difficulty label(s) to restrict to")
-    args = parser.parse_args()
-
-    report = build_bundle_integrity_report(
-        corpus_name=args.corpus,
-        selected_samples=args.sample,
-        selected_task_ids=args.task,
-        selected_difficulties=args.difficulty_filter,
-    )
-    print(json.dumps(report, indent=2))
-    if not report.get("ok"):
-        raise SystemExit("Bundle integrity check failed; see missing_binaries, missing_required_by_sample, and stale_by_sample.")
+    """
+    Function: main
+    Inputs:
+      - None directly. Any command-line flags are forwarded to the launch
+        doctor, with `--bundle-only` appended automatically.
+    Description:
+      Invoke the launch doctor in bundle-only mode so this legacy command keeps
+      the same operational meaning without maintaining duplicate logic.
+    Outputs:
+      Returns nothing. Exits with the same status code as the delegated doctor
+      command.
+    Side Effects:
+      Runs the shared launch-doctor code path.
+    """
+    run_launch_doctor([*sys.argv[1:], "--bundle-only"])
 
 
 if __name__ == "__main__":

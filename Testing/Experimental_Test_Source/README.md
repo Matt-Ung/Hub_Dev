@@ -15,6 +15,19 @@ The benchmark definition is split across:
 
 See [SAMPLE_INDEX.md](SAMPLE_INDEX.md) for the current sample matrix and coverage notes.
 
+One maintained sample now explicitly targets deceptive analysis surfaces:
+threatening names, strings, and dormant handlers are allowed, but the real
+runtime behavior must remain benign and tightly scoped. When editing or adding
+similar samples, keep the decoy cues inert and make the true behavior
+recoverable from executed code flow.
+
+When adding harder discrimination cases, prefer explicit variant additions over
+global build-rule changes:
+
+- add stripped hard variants for symbol-light evaluation
+- vary leakage profiles across samples instead of making every sample equally opaque
+- keep at least some medium samples analyzable without turning the tier into a second hard bucket
+
 ## Build
 
 ```bash

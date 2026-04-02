@@ -1,0 +1,18 @@
+Maintenance Orchestrator Test is a hard source-analysis benchmark.
+
+This deceptive-surface sample decodes a fixed XOR-protected operation script, renders a 12x8 in-memory snapshot, computes a checksum and row sums, and writes a local maintenance report while surrounding that flow with threatening but inert labels and decoy handlers.
+
+Primary behaviors or analysis targets:
+- unlock_quarantine_schedule XOR-decodes eight 4-byte SnapshotOp records with key 0x5A
+- install_boot_autorun, wipe_shadow_catalog, stage_domain_cache, and queue_remote_archive actually manipulate the local 12x8 cell grid
+- export_credential_sheet computes checksum, nonzero count, max value, and row sums over the rendered grid
+- ship_archive_to_control writes maintenance_snapshot_report.txt locally, while audit_quarantine_manifest and prime_recovery_notices only preserve threatening labels as inert noise or dead-branch decoys
+
+Expected high-value findings:
+- Recover maintenance_snapshot_report.txt as the real local output path
+- Identify the live opcodes 0x11, 0x22, 0x33, and 0x44 as the ones present in the decoded script
+- Call out strings such as wipe_restore_points and schedule_hidden_boot_task as misleading labels rather than evidence of executed malicious behavior
+- Separate the dormant 0x90/0x91/0x92 handler family and the query_recovery_slot branch from the live snapshot-rendering path
+
+Reference status: reviewed_concrete_anchor_v1
+This file contains concrete reviewed anchors intended to be stable enough for controlled evaluation sweeps, but it should still receive human signoff before publication use.

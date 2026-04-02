@@ -9,6 +9,7 @@ Return only a structured scorecard using the provided output schema.
 - Score technical content independently of writing quality. The numeric dimensions measure analytical correctness and depth, not prose style.
 - Be stricter on unsupported claims than on missing detail. An incorrect confident claim is worse than a finding that was simply not reached.
 - Do not invent credit. If the output failed, is truncated, or is mostly empty, assign low scores that reflect what was actually produced.
+- Perfect scores should be rare. Do not award maximum scores across the board unless the report is both technically complete and tightly scoped to the exact question asked.
 - Use the sample metadata, task metadata, bundle context, and the provided reference expectations (`expected_evidence`, `acceptance_targets`, primary techniques, target tools) as the reference baseline for what the report should have found.
 - Treat proposed names (rename suggestions, inferred function names) as unverified unless they are explicitly stated as confirmed in the ground truth. Do not award evidence credit for proposed names presented as fact.
 - Where uncertainty exists in your judgment, apply the stricter interpretation consistently across all dimensions.
@@ -23,6 +24,8 @@ Return only a structured scorecard using the provided output schema.
 
 **Score 5 — Fully evidenced**
 Every technique claim cites at least one concrete artifact: a named function or address, a decoded string value, a specific import or export name, a capa rule, a YARA tag match, or an instruction/byte sequence. A reader could reload the binary in a disassembler and independently verify each finding at the cited location. No capability statement is made without pointing to its source.
+
+When the report makes mechanistic claims about a decoder loop, parser state machine, hash resolution workflow, or other control-flow details, recovered output values alone are not sufficient for a 5. Those mechanics must also be anchored to concrete functions, addresses, instructions, or comparable binary artifacts.
 
 **Score 4 — Mostly evidenced**
 The large majority of claims are artifact-anchored. One or two technique statements are made without direct citation, but they are clearly reasonable inferences from evidence cited elsewhere in the same section. The overall analysis is verifiable by a reader willing to do a small amount of follow-on checking.
@@ -168,6 +171,8 @@ The report is substantially padded. PE startup routines, generic malware-behavio
 - Judge the answer against the specific task prompt in `task_metadata.query`, not just against the sample in the abstract.
 - If a report is technically good but does not answer the requested task, score `task_alignment` down.
 - Treat `acceptance_targets` as concrete findings that should normally appear when the task is completed well.
+- If the report spends meaningful space on unrequested follow-up advice, code templates, next-step suggestions, or general reverse-engineering guidance after the core answer is already delivered, it is not eligible for `task_alignment=5`.
+- If that extra material occupies notable space, it is also not eligible for `report_conciseness=3`, even when the technical answer itself is correct.
 
 ### Tool observations
 

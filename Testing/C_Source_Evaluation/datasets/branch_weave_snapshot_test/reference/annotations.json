@@ -1,0 +1,109 @@
+{
+  "program_id": "branch_weave_snapshot_test",
+  "reference_status": "reviewed_concrete_anchor_v1",
+  "corpus": "experimental",
+  "gold_facts": [
+    "GRID_W and GRID_H are both 8",
+    "The runtime-decoded report path is bw_grid_report.txt",
+    "The dead handler opcodes are 0x91, 0xA2, and 0xB3",
+    "main prints marker:branch_weave before returning",
+    "decode_branch_program XOR-decodes ten 4-byte operations with key 0x4D",
+    "flush_ticket_vault, ship_shadow_bundle, drop_recovery_mesh, and erase_domain_secrets are misleadingly named live handlers that mutate the local 8x8 grid",
+    "write_grid_report writes the runtime-decoded bw_grid_report.txt path using terse fields such as d=, o=, c=, and g:",
+    "emit_false_notices and the 0x91 / 0xA2 / 0xB3 handler family preserve decoy strings and dead behavior for analysis without affecting the live grid path",
+    "Recover the 8x8 local-grid behavior and short report-writing path even though the sample has minimal explanatory strings",
+    "Identify the live opcodes 0x11, 0x22, 0x33, and 0x44 as the actual program family",
+    "Call out strings such as flush_ticket_vault and ship_shadow_bundle as deceptive labels rather than destructive behavior",
+    "Separate the dormant decoded notices and dead handler family from the live execution path"
+  ],
+  "key_functions": [
+    {
+      "name": "clamp_shade",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "flush_ticket_vault",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "ship_shadow_bundle",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "drop_recovery_mesh",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "erase_domain_secrets",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "disable_boot_catalog",
+      "role": "output or logging"
+    },
+    {
+      "name": "export_ticket_queue",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "seed_reboot_branch",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "fold_false_labels",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "decode_report_path",
+      "role": "decode or deobfuscation helper"
+    },
+    {
+      "name": "recover_notice",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "false_notice_gate",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "emit_false_notices",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "decode_branch_program",
+      "role": "decode or deobfuscation helper"
+    },
+    {
+      "name": "run_branch_program",
+      "role": "main execution or dispatch routine"
+    },
+    {
+      "name": "summarize_grid",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "write_grid_report",
+      "role": "autodetected helper function"
+    },
+    {
+      "name": "main",
+      "role": "entry point and orchestration"
+    }
+  ],
+  "inputs": [
+    "standard input"
+  ],
+  "outputs": [
+    "stdout status or diagnostic messages",
+    "process exit status"
+  ],
+  "side_effects": [
+    "writes markers or diagnostics to stdout",
+    "decodes embedded or obfuscated data in memory"
+  ],
+  "bugs_or_risks": [],
+  "related_binary_samples": [
+    "branch_weave_snapshot_test.exe",
+    "branch_weave_snapshot_test_stripped.exe"
+  ]
+}

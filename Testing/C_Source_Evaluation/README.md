@@ -1,6 +1,14 @@
 # C Source Evaluation Index
 
-The source-code evaluation framework has been merged into the main testing plan.
+Status:
+
+- support-only
+- no maintained runner
+- not part of the default binary benchmark workflow
+
+The source-code evaluation framework has been folded into the broader testing
+documentation, but this directory is currently a dataset/template staging area
+rather than an active execution path.
 
 Canonical documentation:
 
@@ -15,7 +23,14 @@ Source-eval support files remain here:
 - `templates/judge_scorecard.example.json`
 - `templates/run_manifest.example.json`
 
-Use this directory for source-code benchmark datasets, prompt templates, and machine-readable scorecards, but treat `Testing/TESTING_PLAN.md` as the authoritative evaluation spec.
+Use this directory for source-code benchmark datasets, prompt templates, and
+machine-readable scorecards, but do not treat it as a parallel harness to the
+binary benchmark. The authoritative automated path is still:
+
+- `Testing/run_evaluation.py`
+- `Testing/run_experiment_sweep.py`
+
+Treat `Testing/TESTING_PLAN.md` as the authoritative evaluation spec.
 
 ## Dataset Generation
 

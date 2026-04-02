@@ -31,9 +31,9 @@ This is the benchmark corpus used for sweeps.
 
 Current shape:
 
-- `8` source programs
-- `9` executable variants
-- `13` manifest-defined sample-task pairs
+- `11` source programs
+- `15` executable variants
+- `24` manifest-defined sample-task pairs
 
 The atomic evaluation unit is a **sample-task pair**, not just a sample.
 
@@ -121,6 +121,19 @@ Current default size:
 - `21` configuration groups
 - `3` repetitions per group by default
 
+Recommended operational presets for normal experiment work:
+
+- `sanity_core_slice_r1`
+  - smallest graph-producing maintained sweep
+- `budget_best_value_r1`
+  - one-repetition version of the recommended budget study
+- `budget_best_value_r2`
+  - recommended under-budget comparison study
+- `coverage_broad_r1_60usd`
+  - one-repetition broad-coverage experiment near the 60 USD heuristic band
+- `full_suite_default_r1`
+  - broad one-repetition sweep after the smaller presets are healthy
+
 Check the real plan before launching:
 
 ```bash
@@ -136,6 +149,12 @@ The selected task set is controlled by:
 - `--sample`
 - `--task`
 - `--difficulty-filter`
+
+Important nuance:
+
+- `--task` filters task IDs globally across the selected samples.
+- That means repeated `--sample` plus repeated `--task` is safest when the chosen task IDs are unique across those samples.
+- The recommended `budget_best_value_r2` preset is intentionally built from unique focused task IDs so its scope is unambiguous.
 
 Total work is:
 
@@ -285,6 +304,12 @@ make all-exes
 python Testing/prepare_bundles.py --corpus experimental
 python Testing/run_launch_doctor.py
 python Testing/run_launch_preset.py --preset paid_narrow_pilot --judge-model openai:gpt-4o-mini --preflight-only
+```
+
+If you only want to validate bundle freshness/completeness for a narrowed scope, use:
+
+```bash
+python Testing/run_launch_doctor.py --corpus experimental --bundle-only --show-bundle-details
 ```
 
 ### First Narrow Paid Run

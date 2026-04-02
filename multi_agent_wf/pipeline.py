@@ -1,3 +1,17 @@
+"""
+File: pipeline.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Execute the configured multi-agent workflow one stage at a time.
+
+Summary:
+  This module implements the runtime execution engine for the workflow system.
+  It coordinates stage transitions, parses planner and validator outputs,
+  schedules host-managed worker assignments, merges worker results, and
+  produces the final report returned to the app and testing harness.
+"""
+
 import asyncio
 from datetime import datetime
 import html
@@ -17,6 +31,7 @@ from .config import (
     MAX_VALIDATION_REPLAN_RETRIES,
     PLANNER_WORK_ITEMS_END,
     PLANNER_WORK_ITEMS_START,
+    SERIAL_HOST_WORKER_ARCHETYPES,
     VALIDATION_DECISION_END,
     VALIDATION_DECISION_START,
     YARA_RULE_PROPOSALS_END,
@@ -30,11 +45,14 @@ from .runtime import (
     MultiAgentRuntime,
     _ACTIVE_PIPELINE_STAGE,
     _ACTIVE_PIPELINE_STATE,
+    _enter_mcp_toolsets_async,
     _LIVE_TOOL_LOG_STATE,
     _direct_mcp_tool_call_sync,
     _find_mcp_server_by_marker,
     _parse_jsonish_tool_result,
+    _close_mcp_toolsets_async,
     build_host_worker_assignment_executor,
+    build_loop_local_host_worker_runtime,
     build_stage_prompt,
     expand_architecture_slots,
     expand_architecture_names,
@@ -2150,11 +2168,12 @@ async def _run_host_worker_assignment(
     active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
     active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage_name)
     try:
-        agent, deps, resolved_model = build_host_worker_assignment_executor(
+        agent, deps, resolved_model, executor_meta = build_host_worker_assignment_executor(
             runtime,
             stage_name=stage_name,
             slot_name=slot_name,
             archetype_name=archetype_name,
+            work_item_id=work_item_id,
             stage_model=stage_model,
         )
         deps.ask_user = _make_parent_input_callback(state, f"{stage_name}/{slot_name}/{work_item_id}")
@@ -2171,6 +2190,10 @@ async def _run_host_worker_assignment(
                     "archetype_name": archetype_name,
                     "model": str(resolved_model or ""),
                     "started_at": model_run_started_at,
+                    "isolated_backend": bool(executor_meta.get("isolated_backend")),
+                    "backend_root": str(executor_meta.get("backend_root") or ""),
+                    "context_manager_enabled": bool(executor_meta.get("context_manager_enabled")),
+                    "memory_dir": str(executor_meta.get("memory_dir") or ""),
                 }
             ],
         )
@@ -2231,6 +2254,7 @@ async def _run_host_worker_assignment(
             "duration_sec": duration_sec,
             "model_duration_sec": model_duration_sec,
             "status": "ok",
+            "executor_meta": dict(executor_meta or {}),
         }
     except Exception as e:
         duration_sec = time.perf_counter() - worker_t0
@@ -2278,6 +2302,7 @@ async def _run_host_worker_assignment(
             "model_duration_sec": duration_sec,
             "status": "failed",
             "error": f"{type(e).__name__}: {e}",
+            "executor_meta": dict(executor_meta or {}) if "executor_meta" in locals() else {},
         }
     finally:
         _ACTIVE_PIPELINE_STAGE.reset(active_stage_token)
@@ -2383,6 +2408,35 @@ def _record_auto_triage_run(
     )
 
 
+async def _run_host_parallel_assignments_async(
+    assignments: List[Dict[str, Any]],
+    *,
+    concurrency_limit: int,
+    assignment_runner: Any,
+    serial_archetypes: Tuple[str, ...],
+) -> Dict[int, Dict[str, Any]]:
+    semaphore = asyncio.Semaphore(concurrency_limit)
+    results_by_index_async: Dict[int, Dict[str, Any]] = {}
+    serial_gate_names = {str(name or "").strip().lower() for name in serial_archetypes if str(name or "").strip()}
+    archetype_gates = {name: asyncio.Semaphore(1) for name in serial_gate_names}
+
+    async def _run_one(assignment: Dict[str, Any]) -> Dict[str, Any]:
+        archetype_key = str(assignment.get("archetype_name") or "").strip().lower()
+        gate = archetype_gates.get(archetype_key)
+        if gate is not None:
+            async with gate:
+                async with semaphore:
+                    return await assignment_runner(assignment)
+        async with semaphore:
+            return await assignment_runner(assignment)
+
+    tasks = [asyncio.create_task(_run_one(assignment)) for assignment in assignments]
+    for task in asyncio.as_completed(tasks):
+        result = await task
+        results_by_index_async[int(result["index"])] = result
+    return results_by_index_async
+
+
 def _run_host_parallel_worker_stage(
     runtime: MultiAgentRuntime,
     stage: Any,
@@ -2390,12 +2444,32 @@ def _run_host_parallel_worker_stage(
     prior_stage_outputs: Dict[str, str],
     state: Dict[str, Any],
 ) -> str:
+    """
+    Function: _run_host_parallel_worker_stage
+    Inputs:
+      - runtime: fully built runtime object for the active pipeline.
+      - stage: stage runtime object for the worker stage being executed.
+      - user_text: original user request driving the run.
+      - prior_stage_outputs: text outputs emitted by earlier pipeline stages.
+      - state: mutable shared pipeline state for the current run.
+    Description:
+      Execute one worker stage by turning planner work items into host-managed
+      assignments, scheduling those assignments under the concurrency rules, and
+      merging the successful worker outputs back into one stage result.
+    Outputs:
+      Returns the merged worker-stage output text to feed into later stages.
+    Side Effects:
+      Updates shared pipeline state, appends status/tool history, records model
+      usage, and may raise when every assignment fails.
+    """
     _check_cancel_requested(state, location="before worker scheduling")
     planned_work_items = list(((state.get("shared_state") or {}).get("planned_work_items") or []))
     assignments = _plan_host_worker_assignments(planned_work_items, stage.architecture)
     if not assignments:
         raise RuntimeError("No host-manageable worker assignments were produced from planned work items.")
 
+    # Cap host-level concurrency so the scheduler respects the configured
+    # process-wide limit while still adapting to smaller assignment sets.
     concurrency_limit = max(1, min(MAX_PARALLEL_WORKERS, len(assignments)))
     append_status(
         state,
@@ -2404,15 +2478,44 @@ def _run_host_parallel_worker_stage(
             f"({len(assignments)} assignments, max_parallel={concurrency_limit})"
         ),
     )
+    serial_archetypes_in_stage = sorted(
+        {
+            str(assignment.get("archetype_name") or "").strip()
+            for assignment in assignments
+            if str(assignment.get("archetype_name") or "").strip().lower() in SERIAL_HOST_WORKER_ARCHETYPES
+        }
+    )
+    if serial_archetypes_in_stage:
+        append_status(
+            state,
+            (
+                "Stage "
+                f"{stage.name} serializing host-worker agent runs for archetype(s): "
+                f"{', '.join(serial_archetypes_in_stage)}"
+            ),
+        )
+    loop_local_runtime = build_loop_local_host_worker_runtime(runtime)
 
     async def _run_all_assignments() -> Dict[int, Dict[str, Any]]:
-        semaphore = asyncio.Semaphore(concurrency_limit)
-        results_by_index_async: Dict[int, Dict[str, Any]] = {}
-
-        async def _run_one(assignment: Dict[str, Any]) -> Dict[str, Any]:
-            async with semaphore:
-                return await _run_host_worker_assignment(
-                    runtime,
+        try:
+            preentered_tool_ids = await _enter_mcp_toolsets_async(
+                loop_local_runtime.static_tools,
+                loop_local_runtime.dynamic_tools,
+            )
+            if preentered_tool_ids:
+                append_status(
+                    state,
+                    (
+                        f"Stage {stage.name} pre-entered loop-local MCP fleet "
+                        f"({len(preentered_tool_ids)} server(s)) for host workers"
+                    ),
+                )
+            results_by_index_async = await _run_host_parallel_assignments_async(
+                assignments,
+                concurrency_limit=concurrency_limit,
+                serial_archetypes=SERIAL_HOST_WORKER_ARCHETYPES,
+                assignment_runner=lambda assignment: _run_host_worker_assignment(
+                    loop_local_runtime,
                     stage.name,
                     stage.stage_kind,
                     state,
@@ -2420,93 +2523,131 @@ def _run_host_parallel_worker_stage(
                     prior_stage_outputs,
                     assignment,
                     stage_model=str(stage.model or ""),
-                )
-
-        tasks = [asyncio.create_task(_run_one(assignment)) for assignment in assignments]
-        for task in asyncio.as_completed(tasks):
-            _check_cancel_requested(state, location="during worker stage")
-            result = await task
-            results_by_index_async[int(result["index"])] = result
-            _record_model_usage(
-                state,
-                phase="host_worker_assignment",
-                stage_name=stage.name,
-                model=str(result.get("model") or ""),
-                usage=result.get("usage") or {},
-                slot_name=str(result.get("slot_name") or ""),
-                work_item_id=str(result.get("work_item_id") or ""),
+                ),
             )
-            history = list(result.get("history") or [])
-            set_role_history(state, str(result.get("role_key") or ""), history)
-            append_tool_log_delta(state, stage.name, [], history)
-            update_validated_sample_path_from_messages(
-                state,
-                history,
-                f"tool_return:{stage.name}:{result.get('slot_name')}",
-            )
-            if result.get("status") == "ok":
-                _set_planned_work_item_status(
+            for result in [results_by_index_async[idx] for idx in sorted(results_by_index_async)]:
+                _check_cancel_requested(state, location="during worker stage")
+                _record_model_usage(
                     state,
-                    str(result.get("work_item_id") or ""),
-                    "completed",
+                    phase="host_worker_assignment",
+                    stage_name=stage.name,
+                    model=str(result.get("model") or ""),
+                    usage=result.get("usage") or {},
                     slot_name=str(result.get("slot_name") or ""),
-                    finished_at_epoch=time.time(),
-                    duration_sec=float(result.get("duration_sec") or 0.0),
-                    error="",
+                    work_item_id=str(result.get("work_item_id") or ""),
                 )
-                update_validated_sample_path(
+                history = list(result.get("history") or [])
+                set_role_history(state, str(result.get("role_key") or ""), history)
+                append_tool_log_delta(state, stage.name, [], history)
+                update_validated_sample_path_from_messages(
                     state,
-                    str(result.get("output_text") or ""),
-                    f"stage:{stage.name}:{result.get('slot_name')}",
-                    explicit_only=True,
+                    history,
+                    f"tool_return:{stage.name}:{result.get('slot_name')}",
                 )
-                append_status(
-                    state,
-                    (
-                        f"Worker assignment finished: {result.get('work_item_id')} -> "
-                        f"{result.get('slot_name')} in {float(result.get('duration_sec') or 0.0):.1f}s"
-                    ),
-                )
-            else:
-                _set_planned_work_item_status(
-                    state,
-                    str(result.get("work_item_id") or ""),
-                    "blocked",
-                    slot_name=str(result.get("slot_name") or ""),
-                    finished_at_epoch=time.time(),
-                    duration_sec=float(result.get("duration_sec") or 0.0),
-                    error=str(result.get("error") or ""),
-                )
-                _set_pipeline_stage_status(
-                    state,
-                    stage.name,
-                    stage_kind=stage.stage_kind,
-                    subagents=list(stage.subagent_names),
-                    status="running",
-                    error=(
-                        f"Latest assignment failure: {result.get('work_item_id')} -> "
-                        f"{result.get('slot_name')} ({result.get('error')})"
-                    ),
-                )
-                append_status(
-                    state,
-                    (
-                        f"Worker assignment failed: {result.get('work_item_id')} -> "
-                        f"{result.get('slot_name')} after {float(result.get('duration_sec') or 0.0):.1f}s "
-                        f"({result.get('error')})"
-                    ),
-                )
-        return results_by_index_async
+                if result.get("status") == "ok":
+                    _set_planned_work_item_status(
+                        state,
+                        str(result.get("work_item_id") or ""),
+                        "completed",
+                        slot_name=str(result.get("slot_name") or ""),
+                        finished_at_epoch=time.time(),
+                        duration_sec=float(result.get("duration_sec") or 0.0),
+                        error="",
+                    )
+                    update_validated_sample_path(
+                        state,
+                        str(result.get("output_text") or ""),
+                        f"stage:{stage.name}:{result.get('slot_name')}",
+                        explicit_only=True,
+                    )
+                    append_status(
+                        state,
+                        (
+                            f"Worker assignment finished: {result.get('work_item_id')} -> "
+                            f"{result.get('slot_name')} in {float(result.get('duration_sec') or 0.0):.1f}s"
+                        ),
+                    )
+                else:
+                    _set_planned_work_item_status(
+                        state,
+                        str(result.get("work_item_id") or ""),
+                        "blocked",
+                        slot_name=str(result.get("slot_name") or ""),
+                        finished_at_epoch=time.time(),
+                        duration_sec=float(result.get("duration_sec") or 0.0),
+                        error=str(result.get("error") or ""),
+                    )
+                    _set_pipeline_stage_status(
+                        state,
+                        stage.name,
+                        stage_kind=stage.stage_kind,
+                        subagents=list(stage.subagent_names),
+                        status="running",
+                        error=(
+                            f"Latest assignment failure: {result.get('work_item_id')} -> "
+                            f"{result.get('slot_name')} ({result.get('error')})"
+                        ),
+                    )
+                    append_status(
+                        state,
+                        (
+                            f"Worker assignment failed: {result.get('work_item_id')} -> "
+                            f"{result.get('slot_name')} after {float(result.get('duration_sec') or 0.0):.1f}s "
+                            f"({result.get('error')})"
+                        ),
+                    )
+            return results_by_index_async
+        finally:
+            await _close_mcp_toolsets_async(loop_local_runtime.static_tools, loop_local_runtime.dynamic_tools)
 
     results_by_index = asyncio.run(_run_all_assignments())
 
     ordered_results = [results_by_index[idx] for idx in sorted(results_by_index)]
+    failed_results = [item for item in ordered_results if item.get("status") != "ok"]
+    # Persist a compact summary even when some assignments fail so the harness
+    # can classify the run accurately after the pipeline returns.
+    shared = state.setdefault("shared_state", _new_shared_state())
+    shared["host_worker_assignment_summary"] = {
+        "stage_name": stage.name,
+        "concurrency_limit": concurrency_limit,
+        "serialized_archetypes": serial_archetypes_in_stage,
+        "total_assignments": len(ordered_results),
+        "completed_assignments": len(ordered_results) - len(failed_results),
+        "failed_assignments": len(failed_results),
+        "failed_work_items": [
+            {
+                "work_item_id": str(item.get("work_item_id") or ""),
+                "slot_name": str(item.get("slot_name") or ""),
+                "archetype_name": str(item.get("archetype_name") or ""),
+                "error": str(item.get("error") or ""),
+            }
+            for item in failed_results
+        ],
+    }
     if not any(item.get("status") == "ok" for item in ordered_results):
         raise RuntimeError("All host-managed worker assignments failed.")
     return _merge_host_worker_results(ordered_results, concurrency_limit)
 
 
 def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Dict[str, Any]) -> str:
+    """
+    Function: run_deepagent_pipeline
+    Inputs:
+      - runtime: fully constructed runtime containing the selected pipeline and
+        worker architecture.
+      - user_text: user request or evaluation prompt for the current run.
+      - state: mutable shared state dictionary that accumulates progress,
+        histories, validation state, and final outputs across stages.
+    Description:
+      Execute the configured workflow from the first stage through the reporter,
+      including planner parsing, validator retry loops, worker execution, and
+      final output normalization.
+    Outputs:
+      Returns the final report text emitted by the pipeline.
+    Side Effects:
+      Mutates the shared state extensively, appends UI/status history, performs
+      MCP tool calls and model calls, and records final pipeline metadata.
+    """
     append_status(
         state,
         (
@@ -2561,6 +2702,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["model_usage_totals"] = _empty_usage_snapshot()
     shared["model_usage_by_stage"] = {}
     shared["model_usage_events"] = []
+    shared["host_worker_assignment_summary"] = {}
     shared["host_parallel_worker_execution"] = HOST_PARALLEL_WORKER_EXECUTION
     shared["max_parallel_workers"] = MAX_PARALLEL_WORKERS
     state["pending_parent_input"] = _empty_parent_input()
@@ -2768,6 +2910,15 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
             "output_text": stage_output,
             "subagents": list(stage.subagent_names),
         }
+        worker_failure_count = 0
+        worker_stage_summary = {}
+        if stage_meta["supports_parallel_assignments"] and HOST_PARALLEL_WORKER_EXECUTION:
+            worker_stage_summary = dict(((state.get("shared_state") or {}).get("host_worker_assignment_summary") or {}))
+            if str(worker_stage_summary.get("stage_name") or "") == stage.name:
+                worker_failure_count = int(worker_stage_summary.get("failed_assignments") or 0)
+        if worker_failure_count > 0:
+            stage_entry["status"] = "failed"
+            stage_entry["worker_assignment_summary"] = worker_stage_summary
         state["shared_state"]["pipeline_stage_outputs"].append(
             {
                 "stage_name": stage.name,
@@ -2781,15 +2932,34 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         state["shared_state"]["task_outputs"].append(stage_entry)
         state["shared_state"]["turn_task_runs"] = int(state["shared_state"].get("turn_task_runs", 0)) + 1
         state["shared_state"]["total_task_runs"] = int(state["shared_state"].get("total_task_runs", 0)) + 1
-        _set_pipeline_stage_status(
-            state,
-            stage.name,
-            stage_kind=stage.stage_kind,
-            subagents=list(stage.subagent_names),
-            status="completed",
-        )
+        if worker_failure_count > 0:
+            _set_pipeline_stage_status(
+                state,
+                stage.name,
+                stage_kind=stage.stage_kind,
+                subagents=list(stage.subagent_names),
+                status="failed",
+                error=f"{worker_failure_count} host worker assignment(s) failed",
+            )
+        else:
+            _set_pipeline_stage_status(
+                state,
+                stage.name,
+                stage_kind=stage.stage_kind,
+                subagents=list(stage.subagent_names),
+                status="completed",
+            )
         compact_shared_state(state)
-        append_status(state, f"Stage finished: {stage.name} in {time.perf_counter() - stage_t0:.1f}s")
+        if worker_failure_count > 0:
+            append_status(
+                state,
+                (
+                    f"Stage finished with assignment failures: {stage.name} "
+                    f"in {time.perf_counter() - stage_t0:.1f}s ({worker_failure_count} failed assignment(s))"
+                ),
+            )
+        else:
+            append_status(state, f"Stage finished: {stage.name} in {time.perf_counter() - stage_t0:.1f}s")
         _check_cancel_requested(state, location=f"after stage {stage.name}")
 
         if stage_meta["runs_validation_gate"]:

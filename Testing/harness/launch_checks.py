@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import site
 from pathlib import Path
@@ -15,6 +16,30 @@ from .preflight import _module_available_in_python
 from .samples import build_evaluation_tasks, list_sample_binaries, load_sample_manifest
 
 
+def _projection_ceiling_comparison(projection: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+    projected_usd = projection.get("projected_estimated_cost_usd")
+    projected_relative = projection.get("projected_relative_cost_index")
+    usd_limit = config.get("max_experiment_estimated_cost_usd")
+    relative_limit = config.get("max_experiment_relative_cost_index")
+
+    def _delta(observed: Any, limit: Any) -> float | None:
+        try:
+            if observed is None or limit is None:
+                return None
+            return round(float(observed) - float(limit), 8)
+        except Exception:
+            return None
+
+    return {
+        "projected_estimated_cost_usd": projected_usd,
+        "configured_max_experiment_estimated_cost_usd": usd_limit,
+        "estimated_cost_delta_usd": _delta(projected_usd, usd_limit),
+        "projected_relative_cost_index": projected_relative,
+        "configured_max_experiment_relative_cost_index": relative_limit,
+        "relative_cost_delta": _delta(projected_relative, relative_limit),
+    }
+
+
 def check_python_modules(python_executable: str, modules: Iterable[str]) -> Dict[str, Any]:
     executable = str(python_executable or "").strip() or sys.executable
     module_results: Dict[str, bool] = {}
@@ -26,6 +51,16 @@ def check_python_modules(python_executable: str, modules: Iterable[str]) -> Dict
         "modules": module_results,
         "missing": missing,
         "ok": not missing,
+    }
+
+
+def check_command_available(command_name: str) -> Dict[str, Any]:
+    normalized = str(command_name or "").strip()
+    resolved = shutil.which(normalized) if normalized else None
+    return {
+        "command": normalized,
+        "path": str(resolved or ""),
+        "ok": bool(resolved),
     }
 
 
@@ -106,6 +141,7 @@ def build_sweep_projection_report(
     variable_filters: Iterable[str] | None = None,
     repetitions_override: int | None = None,
     budget_config: Dict[str, Any] | None = None,
+    config_path: str = "",
 ) -> Dict[str, Any]:
     manifest = load_sample_manifest(corpus_name)
     sample_paths = list_sample_binaries(
@@ -121,7 +157,7 @@ def build_sweep_projection_report(
         selected_task_ids=selected_task_ids,
         selected_difficulties=selected_difficulties,
     )
-    sweep_config = _load_experiment_config()
+    sweep_config = _load_experiment_config(Path(config_path).resolve()) if str(config_path or "").strip() else _load_experiment_config()
     _, planned_runs, repetitions = _build_run_plan(
         sweep_config,
         variable_filters=list(variable_filters or []),
@@ -147,7 +183,9 @@ def build_sweep_projection_report(
         "budget_config": resolved_budget,
         "projection": projection,
         "projection_status": projection_status,
+        "ceiling_comparison": _projection_ceiling_comparison(projection, resolved_budget),
         "ok": bool(projection_status.get("ok")),
+        "has_warnings": bool(projection_status.get("warnings")),
     }
 
 
@@ -175,7 +213,19 @@ def build_launch_preset_projection_report(
             selected_difficulties=list(preset.get("difficulty_filters") or []),
             variable_filters=list(preset.get("variables") or []),
             repetitions_override=int(preset.get("repetitions") or 0),
-            budget_config=budget_config,
+            config_path=str(preset.get("config") or ""),
+            budget_config=budget_config
+            or resolve_budget_config(
+                max_run_input_tokens=preset.get("max_run_input_tokens"),
+                max_run_output_tokens=preset.get("max_run_output_tokens"),
+                max_run_total_tokens=preset.get("max_run_total_tokens"),
+                max_run_relative_cost_index=preset.get("max_run_relative_cost_index"),
+                max_run_estimated_cost_usd=preset.get("max_run_estimated_cost_usd"),
+                hard_max_run_estimated_cost_usd=preset.get("hard_max_run_estimated_cost_usd"),
+                max_experiment_relative_cost_index=preset.get("max_experiment_relative_cost_index"),
+                max_experiment_estimated_cost_usd=preset.get("max_experiment_estimated_cost_usd"),
+                hard_max_experiment_estimated_cost_usd=preset.get("hard_max_experiment_estimated_cost_usd"),
+            ),
         ),
     }
 

@@ -1,3 +1,17 @@
+"""
+File: preflight.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Validate harness configuration and prerequisite readiness before paid runs.
+
+Summary:
+  This module implements the readiness gate shared by single runs, sweeps, and
+  the launch doctor. It checks config names, rubric/prompt consistency, sample
+  and task resolution, judge dependencies, and optional bundle readiness so
+  the harness can fail fast before expensive analysis work begins.
+"""
+
 from __future__ import annotations
 
 import os
@@ -24,6 +38,18 @@ from multi_agent_wf.config import (
 
 
 def _rubric_dimension_map(rubric: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """
+    Function: _rubric_dimension_map
+    Inputs:
+      - rubric: parsed binary judge rubric dictionary.
+    Description:
+      Re-index rubric dimensions by name so later validation steps can perform
+      quick lookups without repeatedly scanning the dimension list.
+    Outputs:
+      Returns a map from dimension name to the original dimension object.
+    Side Effects:
+      None.
+    """
     result: Dict[str, Dict[str, Any]] = {}
     for dim in rubric.get("dimensions") or []:
         if not isinstance(dim, dict):
@@ -205,9 +231,36 @@ def validate_run_configuration(
     bundle_root: Optional[Path] = None,
     require_ready_bundles: bool = False,
 ) -> Dict[str, Any]:
+    """
+    Function: validate_run_configuration
+    Inputs:
+      - corpus_name: logical corpus identifier for the requested run.
+      - sample_paths: built sample binaries currently available on disk.
+      - manifest: parsed sample manifest for the corpus.
+      - selected_samples / selected_task_ids / selected_difficulties: optional
+        CLI filters that narrow the intended evaluation scope.
+      - pipeline / architecture / query_variant / worker_persona_profile /
+        validator_review_level / tool_profile: requested runtime knobs to verify.
+      - judge_mode / explicit_judge_model / forced_model / python_executable:
+        judge and environment settings that affect launch viability.
+      - bundle_root: optional bundle directory tree to inspect.
+      - require_ready_bundles: whether missing or stale bundles should be
+        treated as hard errors instead of informational warnings.
+    Description:
+      Perform the shared readiness checks used before real evaluation work
+      starts. This includes config validation, task resolution, judge
+      prerequisites, and optional bundle-readiness inspection.
+    Outputs:
+      Returns a structured result containing `ok`, `errors`, `warnings`,
+      resolved task scope, and optional bundle-readiness details.
+    Side Effects:
+      Reads config files from disk and may inspect bundle directories.
+    """
     errors: List[str] = []
     warnings: List[str] = []
 
+    # Validate the rubric/prompt pair first so later run-specific errors are
+    # not hiding a broken judge configuration.
     rubric_check = validate_binary_judge_rubric()
     prompt_check = validate_binary_judge_prompt()
     errors.extend(rubric_check.get("errors") or [])

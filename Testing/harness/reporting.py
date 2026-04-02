@@ -1,3 +1,17 @@
+"""
+File: reporting.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Build the canonical machine-readable records and aggregates for testing runs.
+
+Summary:
+  This module is the source-of-truth normalization layer for testing outputs.
+  It converts raw agent and judge artifacts into per-sample records, computes
+  run-level aggregates, and writes the summaries that later experiment analysis
+  and visualization code consume.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -129,6 +143,24 @@ def build_sample_record(
     judge_result: Dict[str, Any] | None,
     task_timing: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    """
+    Function: build_sample_record
+    Inputs:
+      - sample_name: executable name for the current evaluation case.
+      - sample_meta: manifest metadata for the sample binary.
+      - task_meta: manifest metadata for the selected evaluation task.
+      - bundle_manifest: prepared bundle manifest describing precomputed artifacts.
+      - agent_result: canonical output from `run_agent_case`.
+      - judge_result: optional canonical judge payload for the same case.
+      - task_timing: optional wall-clock timing metadata captured by the runner.
+    Description:
+      Normalize one sample-task execution into the canonical record format that
+      downstream aggregation, significance testing, and output layout expect.
+    Outputs:
+      Returns the canonical `record.json` payload for one sample-task case.
+    Side Effects:
+      None.
+    """
     judge = judge_result or {}
     task_timing = dict(task_timing or {})
     task_id = str(task_meta.get("task_id") or "default_analysis").strip() or "default_analysis"
@@ -151,12 +183,16 @@ def build_sample_record(
     agent_usd = _cost_value(agent_cost, "estimated_cost_usd")
     judge_usd = _cost_value(judge_cost, "estimated_cost_usd")
 
+    # Collect all cross-cutting execution metrics in one normalized block so
+    # later aggregation code can stay schema-driven instead of re-deriving
+    # status, cost, and timing from raw artifacts.
     metrics = {
         "analysis_ok": bool(agent_result.get("ok")),
         "analysis_status": str(agent_result.get("status") or ("completed" if agent_result.get("ok") else "analysis_error")),
         "produced_result": bool(agent_result.get("produced_result")),
         "accepted_final_output": bool(agent_result.get("accepted_final_output")),
         "validator_blocked": str(agent_result.get("status") or "") == "validator_blocked",
+        "worker_assignment_failed": str(agent_result.get("status") or "") == "worker_assignment_failed",
         "failure_reason": str(agent_result.get("failure_reason") or agent_result.get("error") or ""),
         "validator_review_level": str(agent_result.get("validator_review_level") or "default"),
         "validation_attempts": int((((agent_result.get("validation") or {}) if isinstance(agent_result.get("validation"), dict) else {}) or {}).get("retry_count") or 0),
@@ -262,7 +298,11 @@ def _aggregate_bucket(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "scored_result_rate": round(len(scored_results) / len(records), 3) if records else None,
         "produced_result_rate": _rate(records, lambda record: bool((record.get("metrics") or {}).get("produced_result"))),
         "validator_blocked_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "validator_blocked"),
-        "analysis_failure_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "analysis_error"),
+        "worker_assignment_failed_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "worker_assignment_failed"),
+        "analysis_failure_rate": _rate(
+            records,
+            lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") in {"analysis_error", "worker_assignment_failed"},
+        ),
         "judge_error_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("judge_status") or "") == "judge_error"),
         "mean_relative_cost_index": _mean_or_none(relative_costs),
         "mean_total_tokens": _mean_or_none(total_tokens),
@@ -277,6 +317,20 @@ def _aggregate_bucket(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def aggregate_records(run_metadata: Dict[str, Any], records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Function: aggregate_records
+    Inputs:
+      - run_metadata: run-level manifest fields describing the executed config.
+      - records: canonical per-sample-task records produced by
+        `build_sample_record`.
+    Description:
+      Roll a list of canonical records into one run-level aggregate summarizing
+      status, score, cost, timing, tool coverage, and rubric dimensions.
+    Outputs:
+      Returns the canonical `aggregate.json` payload for a run.
+    Side Effects:
+      None.
+    """
     expected_task_count = int(run_metadata.get("expected_task_count") or len(records) or 0)
     scored = [
         record
@@ -332,7 +386,11 @@ def aggregate_records(run_metadata: Dict[str, Any], records: List[Dict[str, Any]
         "judge_pass_rate": round(sum(1 for record in records if record.get("metrics", {}).get("judge_pass")) / len(records), 3) if records else None,
         "produced_result_rate": _rate(records, lambda record: bool((record.get("metrics") or {}).get("produced_result"))),
         "validator_blocked_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "validator_blocked"),
-        "analysis_failure_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "analysis_error"),
+        "worker_assignment_failed_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "worker_assignment_failed"),
+        "analysis_failure_rate": _rate(
+            records,
+            lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") in {"analysis_error", "worker_assignment_failed"},
+        ),
         "judge_error_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("judge_status") or "") == "judge_error"),
         "status_counts": _status_counts(records),
         "mean_relative_cost_index": _mean_or_none(record.get("metrics", {}).get("total_relative_cost_index") for record in records),
@@ -388,6 +446,7 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
         "produced_result",
         "scored_result",
         "validator_blocked",
+        "worker_assignment_failed",
         "failure_reason",
         "judge_failure_reason",
         "overall_score_0_to_100",
@@ -441,6 +500,7 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
                 "produced_result": metrics.get("produced_result", ""),
                 "scored_result": metrics.get("scored_result", ""),
                 "validator_blocked": metrics.get("validator_blocked", ""),
+                "worker_assignment_failed": metrics.get("worker_assignment_failed", ""),
                 "failure_reason": metrics.get("failure_reason", ""),
                 "judge_failure_reason": metrics.get("judge_failure_reason", ""),
                 "overall_score_0_to_100": metrics.get("overall_score_0_to_100", ""),
@@ -509,6 +569,7 @@ def write_markdown_report(path, aggregate: Dict[str, Any]) -> None:
     lines.append(f"- Scored result rate: `{aggregate.get('scored_result_rate')}`")
     lines.append(f"- Produced result rate: `{aggregate.get('produced_result_rate')}`")
     lines.append(f"- Validator blocked rate: `{aggregate.get('validator_blocked_rate')}`")
+    lines.append(f"- Worker assignment failed rate: `{aggregate.get('worker_assignment_failed_rate')}`")
     lines.append(f"- Analysis failure rate: `{aggregate.get('analysis_failure_rate')}`")
     lines.append(f"- Judge error rate: `{aggregate.get('judge_error_rate')}`")
     lines.append(f"- Mean relative cost index: `{aggregate.get('mean_relative_cost_index')}`")

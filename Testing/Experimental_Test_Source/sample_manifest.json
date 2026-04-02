@@ -58,55 +58,167 @@
       ]
     },
     {
-      "sample": "string_table_test.exe",
-      "difficulty": "easy",
+      "sample": "maintenance_orchestrator_test.exe",
+      "difficulty": "hard",
       "primary_techniques": [
-        "global strings",
-        "string pointer table",
-        "index-based lookup",
-        "stack buffer copy"
+        "misleading function and variable names",
+        "cleartext decoy labels",
+        "dormant XOR-decoded decoy strings",
+        "opcode dispatcher with live and dead entries",
+        "deterministic local report generation"
       ],
       "expected_evidence": [
-        "Recovery of the message-table strings and status strings",
-        "Identification of the pointer-table or array-backed lookup design",
-        "No false claim that the strings are encoded or packed"
+        "Actual behavior identified as decoding a small script, rendering a 12x8 in-memory snapshot, summarizing it, and writing maintenance_snapshot_report.txt",
+        "Threatening names or strings such as wipe_restore_points, schedule_hidden_boot_task, or export_credential_cache called out as decoys or inert labels",
+        "Dead or never-selected decoy handlers or branches separated from the live buffer-and-report execution path"
       ],
       "acceptance_targets": [
-        "Explain how the string table is stored",
-        "Explain how the strings are accessed or indexed",
-        "Describe how the strings can be recovered without inventing extra encoding layers"
+        "Describe the real benign behavior rather than the threatening surface cues",
+        "Identify deceptive names, strings, or handlers and explain why they do not prove destructive, persistent, or credential-focused behavior",
+        "Explicitly reject unsupported claims about wipe, exfiltration, or persistence behavior"
       ],
       "target_tools": [
+        "ghidramcp",
         "stringmcp",
         "flareflossmcp",
-        "ghidramcp",
         "CapaMCP"
       ],
-      "default_query": "Analyze this executable and explain how the string table is stored, accessed, and recovered.",
+      "default_query": "Analyze this executable and explain what it actually does, which names or strings are deceptive, and whether the threatening cues correspond to real behavior.",
       "tasks": [
         {
           "task_id": "default_analysis",
           "name": "Default Analysis",
-          "query": "Analyze this executable and explain how the string table is stored, accessed, and recovered.",
+          "query": "Analyze this executable and explain what it actually does, which names or strings are deceptive, and whether the threatening cues correspond to real behavior.",
           "target_tools": [
+            "ghidramcp",
             "stringmcp",
             "flareflossmcp",
-            "ghidramcp",
             "CapaMCP"
           ],
           "expected_evidence": [
-            "Recovery of the message-table strings and status strings",
-            "Identification of the pointer-table or array-backed lookup design",
-            "No false claim that the strings are encoded or packed"
+            "Actual behavior identified as decoding a small script, rendering a 12x8 in-memory snapshot, summarizing it, and writing maintenance_snapshot_report.txt",
+            "Threatening names or strings such as wipe_restore_points, schedule_hidden_boot_task, or export_credential_cache called out as decoys or inert labels",
+            "Dead or never-selected decoy handlers or branches separated from the live buffer-and-report execution path"
           ],
           "acceptance_targets": [
-            "Explain how the string table is stored",
-            "Explain how the strings are accessed or indexed",
-            "Describe how the strings can be recovered without inventing extra encoding layers"
+            "Describe the real benign behavior rather than the threatening surface cues",
+            "Identify deceptive names, strings, or handlers and explain why they do not prove destructive, persistent, or credential-focused behavior",
+            "Explicitly reject unsupported claims about wipe, exfiltration, or persistence behavior"
           ],
           "tags": [
+            "deception",
+            "behavior_grounding",
+            "control_flow"
+          ]
+        },
+        {
+          "task_id": "actual_behavior_recovery",
+          "name": "Actual Behavior Recovery",
+          "query": "Ignore the threatening names at first pass and reconstruct the actual runtime behavior. Explain the decoded operation script, the in-memory artifact it builds, and the local output it writes.",
+          "target_tools": [
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "Script decode path identified, including the fixed XOR decoding step or the live opcodes 0x11, 0x22, 0x33, and 0x44",
+            "12x8 snapshot buffer or equivalent grid-building logic recovered",
+            "maintenance_snapshot_report.txt or the local report-writing path and summary computation described"
+          ],
+          "acceptance_targets": [
+            "Explain the actual deterministic behavior clearly",
+            "Tie the decoded script to the buffer-rendering and local report-generation flow",
+            "Avoid unsupported destructive, persistence, or exfiltration claims"
+          ],
+          "tags": [
+            "behavior_grounding",
+            "deception",
+            "extraction"
+          ]
+        },
+        {
+          "task_id": "decoy_signal_audit",
+          "name": "Decoy Signal Audit",
+          "query": "Audit which function names, strings, handlers, or decoded labels are deceptive versus evidence of executed behavior. Separate live operations from inert or non-executed decoys and state whether the threatening labels reflect real functionality.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp",
+            "flareflossmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "Threatening cleartext labels such as wipe_restore_points, schedule_hidden_boot_task, or export_credential_cache identified as inert labels or decoys",
+            "Dormant decoded notices or the opaque false gate identified as non-executed",
+            "Live dispatch entries or opcodes separated from decoy handlers such as the 0x90, 0x91, and 0x92 family"
+          ],
+          "acceptance_targets": [
+            "Classify at least three cues as decoy, inert, or non-executed with code-flow justification",
+            "Identify at least one dead branch or never-selected handler family",
+            "State clearly that the binary does not implement the threatening behavior suggested by its labels"
+          ],
+          "tags": [
+            "deception",
             "strings",
-            "data_layout"
+            "control_flow",
+            "false_positive_control"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "maintenance_orchestrator_test_stripped.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "stripped symbols",
+        "misleading function and variable names removed from direct symbol recovery",
+        "cleartext decoy labels",
+        "dormant XOR-decoded decoy strings",
+        "opcode dispatcher with live and dead entries",
+        "deterministic local report generation"
+      ],
+      "expected_evidence": [
+        "Actual behavior identified as decoding a small script, rendering a 12x8 in-memory snapshot, summarizing it, and writing maintenance_snapshot_report.txt",
+        "Threatening names or strings such as wipe_restore_points, schedule_hidden_boot_task, or export_credential_cache called out as decoys or inert labels",
+        "Dead or never-selected decoy handlers or branches separated from the live buffer-and-report execution path without relying on symbol names"
+      ],
+      "acceptance_targets": [
+        "Recover the real benign behavior without relying on preserved symbol names",
+        "Identify deceptive names, strings, or handlers and explain why they do not prove destructive, persistent, or credential-focused behavior",
+        "Explicitly reject unsupported claims about wipe, exfiltration, or persistence behavior"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "stringmcp",
+        "flareflossmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this stripped executable and explain what it actually does, which strings or decoded notices are deceptive, and how the real behavior can still be recovered without symbol names.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this stripped executable and explain what it actually does, which strings or decoded notices are deceptive, and how the real behavior can still be recovered without symbol names.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp",
+            "flareflossmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "Actual behavior identified as decoding a small script, rendering a 12x8 in-memory snapshot, summarizing it, and writing maintenance_snapshot_report.txt",
+            "Threatening names or strings such as wipe_restore_points, schedule_hidden_boot_task, or export_credential_cache called out as decoys or inert labels",
+            "Dead or never-selected decoy handlers or branches separated from the live buffer-and-report execution path without relying on symbol names"
+          ],
+          "acceptance_targets": [
+            "Recover the real benign behavior without relying on preserved symbol names",
+            "Classify the main decoy cues as inert or non-executed with control-flow justification",
+            "Avoid unsupported destructive, persistence, or exfiltration claims"
+          ],
+          "tags": [
+            "deception",
+            "stripped",
+            "behavior_grounding",
+            "false_positive_control"
           ]
         }
       ]
@@ -238,6 +350,166 @@
             "decoding",
             "config",
             "extraction"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "signal_router_report_test.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "misleading helper names and cleartext decoy labels",
+        "small opcode dispatcher with live and dead entries",
+        "XOR-decoded routing plan",
+        "runtime-decoded output path",
+        "deterministic local bar-chart report generation"
+      ],
+      "expected_evidence": [
+        "The real behavior identified as decoding a fixed routing plan, updating four local counters, and writing a local bar-chart style report",
+        "Threatening names or labels such as wipe_restore_chain or ship_token_archive called out as decoys rather than evidence of destructive behavior",
+        "Live handlers and dead entries separated cleanly in the dispatcher"
+      ],
+      "acceptance_targets": [
+        "Describe the real local counter-routing behavior rather than the threatening labels",
+        "Identify which decoy strings or handlers are inert or dead",
+        "Avoid unsupported claims about wiping, credential theft, or exfiltration"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "stringmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable and explain what it actually does, which labels are deceptive, and how the live routing logic differs from the threatening surface cues.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain what it actually does, which labels are deceptive, and how the live routing logic differs from the threatening surface cues.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "The real behavior identified as decoding a fixed routing plan, updating four local counters, and writing a local bar-chart style report",
+            "Threatening names or labels such as wipe_restore_chain or ship_token_archive called out as decoys rather than evidence of destructive behavior",
+            "Live handlers and dead entries separated cleanly in the dispatcher"
+          ],
+          "acceptance_targets": [
+            "Describe the real local counter-routing behavior rather than the threatening labels",
+            "Identify which decoy strings or handlers are inert or dead",
+            "Avoid unsupported claims about wiping, credential theft, or exfiltration"
+          ],
+          "tags": [
+            "deception",
+            "behavior_grounding",
+            "dispatch"
+          ]
+        },
+        {
+          "task_id": "routing_behavior_recovery",
+          "name": "Routing Behavior Recovery",
+          "query": "Recover the live routing behavior as concretely as possible. Explain the decoded plan, the live handler families, the final counter state, and why the threatening labels do not describe the actual runtime behavior.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "The XOR-decoded plan or its live opcodes identified",
+            "Four local counters or equivalent lane state recovered",
+            "The report-writing path and local summary behavior described without inventing network or destructive effects"
+          ],
+          "acceptance_targets": [
+            "Tie the decoded plan to the concrete counter updates",
+            "Name at least one live handler family and one dead or decoy entry",
+            "Reject unsupported destructive or credential-oriented claims"
+          ],
+          "tags": [
+            "deception",
+            "behavior_grounding",
+            "extraction"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "stack_notice_scheduler_test.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "stack-built decoy strings for FLOSS recovery",
+        "dormant XOR-decoded notices",
+        "XOR-decoded minute offsets",
+        "insertion-sort schedule ordering",
+        "deterministic local schedule digest generation"
+      ],
+      "expected_evidence": [
+        "The real behavior identified as decoding minute offsets, sorting local schedule windows, computing gaps, and writing schedule_window_digest.txt",
+        "FLOSS-recovered labels such as wipe_wallet_cache, schedule_hidden_sync, or ship_ticket_material classified as decoys rather than real behavior",
+        "The dormant decoded notices identified as non-executed"
+      ],
+      "acceptance_targets": [
+        "Recover the actual scheduling behavior instead of over-trusting FLOSS-recovered labels",
+        "Identify at least some recovered decoy strings as inert or misleading",
+        "Avoid unsupported persistence, credential, or destructive claims"
+      ],
+      "target_tools": [
+        "flareflossmcp",
+        "ghidramcp",
+        "stringmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable and explain what it actually does, which FLOSS-recovered strings are deceptive, and whether the threatening labels correspond to real functionality.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain what it actually does, which FLOSS-recovered strings are deceptive, and whether the threatening labels correspond to real functionality.",
+          "target_tools": [
+            "flareflossmcp",
+            "ghidramcp",
+            "stringmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "The real behavior identified as decoding minute offsets, sorting local schedule windows, computing gaps, and writing schedule_window_digest.txt",
+            "FLOSS-recovered labels such as wipe_wallet_cache, schedule_hidden_sync, or ship_ticket_material classified as decoys rather than real behavior",
+            "The dormant decoded notices identified as non-executed"
+          ],
+          "acceptance_targets": [
+            "Recover the actual scheduling behavior instead of over-trusting FLOSS-recovered labels",
+            "Identify at least some recovered decoy strings as inert or misleading",
+            "Avoid unsupported persistence, credential, or destructive claims"
+          ],
+          "tags": [
+            "deception",
+            "floss",
+            "behavior_grounding"
+          ]
+        },
+        {
+          "task_id": "decoy_string_audit",
+          "name": "Decoy String Audit",
+          "query": "Audit the FLOSS-recovered and decoded-string surfaces in this sample. Separate stack-built or decoded decoys from the live scheduling logic, and explain which evidence actually supports the real behavior.",
+          "target_tools": [
+            "flareflossmcp",
+            "ghidramcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "One or more stack-built threat-themed strings identified as inert labels",
+            "The false decoded notices or their gating branch classified as non-executed",
+            "The minute-offset decode, insertion sort, and local report-writing path identified as the real behavior"
+          ],
+          "acceptance_targets": [
+            "Classify at least three recovered strings or notices as deceptive or non-executed",
+            "Explain which concrete code path implements the real scheduling behavior",
+            "Avoid relying on FLOSS output alone as proof of threatening capability"
+          ],
+          "tags": [
+            "deception",
+            "floss",
+            "false_positive_control",
+            "strings"
           ]
         }
       ]
@@ -376,6 +648,65 @@
             "hashing",
             "dispatch",
             "extraction"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "hash_dispatch_test_stripped.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "stripped symbols",
+        "DJB2 hash algorithm",
+        "hash-to-handler dispatch table",
+        "stack-built command strings",
+        "dead hash entries"
+      ],
+      "expected_evidence": [
+        "Recognition of the likely DJB2 algorithm including the characteristic seed/multiplier pattern",
+        "Hash constants such as 0x7C9C4733 or 0x7C967DAA mapped to handler or command behavior",
+        "Dead or decoy dispatch entries identified without relying on symbol names"
+      ],
+      "acceptance_targets": [
+        "Explain the hash-based dispatcher without relying on preserved symbol names",
+        "Identify the likely algorithm",
+        "Describe the most relevant handlers, map at least some concrete hash values, and note the dead entries"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "hashdbmcp",
+        "flareflossmcp",
+        "CapaMCP",
+        "stringmcp"
+      ],
+      "default_query": "Analyze this stripped executable and explain the hash-based dispatcher, the likely algorithm, and the most relevant live versus dead entries without relying on symbol names.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this stripped executable and explain the hash-based dispatcher, the likely algorithm, and the most relevant live versus dead entries without relying on symbol names.",
+          "target_tools": [
+            "ghidramcp",
+            "hashdbmcp",
+            "flareflossmcp",
+            "CapaMCP",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "Recognition of the likely DJB2 algorithm including the characteristic seed/multiplier pattern",
+            "Hash constants such as 0x7C9C4733 or 0x7C967DAA mapped to handler or command behavior",
+            "Dead or decoy dispatch entries identified without relying on symbol names"
+          ],
+          "acceptance_targets": [
+            "Recover the algorithm and dispatcher structure from behavior and data rather than symbol names",
+            "Provide at least two concrete hash-to-behavior mappings",
+            "Separate live entries from dead or decoy ones"
+          ],
+          "tags": [
+            "hashing",
+            "dispatch",
+            "stripped",
+            "behavior_grounding"
           ]
         }
       ]
@@ -552,6 +883,148 @@
             "packing",
             "payload",
             "orchestration"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "branch_weave_snapshot_test.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "misleading function names around live benign behavior",
+        "encoded operation stream with a fixed XOR decode step",
+        "dispatcher with live and dead entries",
+        "minimal true-behavior strings",
+        "dormant decoded notices and inert decoy labels",
+        "deterministic local grid report generation"
+      ],
+      "expected_evidence": [
+        "The real behavior identified as decoding a compact operation stream, updating an 8x8 local grid, summarizing it, and writing a short local report",
+        "Threatening strings such as flush_ticket_vault or ship_shadow_bundle called out as decoys or misleading names rather than evidence of destructive behavior",
+        "The live grid-update handlers separated from dead handler families such as the 0x91, 0xA2, and 0xB3 entries"
+      ],
+      "acceptance_targets": [
+        "Recover the real grid-building and report-generation behavior from code flow rather than strings alone",
+        "Identify deceptive strings or notices as inert, misleading, or non-executed",
+        "Avoid unsupported destructive, credential, or persistence claims"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "flareflossmcp",
+        "stringmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable and explain what it actually does, which strings or labels are deceptive, and why the true behavior must be recovered from the decoded operation stream and live handlers rather than strings alone.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain what it actually does, which strings or labels are deceptive, and why the true behavior must be recovered from the decoded operation stream and live handlers rather than strings alone.",
+          "target_tools": [
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "The real behavior identified as decoding a compact operation stream, updating an 8x8 local grid, summarizing it, and writing a short local report",
+            "Threatening strings such as flush_ticket_vault or ship_shadow_bundle called out as decoys or misleading names rather than evidence of destructive behavior",
+            "The live grid-update handlers separated from dead handler families such as the 0x91, 0xA2, and 0xB3 entries"
+          ],
+          "acceptance_targets": [
+            "Recover the real grid-building and report-generation behavior from code flow rather than strings alone",
+            "Identify deceptive strings or notices as inert, misleading, or non-executed",
+            "Avoid unsupported destructive, credential, or persistence claims"
+          ],
+          "tags": [
+            "deception",
+            "behavior_grounding",
+            "low_string_leakage",
+            "hard"
+          ]
+        },
+        {
+          "task_id": "program_decode_recovery",
+          "name": "Program Decode Recovery",
+          "query": "Recover the decoded operation stream and explain the live handler families as concretely as possible. Focus on the actual grid-update behavior, the report-writing path, and which threatening cues are dead or deceptive.",
+          "target_tools": [
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "The XOR-based operation-stream decode identified",
+            "The live point, span, or block-stamping handlers tied to the resulting grid behavior",
+            "Dead entries or dormant decoded notices separated from the live execution path"
+          ],
+          "acceptance_targets": [
+            "Tie the decoded operation stream to specific live handler families",
+            "Describe the local output behavior without inventing network or destructive effects",
+            "Show why strings or FLOSS output alone are insufficient to characterize the sample"
+          ],
+          "tags": [
+            "deception",
+            "behavior_grounding",
+            "low_string_leakage",
+            "extraction"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "branch_weave_snapshot_test_stripped.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "stripped symbols",
+        "misleading function names removed from direct symbol recovery",
+        "encoded operation stream with a fixed XOR decode step",
+        "dispatcher with live and dead entries",
+        "minimal true-behavior strings",
+        "dormant decoded notices and inert decoy labels"
+      ],
+      "expected_evidence": [
+        "The real behavior identified as decoding a compact operation stream, updating an 8x8 local grid, summarizing it, and writing a short local report",
+        "Threatening strings such as flush_ticket_vault or ship_shadow_bundle called out as decoys or misleading names rather than evidence of destructive behavior",
+        "The live grid-update handlers separated from dead handler families without relying on symbol names"
+      ],
+      "acceptance_targets": [
+        "Recover the real grid-building and report-generation behavior without relying on preserved symbol names",
+        "Identify deceptive strings or notices as inert, misleading, or non-executed",
+        "Avoid unsupported destructive, credential, or persistence claims"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "flareflossmcp",
+        "stringmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this stripped executable and recover the true behavior from the decoded operation stream and live handlers. Explain which strings or decoded notices are deceptive, and do not rely on symbol names.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this stripped executable and recover the true behavior from the decoded operation stream and live handlers. Explain which strings or decoded notices are deceptive, and do not rely on symbol names.",
+          "target_tools": [
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "The real behavior identified as decoding a compact operation stream, updating an 8x8 local grid, summarizing it, and writing a short local report",
+            "Threatening strings such as flush_ticket_vault or ship_shadow_bundle called out as decoys or misleading names rather than evidence of destructive behavior",
+            "The live grid-update handlers separated from dead handler families without relying on symbol names"
+          ],
+          "acceptance_targets": [
+            "Recover the real behavior from control and data flow rather than symbols or strings alone",
+            "Identify at least one dead handler family or dormant decoded-notice path",
+            "Avoid unsupported destructive, credential, or persistence claims"
+          ],
+          "tags": [
+            "deception",
+            "stripped",
+            "low_string_leakage",
+            "behavior_grounding"
           ]
         }
       ]

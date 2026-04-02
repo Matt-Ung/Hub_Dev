@@ -48,3 +48,4 @@ This sample hashes stack-built command strings with DJB2 and resolves them throu
 ## Related Binary Variants
 
 - `hash_dispatch_test.exe`
+- `hash_dispatch_test_stripped.exe`

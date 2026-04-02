@@ -1,6 +1,6 @@
 {
   "version": "c_source_eval_dataset_manifest_v1",
-  "dataset_count": 15,
+  "dataset_count": 18,
   "datasets": [
     {
       "program_id": "anti_analysis_suite_test",
@@ -41,6 +41,29 @@
       ],
       "related_binary_samples": [
         "basic_loops_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "branch_weave_snapshot_test",
+      "corpus": "experimental",
+      "difficulty": "hard",
+      "source_file": "branch_weave_snapshot_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/branch_weave_snapshot_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "branch_weave_snapshot_test.exe",
+        "branch_weave_snapshot_test_stripped.exe"
       ],
       "reference_status": "reviewed_concrete_anchor_v1"
     },
@@ -129,7 +152,31 @@
         "T9"
       ],
       "related_binary_samples": [
-        "hash_dispatch_test.exe"
+        "hash_dispatch_test.exe",
+        "hash_dispatch_test_stripped.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "maintenance_orchestrator_test",
+      "corpus": "experimental",
+      "difficulty": "hard",
+      "source_file": "maintenance_orchestrator_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/maintenance_orchestrator_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "maintenance_orchestrator_test.exe",
+        "maintenance_orchestrator_test_stripped.exe"
       ],
       "reference_status": "reviewed_concrete_anchor_v1"
     },
@@ -156,11 +203,11 @@
       "reference_status": "reviewed_concrete_anchor_v1"
     },
     {
-      "program_id": "string_table_test",
+      "program_id": "signal_router_report_test",
       "corpus": "experimental",
-      "difficulty": "easy",
-      "source_file": "string_table_test.c",
-      "dataset_path": "Testing/C_Source_Evaluation/datasets/string_table_test",
+      "difficulty": "medium",
+      "source_file": "signal_router_report_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/signal_router_report_test",
       "tasks_applicable": [
         "T1",
         "T2",
@@ -168,10 +215,34 @@
         "T4",
         "T6",
         "T10",
-        "T5"
+        "T5",
+        "T7",
+        "T9"
       ],
       "related_binary_samples": [
-        "string_table_test.exe"
+        "signal_router_report_test.exe"
+      ],
+      "reference_status": "reviewed_concrete_anchor_v1"
+    },
+    {
+      "program_id": "stack_notice_scheduler_test",
+      "corpus": "experimental",
+      "difficulty": "medium",
+      "source_file": "stack_notice_scheduler_test.c",
+      "dataset_path": "Testing/C_Source_Evaluation/datasets/stack_notice_scheduler_test",
+      "tasks_applicable": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T6",
+        "T10",
+        "T5",
+        "T7",
+        "T9"
+      ],
+      "related_binary_samples": [
+        "stack_notice_scheduler_test.exe"
       ],
       "reference_status": "reviewed_concrete_anchor_v1"
     },

@@ -1,5 +1,20 @@
+"""
+File: runtime.py
+Author: Matt-Ung
+Last Updated: 2026-04-01
+Purpose:
+  Assemble and manage the runtime objects for the multi-agent workflow system.
+
+Summary:
+  This module loads MCP servers, partitions tools by domain, constructs deep
+  agents and stage runtimes, manages runtime-level caches, and provides the
+  host-worker helpers used by the pipeline executor. It is the main wiring
+  layer between static configuration and executable runtime components.
+"""
+
 import asyncio
 import json
+import os
 import re
 import sys
 import time
@@ -19,6 +34,7 @@ from pydantic_deep import create_deep_agent, create_default_deps, create_sliding
 from .config import (
     AGENT_ARCHETYPE_PROMPTS,
     AGENT_ARCHETYPE_SPECS,
+    AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS,
     DEEP_AGENT_ARCHITECTURE,
     DEEP_AGENT_ARCHITECTURE_DESCRIPTIONS,
     DEEP_AGENT_ARCHITECTURE_NAME,
@@ -90,6 +106,11 @@ _FUNCTION_NAME_LIKE_RE = re.compile(r"^(?:FUN_|sub_|LAB_|thunk_)?[A-Za-z_~?][A-Z
 _FUNCTION_SELECTOR_WITH_ADDRESS_RE = re.compile(
     r"^\s*(?P<name>.+?)\s*@\s*(?P<address>(?:0x)?[0-9A-Fa-f]+)\s*$"
 )
+
+
+def _safe_runtime_path_component(value: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._")
+    return text or "default"
 
 
 def _normalize_worker_subagent_profile(value: str) -> str:
@@ -479,6 +500,83 @@ def _clone_mcp_server(server: MCPServerStdio) -> MCPServerStdio:
         id=server.id,
         client_info=server.client_info,
     )
+
+
+async def _close_mcp_toolsets_async(
+    static_tools: List[MCPServerStdio],
+    dynamic_tools: List[MCPServerStdio],
+) -> None:
+    def _clear_cleanup_cancellation() -> None:
+        task = asyncio.current_task()
+        if task is None:
+            return
+        uncancel = getattr(task, "uncancel", None)
+        if not callable(uncancel):
+            return
+        while task.cancelling():
+            uncancel()
+
+    seen: set[int] = set()
+    for server in list(static_tools) + list(dynamic_tools):
+        key = id(server)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            running_attr = getattr(server, "is_running", False)
+            running = running_attr() if callable(running_attr) else bool(running_attr)
+            if running:
+                await server.__aexit__(None, None, None)
+        except asyncio.CancelledError:
+            _clear_cleanup_cancellation()
+        except Exception as e:
+            print(f"[runtime shutdown] warning: failed to close MCP server {getattr(server, 'id', 'unknown')}: {e}")
+
+
+async def _enter_mcp_toolsets_async(
+    static_tools: List[MCPServerStdio],
+    dynamic_tools: List[MCPServerStdio],
+) -> List[str]:
+    entered_ids: List[str] = []
+    seen: set[int] = set()
+    try:
+        for server in list(static_tools) + list(dynamic_tools):
+            key = id(server)
+            if key in seen:
+                continue
+            seen.add(key)
+            await server.__aenter__()
+            entered_ids.append(str(getattr(server, "id", "") or "unknown"))
+        return entered_ids
+    except Exception:
+        await _close_mcp_toolsets_async(static_tools, dynamic_tools)
+        raise
+
+
+def build_loop_local_host_worker_runtime(runtime: "MultiAgentRuntime") -> "MultiAgentRuntime":
+    """Clone MCP toolsets for one host-worker event loop.
+
+    The returned runtime keeps the same high-level configuration but replaces
+    shared MCP server objects with loop-local clones so concurrent worker stages
+    do not reuse stdio clients across event loops.
+    """
+    cloned_static_tools = [_clone_mcp_server(tool) for tool in runtime.static_tools]
+    cloned_dynamic_tools = [_clone_mcp_server(tool) for tool in runtime.dynamic_tools]
+    return MultiAgentRuntime(
+        pipeline_name=runtime.pipeline_name,
+        worker_architecture_name=runtime.worker_architecture_name,
+        worker_architecture=list(runtime.worker_architecture),
+        pipeline_definition=list(runtime.pipeline_definition),
+        stages=runtime.stages,
+        static_tool_ids=list(runtime.static_tool_ids),
+        dynamic_tool_ids=list(runtime.dynamic_tool_ids),
+        sandbox_tool_ids=list(runtime.sandbox_tool_ids),
+        static_tools=cloned_static_tools,
+        dynamic_tools=cloned_dynamic_tools,
+        skill_directories=list(runtime.skill_directories),
+        deep_backend=runtime.deep_backend,
+    )
+
 
 def _toolsets_for_domain(
     tool_domain: str,
@@ -1433,6 +1531,7 @@ class MultiAgentRuntime:
 
 @dataclass
 class RuntimeSharedAssets:
+    manifest_path: str
     toolsets: List[MCPServerStdio]
     static_tools: List[MCPServerStdio]
     dynamic_tools: List[MCPServerStdio]
@@ -1467,6 +1566,13 @@ _GHIDRA_MUTATING_TOOL_NAMES = {
     "set_decompiler_comment",
     "set_disassembly_comment",
 }
+
+
+def _current_mcp_server_manifest_path() -> str:
+    raw_manifest = str(os.environ.get("MCP_SERVER_MANIFEST_PATH") or MCP_SERVER_MANIFEST_PATH or "").strip()
+    if not raw_manifest:
+        raw_manifest = "MCPServers/servers.json"
+    return str(_resolve_repo_relative_path(raw_manifest))
 
 
 def _is_affirmative_response(value: str) -> bool:
@@ -1627,6 +1733,28 @@ def _build_deep_backend() -> Any:
             print(f"[deep backend] persistent LocalBackend unavailable, using StateBackend: {e}")
             deep_backend = None
     return deep_backend
+
+
+def _build_isolated_host_worker_backend(
+    runtime: "MultiAgentRuntime",
+    *,
+    stage_name: str,
+    slot_name: str,
+    work_item_id: str,
+) -> Tuple[Any, str]:
+    shared_backend = getattr(runtime, "deep_backend", None)
+    shared_root = getattr(shared_backend, "root_dir", None)
+    if shared_backend is None or shared_root is None:
+        return None, ""
+
+    isolated_root = (
+        Path(shared_root).expanduser().resolve()
+        / "host_parallel_workers"
+        / _safe_runtime_path_component(stage_name)
+        / _safe_runtime_path_component(slot_name)
+        / _safe_runtime_path_component(work_item_id)
+    )
+    return _ControlledLocalBackend(root_dir=isolated_root), str(isolated_root)
 
 
 def _find_mcp_server_by_marker(
@@ -2059,6 +2187,7 @@ def _default_upx_unpack_output_path(validated_sample_path: str, sample_sha256: s
 
 def _build_auto_triage_presweep_summary(bundle: Dict[str, Any]) -> str:
     summary_lines: List[str] = ["Deterministic pre-sweep bundle"]
+    include_string_previews = bool(AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS)
     sample_path = str(bundle.get("validated_sample_path") or "").strip()
     if sample_path:
         summary_lines.append(f"- validated_sample_path: {sample_path}")
@@ -2108,14 +2237,19 @@ def _build_auto_triage_presweep_summary(bundle: Dict[str, Any]) -> str:
     strings_preview = bundle.get("ghidra_strings") if isinstance(bundle.get("ghidra_strings"), dict) else {}
     string_items = list(strings_preview.get("items") or [])
     if string_items:
-        summary_lines.append("- ghidra_strings_preview:")
-        for item in string_items[:8]:
-            if not isinstance(item, dict):
-                continue
-            value = str(item.get("value") or "").strip()
-            address = str(item.get("address") or "").strip()
-            if value:
-                summary_lines.append(f"  - {address}: {value}" if address else f"  - {value}")
+        if include_string_previews:
+            summary_lines.append("- ghidra_strings_preview:")
+            for item in string_items[:8]:
+                if not isinstance(item, dict):
+                    continue
+                value = str(item.get("value") or "").strip()
+                address = str(item.get("address") or "").strip()
+                if value:
+                    summary_lines.append(f"  - {address}: {value}" if address else f"  - {value}")
+        else:
+            summary_lines.append(
+                f"- ghidra_strings_preview: redacted for evaluation isolation ({len(string_items)} candidate strings collected)"
+            )
 
     for label in ("raw_strings", "floss", "capa", "hashdb", "entropy_packer", "packed_binary_assessment", "upx_unpack", "baseline_yara"):
         section = bundle.get(label)
@@ -2129,9 +2263,11 @@ def _build_auto_triage_presweep_summary(bundle: Dict[str, Any]) -> str:
                 summary_lines.append(f"- {label}: available={available}")
                 if error:
                     summary_lines.append(f"  error: {error}")
-                if preview:
+                if preview and include_string_previews:
                     summary_lines.append("  preview:")
                     summary_lines.extend(f"    {line}" for line in preview.splitlines())
+                elif preview:
+                    summary_lines.append("  preview: [redacted for evaluation isolation]")
             else:
                 compact = json.dumps(_json_safe(section), ensure_ascii=False)
                 summary_lines.append(f"- {label}: {compact}")
@@ -2775,8 +2911,14 @@ def build_host_worker_assignment_executor(
     stage_name: str,
     slot_name: str,
     archetype_name: str,
+    work_item_id: str,
     stage_model: Optional[str] = None,
-) -> Tuple[Agent, Any, str]:
+) -> Tuple[Agent, Any, str, Dict[str, Any]]:
+    """Build the one-shot executor for a single host-managed worker assignment.
+
+    Returns the configured agent, deps, resolved model id, and runtime metadata
+    used by the worker scheduler for diagnostics.
+    """
     if archetype_name not in AGENT_ARCHETYPE_SPECS:
         raise RuntimeError(f"Unknown deep-agent archetype: {archetype_name!r}")
     if archetype_name not in AGENT_ARCHETYPE_PROMPTS:
@@ -2811,15 +2953,27 @@ def build_host_worker_assignment_executor(
             "- Work independently on your assigned item and do not assume peer workers saw the same evidence.\n"
         )
 
+    worker_backend, worker_backend_root = _build_isolated_host_worker_backend(
+        runtime,
+        stage_name=stage_name,
+        slot_name=slot_name,
+        work_item_id=work_item_id,
+    )
+
     memory_root = Path(DEEP_MEMORY_DIR).expanduser()
-    if runtime.deep_backend is not None:
-        memory_dir = str(memory_root / stage_name / slot_name)
+    memory_suffix = (
+        _safe_runtime_path_component(stage_name),
+        _safe_runtime_path_component(slot_name),
+        _safe_runtime_path_component(work_item_id),
+    )
+    if worker_backend is not None:
+        memory_dir = str(memory_root.joinpath(*memory_suffix))
         if memory_dir.startswith("/"):
             memory_dir = memory_dir.lstrip("/")
     else:
         if not memory_root.is_absolute():
             memory_root = REPO_ROOT / memory_root
-        memory_dir = str((memory_root / stage_name / slot_name).resolve())
+        memory_dir = str(memory_root.joinpath(*memory_suffix).resolve())
 
     agent = create_deep_agent(
         model=resolved_model,
@@ -2834,7 +2988,10 @@ def build_host_worker_assignment_executor(
         include_memory=DEEP_ENABLE_MEMORY,
         memory_dir=memory_dir,
         include_history_archive=False,
-        context_manager=True,
+        # Host-parallel workers are single-shot assignment executors. Reusing
+        # the deep context-manager layer across concurrent assignments caused
+        # cancel-scope ownership bugs and malformed provider requests.
+        context_manager=False,
         context_manager_max_tokens=DEEP_CONTEXT_MAX_TOKENS,
         history_processors=_build_history_processors(),
         retries=DEEP_AGENT_RETRIES,
@@ -2842,8 +2999,13 @@ def build_host_worker_assignment_executor(
         toolsets=toolsets,
         event_stream_handler=make_live_tool_event_handler(stage_name, slot_name),
     )
-    deps = create_default_deps(backend=runtime.deep_backend) if runtime.deep_backend is not None else create_default_deps()
-    return agent, deps, resolved_model
+    deps = create_default_deps(backend=worker_backend) if worker_backend is not None else create_default_deps()
+    return agent, deps, resolved_model, {
+        "context_manager_enabled": False,
+        "isolated_backend": bool(worker_backend is not None),
+        "backend_root": worker_backend_root,
+        "memory_dir": memory_dir,
+    }
 
 
 def build_stage_runtime(
@@ -2853,6 +3015,23 @@ def build_stage_runtime(
     skill_directories: List[str],
     deep_backend: Any,
 ) -> PipelineStageRuntime:
+    """
+    Function: build_stage_runtime
+    Inputs:
+      - stage_definition: normalized pipeline-stage definition from the loaded
+        pipeline preset.
+      - static_tools / dynamic_tools: already-loaded MCP server fleets grouped
+        by tool domain.
+      - skill_directories: optional skill directories enabled for this runtime.
+      - deep_backend: optional persistent deep-agent backend shared by stages.
+    Description:
+      Build the stage-manager runtime object for one pipeline stage, including
+      its agent, model selection, subagent architecture, and dependency bundle.
+    Outputs:
+      Returns a populated `PipelineStageRuntime` ready to execute that stage.
+    Side Effects:
+      May construct deep-agent objects and allocate backend-linked memory paths.
+    """
     # Tutorial 2.4 in extension_tutorial.md: once a stage is added to a preset,
     # this function can build its manager runtime automatically. It does not
     # define the stage semantics; Tutorial 2.5 does that in `pipeline.py`.
@@ -2937,10 +3116,13 @@ def build_deep_runtime_components(
 
 def _get_runtime_shared_assets_sync() -> RuntimeSharedAssets:
     global _RUNTIME_SHARED_ASSETS
-    if _RUNTIME_SHARED_ASSETS is not None:
+    manifest_path = _current_mcp_server_manifest_path()
+    if _RUNTIME_SHARED_ASSETS is not None and str(_RUNTIME_SHARED_ASSETS.manifest_path or "") == manifest_path:
         return _RUNTIME_SHARED_ASSETS
+    if _RUNTIME_SHARED_ASSETS is not None:
+        shutdown_runtime_sync()
 
-    toolsets = load_mcp_servers(str(MCP_SERVER_MANIFEST_PATH))
+    toolsets = load_mcp_servers(manifest_path)
     static_tools, dynamic_tools = partition_toolsets(toolsets)
     skill_directories = _build_skill_directories()
     deep_backend = _build_deep_backend()
@@ -2950,6 +3132,7 @@ def _get_runtime_shared_assets_sync() -> RuntimeSharedAssets:
     print("Dynamic tools:", [s.id for s in dynamic_tools])
 
     _RUNTIME_SHARED_ASSETS = RuntimeSharedAssets(
+        manifest_path=manifest_path,
         toolsets=toolsets,
         static_tools=static_tools,
         dynamic_tools=dynamic_tools,
@@ -2964,6 +3147,21 @@ def get_runtime_sync(
     *,
     architecture_name: Optional[str] = None,
 ) -> MultiAgentRuntime:
+    """
+    Function: get_runtime_sync
+    Inputs:
+      - pipeline_name: requested pipeline preset name.
+      - architecture_name: requested worker architecture preset name.
+    Description:
+      Return the cached or newly built runtime object matching the requested
+      pipeline, architecture, manifest path, and worker-profile settings.
+    Outputs:
+      Returns a `MultiAgentRuntime` containing stage runtimes, tool fleets, and
+      shared runtime metadata.
+    Side Effects:
+      May load MCP servers, build stage runtimes, and update the process-level
+      runtime cache.
+    """
     selected_pipeline_name = str(pipeline_name or DEEP_AGENT_PIPELINE_NAME).strip() or DEEP_AGENT_PIPELINE_NAME
     selected_architecture_name = (
         str(architecture_name or DEEP_AGENT_ARCHITECTURE_NAME).strip() or DEEP_AGENT_ARCHITECTURE_NAME
@@ -2975,6 +3173,7 @@ def get_runtime_sync(
         selected_architecture_name,
         _normalize_worker_subagent_profile(DEEP_WORKER_SUBAGENT_PROFILE),
         str(DEEP_FORCE_MODEL_ID or "").strip(),
+        _current_mcp_server_manifest_path(),
     )
     cached_runtime = _RUNTIME_CACHE.get(cache_key)
     if cached_runtime is not None:
@@ -3043,25 +3242,26 @@ async def _shutdown_runtime_async() -> None:
     if shared_assets is None:
         return
 
-    seen: set[int] = set()
-    for server in list(shared_assets.static_tools) + list(shared_assets.dynamic_tools):
-        key = id(server)
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            running_attr = getattr(server, "is_running", False)
-            running = running_attr() if callable(running_attr) else bool(running_attr)
-            if running:
-                await server.__aexit__(None, None, None)
-        except Exception as e:
-            print(f"[runtime shutdown] warning: failed to close MCP server {getattr(server, 'id', 'unknown')}: {e}")
+    await _close_mcp_toolsets_async(shared_assets.static_tools, shared_assets.dynamic_tools)
 
     _RUNTIME_CACHE.clear()
     _RUNTIME_SHARED_ASSETS = None
 
 
 def shutdown_runtime_sync() -> None:
+    """
+    Function: shutdown_runtime_sync
+    Inputs:
+      - None.
+    Description:
+      Tear down the cached runtime and any shared MCP assets held at the process
+      level so the next run starts from a clean runtime state.
+    Outputs:
+      Returns nothing.
+    Side Effects:
+      Closes MCP toolsets, clears runtime caches, and may emit shutdown-status
+      messages for cleanup diagnostics.
+    """
     try:
         asyncio.run(_shutdown_runtime_async())
     except RuntimeError as e:

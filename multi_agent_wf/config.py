@@ -80,6 +80,10 @@ def _parse_path_list(raw: str) -> List[str]:
     return [p.strip() for p in raw.split(sep) if p.strip()]
 
 
+def _parse_lower_marker_list(raw: str) -> Tuple[str, ...]:
+    return tuple(marker.strip().lower() for marker in str(raw or "").split(",") if marker.strip())
+
+
 def _resolve_repo_relative_path(raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
@@ -325,24 +329,26 @@ def _build_runtime_settings(
         "MAX_TOOL_RESULT_CACHE_ENTRIES": int(env.get("MAX_TOOL_RESULT_CACHE_ENTRIES", "64")),
         "MAX_VALIDATION_REPLAN_RETRIES": int(env.get("MAX_VALIDATION_REPLAN_RETRIES", "2")),
         "MAX_PARALLEL_WORKERS": max(1, int(env.get("MAX_PARALLEL_WORKERS", "2"))),
-        "TOOL_RESULT_CACHE_SERVER_MARKERS": tuple(
-            marker.strip().lower()
-            for marker in str(
-                env.get(
-                    "TOOL_RESULT_CACHE_SERVER_MARKERS",
-                    "ghidra,capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy",
-                )
-            ).split(",")
-            if marker.strip()
+        "TOOL_RESULT_CACHE_SERVER_MARKERS": _parse_lower_marker_list(
+            env.get(
+                "TOOL_RESULT_CACHE_SERVER_MARKERS",
+                "ghidra,capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy",
+            )
         ),
-        "SERIAL_MCP_SERVER_MARKERS": tuple(
-            marker.strip().lower()
-            for marker in str(env.get("SERIAL_MCP_SERVER_MARKERS", "ghidra")).split(",")
-            if marker.strip()
+        "SERIAL_MCP_SERVER_MARKERS": _parse_lower_marker_list(
+            env.get("SERIAL_MCP_SERVER_MARKERS", "ghidra")
+        ),
+        "SERIAL_HOST_WORKER_ARCHETYPES": _parse_lower_marker_list(
+            env.get("SERIAL_HOST_WORKER_ARCHETYPES", "ghidra_analyst")
         ),
         "DEEP_ENABLE_MEMORY": _env_flag_from(env, "DEEP_ENABLE_MEMORY", True),
         "DEEP_MEMORY_DIR": env.get("DEEP_MEMORY_DIR", ".deep/memory"),
         "DEEP_PERSIST_BACKEND": _env_flag_from(env, "DEEP_PERSIST_BACKEND", True),
+        "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS": _env_flag_from(
+            env,
+            "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS",
+            True,
+        ),
         "DEEP_BACKEND_ROOT": env.get("DEEP_BACKEND_ROOT", "./.deep_backend"),
         "DEEP_ENABLE_SKILLS": _env_flag_from(env, "DEEP_ENABLE_SKILLS", True),
         "DEEP_INCLUDE_BUNDLED_SKILLS": _env_flag_from(env, "DEEP_INCLUDE_BUNDLED_SKILLS", True),

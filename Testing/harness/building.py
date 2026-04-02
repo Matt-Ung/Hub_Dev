@@ -25,7 +25,7 @@ def build_corpus(
     *,
     clean_first: bool = False,
     include_gcc: bool = True,
-    timeout_sec: int = 900,
+    timeout_sec: int | None = None,
 ) -> Dict[str, Any]:
     config = get_corpus_config(corpus_name)
     ensure_dir(config.build_root)

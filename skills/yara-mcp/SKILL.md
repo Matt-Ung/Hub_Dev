@@ -34,6 +34,9 @@ Use this skill for structured YARA scanning through the local MCP server.
 
 ## Notes
 
-- Base rules still live under the configured `YARA_RULES_DIR`, while generated rules default to `AGENT_ARTIFACT_DIR/yara`.
+- Base rules come from the configured `YARA_RULES_DIR`.
+- If `YARA_RULES_DIR` is unset, this repo prefers `./third_party/signature-base`.
+- `MCPServers/yara_rules` is only a legacy fallback path.
+- Generated rules default to `AGENT_ARTIFACT_DIR/yara`.
 - `yaraWriteRule` refreshes `index.yar` in the generated-rules directory, and default scans include both the base rules and generated rules when `rules_path` is omitted.
 - Prefer concise, specific rules over broad noisy conditions.

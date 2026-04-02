@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from .paths import BUNDLE_ROOT, CONFIG_ROOT, DEFAULT_SERVERS_MANIFEST, REPO_ROOT, ensure_dir, read_json, write_json
 from .samples import get_corpus_config, sample_slug
-from .subprocess_utils import run_command, shorten_text, tool_available
+from .subprocess_utils import normalize_timeout_sec, run_command, shorten_text, tool_available
 
 
 REQUIRED_BUNDLE_FILES = ("bundle_manifest.json", "ghidra_analysis.json")
@@ -171,7 +171,7 @@ def _build_automation_payload(identity: Dict[str, Any], ghidra_analysis: Dict[st
     }
 
 
-def _collect_optional_cli_outputs(sample_path: Path, bundle_dir: Path, timeout_sec: int) -> Dict[str, Any]:
+def _collect_optional_cli_outputs(sample_path: Path, bundle_dir: Path, timeout_sec: int | None) -> Dict[str, Any]:
     outputs_dir = ensure_dir(bundle_dir / "tool_outputs")
     tool_results: Dict[str, Any] = {}
     jobs: List[tuple[str, list[str], str]] = [
@@ -204,12 +204,19 @@ def _collect_optional_cli_outputs(sample_path: Path, bundle_dir: Path, timeout_s
     return tool_results
 
 
-def _run_headless_export(analyze_headless: Path, sample_path: Path, bundle_dir: Path, timeout_sec: int, keep_project: bool) -> Dict[str, Any]:
+def _run_headless_export(
+    analyze_headless: Path,
+    sample_path: Path,
+    bundle_dir: Path,
+    timeout_sec: int | None,
+    keep_project: bool,
+) -> Dict[str, Any]:
     project_parent = ensure_dir(bundle_dir / "_ghidra_project")
     project_name = sample_path.stem + "_batch"
     output_json = bundle_dir / "ghidra_analysis.json"
     log_path = bundle_dir / "ghidra_headless.log"
     script_path = (REPO_ROOT / "Testing" / "harness" / "GhidraHeadlessExport.java").resolve()
+    normalized_timeout = normalize_timeout_sec(timeout_sec)
     command = [
         str(analyze_headless),
         str(project_parent),
@@ -217,21 +224,22 @@ def _run_headless_export(analyze_headless: Path, sample_path: Path, bundle_dir: 
         "-import",
         str(sample_path),
         "-overwrite",
-        "-analysisTimeoutPerFile",
-        str(max(30, int(timeout_sec))),
         "-scriptPath",
         str(script_path.parent),
         "-postScript",
         script_path.name,
         str(output_json),
     ]
+    if normalized_timeout is not None:
+        command[6:6] = ["-analysisTimeoutPerFile", str(max(30, normalized_timeout))]
     if not keep_project:
         command.append("-deleteProject")
     launch_env: Dict[str, str] = {}
     ghidra_java_home = str(os.environ.get("GHIDRA_JAVA_HOME") or os.environ.get("JAVA_HOME") or "").strip()
     if ghidra_java_home:
         launch_env["JAVA_HOME"] = ghidra_java_home
-    result = run_command(command, timeout_sec=max(timeout_sec, timeout_sec + 60), env=launch_env or None)
+    command_timeout = normalized_timeout + 60 if normalized_timeout is not None else None
+    result = run_command(command, timeout_sec=command_timeout, env=launch_env or None)
     combined_log = (result.get("stdout") or "") + ("\n" + result.get("stderr") if result.get("stderr") else "")
     log_path.write_text(combined_log, encoding="utf-8")
     result["log_path"] = str(log_path)
@@ -252,7 +260,7 @@ def prepare_bundle(
     sample_meta: Dict[str, Any],
     *,
     output_root: Path | None = None,
-    timeout_sec: int = 180,
+    timeout_sec: int | None = None,
     analyze_headless: Path | None = None,
     skip_cli_tools: bool = False,
     keep_project: bool = False,
@@ -319,7 +327,7 @@ def prepare_corpus_bundles(
     manifest_lookup: Dict[str, Dict[str, Any]],
     *,
     output_root: Path | None = None,
-    timeout_sec: int = 180,
+    timeout_sec: int | None = None,
     ghidra_install_dir: str = "",
     ghidra_headless: str = "",
     skip_cli_tools: bool = False,

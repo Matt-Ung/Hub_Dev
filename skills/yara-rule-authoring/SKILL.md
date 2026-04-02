@@ -27,4 +27,5 @@ Read [references/quick-syntax.md](references/quick-syntax.md) for the skeletons 
 
 - This repository already has `yaraScanInline(...)` for one-off scans.
 - This repository now also has `yaraWriteRule(...)` for persisting validated rule text into the standardized generated-artifact YARA directory.
+- The base YARA corpus normally comes from `YARA_RULES_DIR`, which defaults to `./third_party/signature-base` in this repo.
 - The same rule text should work for both inline scans and persistent rule files.

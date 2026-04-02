@@ -20,6 +20,15 @@ Use this skill when working with the local `runCapa(...)` wrapper.
 - `runCapa(command, rules_dir=None, timeout_sec=300, output_mode="json_compact", max_rules=...)`
 - `capaHelp(timeout_sec=5)`
 
+## Repository Defaults
+
+- `CAPA_RULES_DIR` is the first lookup source when set.
+- If `CAPA_RULES_DIR` is unset, this repo prefers `./third_party/capa-rules`.
+- `CAPA_SIGS_DIR` should point at the nested `sigs/` directory.
+- If `CAPA_SIGS_DIR` is unset, this repo prefers `./third_party/capa-sigs/sigs`.
+- `./third_party/capa-testfiles/sigs` is also accepted if you keep the upstream repo name locally.
+- Older `MCPServers/capa-rules` and `MCPServers/capa-sigs` paths are legacy fallbacks, not the preferred layout.
+
 ## Command Rules
 
 - `argv[0]` must be `capa` or `capa.exe`.

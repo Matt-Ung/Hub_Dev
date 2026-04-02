@@ -8,7 +8,8 @@ from typing import Dict, Iterable, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_AGENT_ARTIFACT_DIR = REPO_ROOT / "agent_artifacts"
-DEFAULT_YARA_RULES_DIR = REPO_ROOT / "MCPServers" / "yara_rules"
+PREFERRED_YARA_RULES_DIR = REPO_ROOT / "third_party" / "signature-base"
+LEGACY_YARA_RULES_DIR = REPO_ROOT / "MCPServers" / "yara_rules"
 
 ARTIFACT_TYPE_DEFAULTS: Dict[str, str] = {
     "yara": "yara",
@@ -135,5 +136,6 @@ def get_base_yara_rules_dir() -> Path:
     raw = str(os.environ.get("YARA_RULES_DIR") or "").strip()
     if raw:
         return _resolve_path(raw, base=REPO_ROOT)
-    return DEFAULT_YARA_RULES_DIR.resolve()
-
+    if PREFERRED_YARA_RULES_DIR.exists():
+        return PREFERRED_YARA_RULES_DIR.resolve()
+    return LEGACY_YARA_RULES_DIR.resolve()

@@ -36,6 +36,9 @@ SPECIAL_SAMPLE_SOURCE_MAP = {
     "resource_blob_loader_hard_stripped": "resource_blob_loader_test",
     "resource_blob_loader_hard_upx": "resource_blob_loader_test",
     "embedded_payload_test_upx": "embedded_payload_test",
+    "maintenance_orchestrator_test_stripped": "maintenance_orchestrator_test",
+    "hash_dispatch_test_stripped": "hash_dispatch_test",
+    "branch_weave_snapshot_test_stripped": "branch_weave_snapshot_test",
 }
 
 
@@ -43,13 +46,16 @@ DOMAIN_OVERRIDES = {
     "test": "algorithmic",
     "basic_loops_test": "algorithmic",
     "floss_test": "string_processing",
-    "string_table_test": "string_processing",
+    "maintenance_orchestrator_test": "systems",
     "config_decoder_test": "file_processing",
+    "signal_router_report_test": "systems",
+    "stack_notice_scheduler_test": "systems",
     "embedded_payload_test": "file_processing",
     "resource_blob_loader_test": "file_processing",
     "callback_dispatch_test": "systems",
     "anti_debug_test": "systems",
     "anti_analysis_suite_test": "systems",
+    "branch_weave_snapshot_test": "systems",
     "winapi_behavior_test": "systems",
     "control_flow_flattened_test": "systems",
     "api_hash_resolver_test": "systems",
@@ -201,29 +207,29 @@ REFERENCE_OVERRIDES: Dict[str, Dict[str, Any]] = {
             "main prints marker:basic_loops_baseline before exiting",
         ],
     },
-    "string_table_test": {
+    "maintenance_orchestrator_test": {
         "reference_status": "reviewed_concrete_anchor_v1",
         "goal_summary": (
-            "This baseline string sample stores cleartext status strings, a pointer-backed message table, "
-            "and a stack-built greeting so the analysis can distinguish ordinary string storage from obfuscation."
+            "This deceptive-surface sample decodes a fixed XOR-protected operation script, renders a 12x8 in-memory snapshot, "
+            "computes a checksum and row sums, and writes a local maintenance report while surrounding that flow with threatening but inert labels and decoy handlers."
         ),
         "primary_behaviors": [
-            "Global status strings and banner live in cleartext",
-            "MESSAGES is an array of const char * pointers with indexed lookup",
-            "lookup_message returns '(unknown message index)' for out-of-range values",
-            "build_greeting formats 'Hello, %s! Welcome to the test harness.' into a stack buffer",
+            "unlock_quarantine_schedule XOR-decodes eight 4-byte SnapshotOp records with key 0x5A",
+            "install_boot_autorun, wipe_shadow_catalog, stage_domain_cache, and queue_remote_archive actually manipulate the local 12x8 cell grid",
+            "export_credential_sheet computes checksum, nonzero count, max value, and row sums over the rendered grid",
+            "ship_archive_to_control writes maintenance_snapshot_report.txt locally, while audit_quarantine_manifest and prime_recovery_notices only preserve threatening labels as inert noise or dead-branch decoys",
         ],
         "expected_findings": [
-            "Recover the banner '=== String Table Test Executable v1.0 ==='",
-            "Recover multiple table strings such as msg[0] and msg[7]",
-            "Explain that the strings are stored in cleartext rather than encoded",
-            "Note the out-of-bounds fallback string '(unknown message index)'",
+            "Recover maintenance_snapshot_report.txt as the real local output path",
+            "Identify the live opcodes 0x11, 0x22, 0x33, and 0x44 as the ones present in the decoded script",
+            "Call out strings such as wipe_restore_points and schedule_hidden_boot_task as misleading labels rather than evidence of executed malicious behavior",
+            "Separate the dormant 0x90/0x91/0x92 handler family and the query_recovery_slot branch from the live snapshot-rendering path",
         ],
         "gold_facts": [
-            "STATUS_OK / STATUS_WARN / STATUS_ERR are cleartext global pointers",
-            "MESSAGES contains eight strings from msg[0] through msg[7]",
-            "build_greeting uses snprintf into a local greeting[128] buffer",
-            "main prints marker:string_table_baseline before returning",
+            "The snapshot dimensions are 12 columns by 8 rows",
+            "NOISE_LABELS includes wipe_restore_points, schedule_hidden_boot_task, export_credential_cache, archive_domain_token, and disable_recovery_console",
+            "query_recovery_slot uses a volatile gate and evaluates false at runtime, so prime_recovery_notices does not execute",
+            "main prints marker:maintenance_snapshot before returning",
         ],
     },
     "callback_dispatch_test": {
@@ -273,6 +279,56 @@ REFERENCE_OVERRIDES: Dict[str, Dict[str, Any]] = {
             "ENCODED_CONFIG_LEN is the encoded byte length for the XOR-protected config blob",
             "ParsedConfig has path[128], int port, and flag[64]",
             "main prints marker:config_decoder before returning",
+        ],
+    },
+    "signal_router_report_test": {
+        "reference_status": "reviewed_concrete_anchor_v1",
+        "goal_summary": (
+            "This medium deception sample decodes a small XOR-protected routing plan, updates four local counters, "
+            "computes a simple checksum/peak summary, and writes a local bar-style report while threatening labels remain inert."
+        ),
+        "primary_behaviors": [
+            "decode_signal_plan XOR-decodes eight 4-byte operations with key 0x3C",
+            "wipe_restore_chain increments one lane, seed_remote_beacon applies a floor, and collect_credential_rows splits a delta across adjacent lanes",
+            "fold_noise_labels preserves cleartext decoy labels as inert referenced data",
+            "write_signal_report writes the runtime-decoded signal_router_report.txt path locally",
+        ],
+        "expected_findings": [
+            "Recover the four-lane local counter model and the final totals 8,5,11,4",
+            "Identify wipe_restore_chain and ship_token_archive as misleading labels rather than destructive behavior",
+            "Separate the dead 0x91 / 0xA2 handler family from the live routing opcodes",
+            "Describe the bar-style local report output rather than inventing network or credential behavior",
+        ],
+        "gold_facts": [
+            "ROUTE_CHANNELS is 4",
+            "The runtime-decoded report path is signal_router_report.txt",
+            "The live opcodes are 0x11, 0x22, and 0x33",
+            "main prints marker:signal_router before returning",
+        ],
+    },
+    "stack_notice_scheduler_test": {
+        "reference_status": "reviewed_concrete_anchor_v1",
+        "goal_summary": (
+            "This FLOSS-focused deception sample decodes eight minute offsets with XOR key 0x27, sorts them into local schedule windows, "
+            "computes earliest/latest/gap summaries, and writes schedule_window_digest.txt while stack-built threat labels remain decoys."
+        ),
+        "primary_behaviors": [
+            "stage_recovery_queue decodes ENCODED_WINDOWS with key 0x27 and base minute 480",
+            "collect_browser_cache is an insertion sort over the eight decoded schedule entries",
+            "seed_watchlist_labels folds stack-built strings such as wipe_wallet_cache and schedule_hidden_sync into inert noise",
+            "emit_recovery_notices contains dormant XOR-decoded notices behind a false gate",
+        ],
+        "expected_findings": [
+            "Recover the real scheduling behavior rather than narrating the sample from FLOSS-decoded threat strings",
+            "Recover the sorted schedule windows 485,500,515,530,545,560,575,600",
+            "Identify schedule_window_digest.txt as the real local output path",
+            "Call out the dormant decoded notices and stack-built labels as deceptive surfaces rather than live behavior",
+        ],
+        "gold_facts": [
+            "WINDOW_COUNT is 8 and WINDOW_BASE_MINUTE is 480",
+            "The largest post-sort gap is 25",
+            "The earliest window is 485 and the latest is 600",
+            "main prints marker:stack_notice_scheduler before returning",
         ],
     },
     "multilayer_encode_test": {
@@ -345,6 +401,31 @@ REFERENCE_OVERRIDES: Dict[str, Dict[str, Any]] = {
             "Header.record_count is 5",
             "Dead record bytes are filled with 0xCC or 0x90 patterns",
             "main prints marker:embedded_payload and marker:payload_records before exit",
+        ],
+    },
+    "branch_weave_snapshot_test": {
+        "reference_status": "reviewed_concrete_anchor_v1",
+        "goal_summary": (
+            "This low-leakage hard deception sample XOR-decodes a compact drawing program, applies it to an 8x8 local grid, "
+            "computes terse summary fields, and writes a short local report while threat-themed labels remain misleading or dormant."
+        ),
+        "primary_behaviors": [
+            "decode_branch_program XOR-decodes ten 4-byte operations with key 0x4D",
+            "flush_ticket_vault, ship_shadow_bundle, drop_recovery_mesh, and erase_domain_secrets are misleadingly named live handlers that mutate the local 8x8 grid",
+            "write_grid_report writes the runtime-decoded bw_grid_report.txt path using terse fields such as d=, o=, c=, and g:",
+            "emit_false_notices and the 0x91 / 0xA2 / 0xB3 handler family preserve decoy strings and dead behavior for analysis without affecting the live grid path",
+        ],
+        "expected_findings": [
+            "Recover the 8x8 local-grid behavior and short report-writing path even though the sample has minimal explanatory strings",
+            "Identify the live opcodes 0x11, 0x22, 0x33, and 0x44 as the actual program family",
+            "Call out strings such as flush_ticket_vault and ship_shadow_bundle as deceptive labels rather than destructive behavior",
+            "Separate the dormant decoded notices and dead handler family from the live execution path",
+        ],
+        "gold_facts": [
+            "GRID_W and GRID_H are both 8",
+            "The runtime-decoded report path is bw_grid_report.txt",
+            "The dead handler opcodes are 0x91, 0xA2, and 0xB3",
+            "main prints marker:branch_weave before returning",
         ],
     },
     "anti_analysis_suite_test": {
