@@ -338,6 +338,7 @@ Single-run `summary.csv` includes:
 - `query_variant`
 - `subagent_profile`
 - `worker_persona_profile`
+- `worker_role_prompt_mode`
 - `validator_review_level`
 - `model_profile`
 - `force_model`
@@ -411,7 +412,7 @@ Bundle integrity now distinguishes between:
 - missing required files
 - present but stale bundles
 
-The bundle freshness check is based on the current binary identity plus the current Ghidra headless export script/preparer version. Prompt-only changes, including worker persona prompt overlays, do not invalidate bundles.
+The bundle freshness check is based on the current binary identity plus the current Ghidra headless export script/preparer version. Prompt-only changes, including worker persona overlays or worker role prompt mode changes, do not invalidate bundles.
 
 Statistical significance now uses a two-sided permutation test over replicate-level score series. The default interpretation target is 95% confidence, which corresponds to `p <= 0.05`, not `p >= 0.95`. When repetitions are too small to support a credible test, the significance rows are still written but marked `insufficient_repetitions`.
 

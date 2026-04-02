@@ -436,6 +436,7 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
         "query_variant",
         "subagent_profile",
         "worker_persona_profile",
+        "worker_role_prompt_mode",
         "validator_review_level",
         "tool_profile",
         "model_profile",
@@ -490,6 +491,7 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
                 "query_variant": run_metadata.get("query_variant", ""),
                 "subagent_profile": run_metadata.get("subagent_profile", ""),
                 "worker_persona_profile": run_metadata.get("worker_persona_profile", ""),
+                "worker_role_prompt_mode": run_metadata.get("worker_role_prompt_mode", ""),
                 "validator_review_level": run_metadata.get("validator_review_level", ""),
                 "tool_profile": run_metadata.get("tool_profile", ""),
                 "model_profile": run_metadata.get("model_profile", ""),
@@ -553,6 +555,7 @@ def write_markdown_report(path, aggregate: Dict[str, Any]) -> None:
     lines.append(f"- Query variant: `{run_metadata.get('query_variant', '')}`")
     lines.append(f"- Subagent profile: `{run_metadata.get('subagent_profile', '')}`")
     lines.append(f"- Worker persona profile: `{run_metadata.get('worker_persona_profile', '')}`")
+    lines.append(f"- Worker role prompt mode: `{run_metadata.get('worker_role_prompt_mode', '')}`")
     lines.append(f"- Tool profile: `{run_metadata.get('tool_profile', '')}`")
     lines.append(f"- Forced model: `{run_metadata.get('force_model', '')}`")
     lines.append(f"- Judge mode: `{run_metadata.get('judge_mode', '')}`")

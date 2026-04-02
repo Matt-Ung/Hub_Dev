@@ -253,6 +253,7 @@ def _planned_run_instance(
         "validator_review_level": str(run_cfg.get("validator_review_level") or ""),
         "tool_profile": str(run_cfg.get("tool_profile") or ""),
         "worker_persona_profile": str(run_cfg.get("worker_persona_profile") or ""),
+        "worker_role_prompt_mode": str(run_cfg.get("worker_role_prompt_mode") or ""),
         "subagent_profile": str(run_cfg.get("subagent_profile") or ""),
     }
 
@@ -509,6 +510,7 @@ def _build_comparison_tables(
                     "query_variant": str(planned_cfg.get("query_variant") or ""),
                     "subagent_profile": str(planned_cfg.get("subagent_profile") or ""),
                     "worker_persona_profile": str(planned_cfg.get("worker_persona_profile") or ""),
+                    "worker_role_prompt_mode": str(planned_cfg.get("worker_role_prompt_mode") or ""),
                     "validator_review_level": str(planned_cfg.get("validator_review_level") or ""),
                     "model_profile": str(planned_cfg.get("model_profile") or ""),
                     "force_model": str(planned_cfg.get("force_model") or ""),
@@ -570,6 +572,7 @@ def _build_comparison_tables(
             "query_variant": ((group.get("run_manifest") or {}).get("query_variant") or ""),
             "subagent_profile": ((group.get("run_manifest") or {}).get("subagent_profile") or ""),
             "worker_persona_profile": ((group.get("run_manifest") or {}).get("worker_persona_profile") or ""),
+            "worker_role_prompt_mode": ((group.get("run_manifest") or {}).get("worker_role_prompt_mode") or ""),
             "validator_review_level": ((group.get("run_manifest") or {}).get("validator_review_level") or ""),
             "model_profile": ((group.get("run_manifest") or {}).get("model_profile") or ""),
             "force_model": ((group.get("run_manifest") or {}).get("force_model") or ""),
@@ -1067,15 +1070,16 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
     parser.add_argument("--ghidra-install-dir", default="", help="Optional GHIDRA_INSTALL_DIR override")
     parser.add_argument("--ghidra-headless", default="", help="Optional analyzeHeadless override")
     parser.add_argument("--judge-model", default="", help="Optional judge model override")
-    parser.add_argument("--max-run-input-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative input tokens exceed this ceiling")
-    parser.add_argument("--max-run-output-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative output tokens exceed this ceiling")
-    parser.add_argument("--max-run-total-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative total tokens exceed this ceiling")
-    parser.add_argument("--max-run-relative-cost-index", type=float, default=None, help="Abort a child run after the current task if relative cost exceeds this ceiling")
-    parser.add_argument("--max-run-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for child-run estimated USD cost. This is surfaced in projections and budget_status.json but does not abort by itself.")
-    parser.add_argument("--hard-max-run-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for child-run estimated USD cost.")
-    parser.add_argument("--max-experiment-relative-cost-index", type=float, default=None, help="Abort the sweep when cumulative relative cost exceeds this ceiling")
-    parser.add_argument("--max-experiment-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for projected or cumulative experiment estimated USD cost. This is surfaced in doctor/preflight output but does not abort by itself.")
-    parser.add_argument("--hard-max-experiment-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for projected or cumulative experiment estimated USD cost.")
+    parser.add_argument("--enable-budget-guardrails", action="store_true", help="Enable child-run and experiment budget guardrails. When omitted, all budget ceilings are disabled even if config defaults or preset values exist.")
+    parser.add_argument("--max-run-input-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative input tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-output-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative output tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-total-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative total tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-relative-cost-index", type=float, default=None, help="Abort a child run after the current task if relative cost exceeds this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for child-run estimated USD cost. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--hard-max-run-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for child-run estimated USD cost. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-experiment-relative-cost-index", type=float, default=None, help="Abort the sweep when cumulative relative cost exceeds this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-experiment-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for projected or cumulative experiment estimated USD cost. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--hard-max-experiment-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for projected or cumulative experiment estimated USD cost. Only active with --enable-budget-guardrails.")
     parser.add_argument("--timeout-sec", type=int, default=0, help="Optional subprocess timeout in seconds for child runs; 0 disables it")
     parser.add_argument("--repetitions", type=int, default=0, help="Optional repetition-count override; 0 uses the config default")
     parser.add_argument("--skip-visuals", action="store_true", help="Skip PNG chart generation")
@@ -1093,6 +1097,7 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
     corpus = get_corpus_config(corpus_name)
     manifest = load_sample_manifest(corpus_name)
     budget_config = resolve_budget_config(
+        enable_budget_guardrails=bool(args.enable_budget_guardrails),
         max_run_input_tokens=args.max_run_input_tokens,
         max_run_output_tokens=args.max_run_output_tokens,
         max_run_total_tokens=args.max_run_total_tokens,
@@ -1142,6 +1147,7 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
         "selected_tasks": list(args.task),
         "selected_difficulties": list(args.difficulty_filter),
         "repetitions": repetitions,
+        "enable_budget_guardrails": bool(args.enable_budget_guardrails),
         "budget_config": budget_config,
         "meta": _parse_metadata(args.meta),
         "baseline_variant_id": "baseline",
@@ -1258,6 +1264,7 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                 "architecture": str(run_cfg.get("architecture") or corpus.default_architecture),
                 "validator_review_level": str(run_cfg.get("validator_review_level") or "default"),
                 "query_variant": str(run_cfg.get("query_variant") or "default"),
+                "worker_role_prompt_mode": str(run_cfg.get("worker_role_prompt_mode") or "default"),
                 "checks": validate_run_configuration(
                     corpus_name=corpus_name,
                     sample_paths=sample_paths,
@@ -1269,6 +1276,7 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                     architecture=str(run_cfg.get("architecture") or corpus.default_architecture),
                     query_variant=str(run_cfg.get("query_variant") or "default"),
                     worker_persona_profile=str(run_cfg.get("worker_persona_profile") or "default"),
+                    worker_role_prompt_mode=str(run_cfg.get("worker_role_prompt_mode") or "default"),
                     validator_review_level=str(run_cfg.get("validator_review_level") or "default"),
                     tool_profile=str(run_cfg.get("tool_profile") or "full"),
                     judge_mode=str(run_cfg.get("judge_mode") or "agent"),
@@ -1296,6 +1304,17 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
         "warnings": list(dict.fromkeys(preflight_warnings)),
         "variants": preflight_variants,
     }
+    if not args.skip_build and not bool(build_record.get("ok")):
+        preflight_report.setdefault("warnings", []).append(
+            "Build step reported failure, but usable binaries for the selected scope were still found. "
+            "This run can continue with existing artifacts, but it is not a clean-rebuild validation. "
+            "See build_record.json for the failing make step."
+        )
+    if not args.skip_prepare and not bool(prepare_record.get("ready_for_analysis", True)):
+        preflight_report.setdefault("warnings", []).append(
+            "Bundle preparation reported issues, but existing bundles were still inspected for readiness. "
+            "See prepare_record.json for the regeneration details."
+        )
     if not args.skip_visuals:
         missing_visual_modules: List[str] = []
         for module_name in ("matplotlib", "pandas"):
@@ -1414,6 +1433,8 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                 str(run_cfg.get("subagent_profile") or "default"),
                 "--worker-persona-profile",
                 str(run_cfg.get("worker_persona_profile") or "default"),
+                "--worker-role-prompt-mode",
+                str(run_cfg.get("worker_role_prompt_mode") or "default"),
                 "--validator-review-level",
                 str(run_cfg.get("validator_review_level") or "default"),
                 "--tool-profile",
@@ -1445,6 +1466,8 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                 cmd.extend(["--timeout-sec", str(int(args.timeout_sec))])
             if args.judge_model:
                 cmd.extend(["--judge-model", args.judge_model])
+            if args.enable_budget_guardrails:
+                cmd.append("--enable-budget-guardrails")
             force_model = str(run_cfg.get("force_model") or "").strip()
             if force_model:
                 cmd.extend(["--force-model", force_model])
@@ -1454,18 +1477,19 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                 cmd.extend(["--task", task_id])
             for difficulty in args.difficulty_filter:
                 cmd.extend(["--difficulty-filter", difficulty])
-            if args.max_run_input_tokens is not None:
-                cmd.extend(["--max-run-input-tokens", str(args.max_run_input_tokens)])
-            if args.max_run_output_tokens is not None:
-                cmd.extend(["--max-run-output-tokens", str(args.max_run_output_tokens)])
-            if args.max_run_total_tokens is not None:
-                cmd.extend(["--max-run-total-tokens", str(args.max_run_total_tokens)])
-            if args.max_run_relative_cost_index is not None:
-                cmd.extend(["--max-run-relative-cost-index", str(args.max_run_relative_cost_index)])
-            if args.max_run_estimated_cost_usd is not None:
-                cmd.extend(["--max-run-estimated-cost-usd", str(args.max_run_estimated_cost_usd)])
-            if args.hard_max_run_estimated_cost_usd is not None:
-                cmd.extend(["--hard-max-run-estimated-cost-usd", str(args.hard_max_run_estimated_cost_usd)])
+            if args.enable_budget_guardrails:
+                if args.max_run_input_tokens is not None:
+                    cmd.extend(["--max-run-input-tokens", str(args.max_run_input_tokens)])
+                if args.max_run_output_tokens is not None:
+                    cmd.extend(["--max-run-output-tokens", str(args.max_run_output_tokens)])
+                if args.max_run_total_tokens is not None:
+                    cmd.extend(["--max-run-total-tokens", str(args.max_run_total_tokens)])
+                if args.max_run_relative_cost_index is not None:
+                    cmd.extend(["--max-run-relative-cost-index", str(args.max_run_relative_cost_index)])
+                if args.max_run_estimated_cost_usd is not None:
+                    cmd.extend(["--max-run-estimated-cost-usd", str(args.max_run_estimated_cost_usd)])
+                if args.hard_max_run_estimated_cost_usd is not None:
+                    cmd.extend(["--hard-max-run-estimated-cost-usd", str(args.hard_max_run_estimated_cost_usd)])
             cmd.extend(["--meta", f"model_profile={str(run_cfg.get('model_profile') or '')}"])
             cmd.extend(["--meta", f"experiment_variant_id={variant_id}"])
 
@@ -1744,6 +1768,7 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                 "architecture": lineage_key.get("architecture"),
                 "query_variant": lineage_key.get("query_variant"),
                 "worker_persona_profile": lineage_key.get("worker_persona_profile"),
+                "worker_role_prompt_mode": lineage_key.get("worker_role_prompt_mode"),
                 "selected_samples": "; ".join(lineage_key.get("selected_samples") or []),
                 "selected_tasks": "; ".join(lineage_key.get("selected_tasks") or []),
                 "selected_difficulties": "; ".join(lineage_key.get("selected_difficulties") or []),

@@ -207,7 +207,7 @@ def run_launch_doctor(argv: List[str] | None = None) -> None:
     parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict the broad projection to")
     parser.add_argument("--task", action="append", default=[], help="Optional task id(s) to restrict the broad projection to")
     parser.add_argument("--difficulty-filter", action="append", default=[], help="Optional difficulty filter for the broad-sweep readiness estimate")
-    parser.add_argument("--variable", action="append", default=[], help="Optional sweep variable family filter for the broad projection, e.g. --variable worker_persona_prompt")
+    parser.add_argument("--variable", action="append", default=[], help="Optional sweep variable family filter for the broad projection, e.g. --variable worker_prompt_shape")
     parser.add_argument("--repetitions", type=int, default=None, help="Optional repetition override for the broad-sweep readiness estimate")
     parser.add_argument("--bundle-only", action="store_true", help="Only run bundle-integrity checks for the selected scope and exit non-zero on bundle failures")
     parser.add_argument("--show-bundle-details", action="store_true", help="Always print the detailed bundle-integrity breakdown, not just summary status lines")
@@ -233,8 +233,9 @@ def run_launch_doctor(argv: List[str] | None = None) -> None:
     launch_env = resolve_launch_environment(explicit_judge_model=args.judge_model)
     budget_modules = ["pydantic", "pydantic_ai"]
     visuals_modules = ["matplotlib", "pandas"]
-    runtime_modules = check_python_modules(launch_env["current_python"], budget_modules)
-    visuals = check_python_modules(launch_env["current_python"], visuals_modules)
+    effective_python = str(launch_env.get("preferred_python") or launch_env.get("current_python") or "")
+    runtime_modules = check_python_modules(effective_python, budget_modules)
+    visuals = check_python_modules(effective_python, visuals_modules)
     mingw = check_command_available("x86_64-w64-mingw32-gcc")
 
     broad_budget = build_sweep_projection_report(
@@ -415,7 +416,7 @@ def run_launch_doctor(argv: List[str] | None = None) -> None:
             args.corpus,
             args.pilot_preset,
             str(launch_env.get("judge_model") or preset.get("recommended_judge_model") or ""),
-            str(launch_env.get("current_python") or ""),
+            effective_python,
             selected_samples=list(args.sample or []),
             selected_tasks=list(args.task or []),
             selected_difficulties=list(args.difficulty_filter or []),

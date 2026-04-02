@@ -1,6 +1,6 @@
 # Hub_Dev
 
-This repo has two active centers of gravity:
+This repo has two active core development areas:
 
 - [`multi_agent_wf/`](multi_agent_wf/): the main multi-agent reverse-engineering application
 - [`Testing/`](Testing/): the maintained binary-analysis evaluation harness
@@ -62,7 +62,7 @@ That means many files in `Testing/` exist to observe or compare the behavior of 
 
 ## Documentation Hierarchy
 
-The repo now follows this intended documentation structure:
+The repo follows this documentation structure:
 
 1. Root overview:
    - [`README.md`](README.md)
@@ -76,5 +76,3 @@ The repo now follows this intended documentation structure:
    - [`Testing/TESTING_PLAN.md`](Testing/TESTING_PLAN.md)
    - [`multi_agent_wf/extension_tutorial.md`](multi_agent_wf/extension_tutorial.md)
    - [`docs/agent_run_dataflow.md`](docs/agent_run_dataflow.md)
-
-If a local README only repeats parent-level material, prefer pruning or linking instead of expanding it.

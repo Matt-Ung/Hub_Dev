@@ -110,10 +110,19 @@
       "recommended_judge_model": "openai:gpt-4o-mini"
     },
     "coverage_broad_r1_60usd": {
-      "description": "One-repetition broad-coverage experiment that uses the full 24-task experimental corpus with a wider sweep config. This is the maintained option when you want near-60-USD heuristic spend and much broader architecture, pipeline, and model-profile coverage in one experiment.",
+      "description": "One-repetition medium+hard broad-coverage experiment that uses the maintained broad sweep config but limits the preset to the worker/prompt study families needed to keep the current 0.50-per-sample-task heuristic under 60 USD.",
       "runner": "sweep",
       "corpus": "experimental",
       "config": "Testing/config/experiment_sweeps_broad_coverage_r1.json",
+      "difficulty_filters": [
+        "medium",
+        "hard"
+      ],
+      "variables": [
+        "query_verbosity",
+        "worker_subagents",
+        "worker_prompt_shape"
+      ],
       "repetitions": 1,
       "label": "coverage-broad-r1-60usd",
       "max_run_estimated_cost_usd": 2.5,
@@ -286,7 +295,7 @@
       "recommended_judge_model": "openai:gpt-4o-mini"
     },
     "sweep_architecture_focus_r1": {
-      "description": "Focused worker-shape study on one medium task. Compares architecture preset, worker breadth, and worker persona overlays while holding the sample/task fixed.",
+      "description": "Focused worker-shape study on one medium task. Compares architecture preset, worker breadth, and worker prompt shape while holding the sample/task fixed.",
       "runner": "sweep",
       "corpus": "experimental",
       "samples": [
@@ -298,7 +307,7 @@
       "variables": [
         "architecture_preset",
         "worker_subagents",
-        "worker_persona_prompt"
+        "worker_prompt_shape"
       ],
       "repetitions": 1,
       "skip_visuals": false,

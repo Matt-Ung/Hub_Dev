@@ -28,6 +28,13 @@ VALIDATOR_REVIEW_LEVEL_CHOICES = [
 VALIDATOR_REVIEW_LEVEL_LABELS = {
     value: label for label, value in VALIDATOR_REVIEW_LEVEL_CHOICES
 }
+WORKER_ROLE_PROMPT_MODE_CHOICES = [
+    ("default (Use worker archetype role prompt)", "default"),
+    ("blank (Suppress worker archetype role prompt)", "blank"),
+]
+WORKER_ROLE_PROMPT_MODE_LABELS = {
+    value: label for label, value in WORKER_ROLE_PROMPT_MODE_CHOICES
+}
 SHELL_EXECUTION_MODE_CHOICES = [
     ("None", "none"),
     ("Yes, with permission from user", "ask"),
@@ -117,6 +124,15 @@ def _normalize_shell_execution_mode(value: Any) -> str:
     if normalized in {"on", "enabled", "enable", "yes", "full access", "unsafe", "use at risk"}:
         return "full"
     return "none"
+
+
+def _normalize_worker_role_prompt_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"default", "blank"}:
+        return normalized
+    if normalized in {"empty", "none", "off", "disabled", "disable", "no_role", "no_role_prompt", "bare"}:
+        return "blank"
+    return "default"
 
 
 def resolve_pipeline_definition(
@@ -360,6 +376,9 @@ def _build_runtime_settings(
         "DEEP_AGENT_RETRIES": int(env.get("DEEP_AGENT_RETRIES", "4")),
         "DEEP_WORKER_SUBAGENT_PROFILE": str(env.get("DEEP_WORKER_SUBAGENT_PROFILE", "default")).strip().lower() or "default",
         "DEEP_WORKER_PERSONA_PROFILE": str(env.get("DEEP_WORKER_PERSONA_PROFILE", "default")).strip().lower() or "default",
+        "DEEP_WORKER_ROLE_PROMPT_MODE": _normalize_worker_role_prompt_mode(
+            env.get("DEEP_WORKER_ROLE_PROMPT_MODE", "default")
+        ),
         "DEEP_AGENT_AUTO_SELECT_PIPELINE": auto_select_pipeline,
         "DEEP_AGENT_PIPELINE_ROUTER_MODEL": env.get("DEEP_AGENT_PIPELINE_ROUTER_MODEL", "openai:gpt-4o-mini"),
         "DEFAULT_ALLOW_PARENT_INPUT": _env_flag_from(env, "DEFAULT_ALLOW_PARENT_INPUT", False),

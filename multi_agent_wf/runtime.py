@@ -56,6 +56,7 @@ from .config import (
     DEEP_PERSIST_BACKEND,
     DEEP_SKILL_DIRS,
     DEEP_WORKER_PERSONA_PROFILE,
+    DEEP_WORKER_ROLE_PROMPT_MODE,
     DEEP_WORKER_SUBAGENT_PROFILE,
     DEFAULT_SHELL_EXECUTION_MODE,
     GHIDRA_CHANGE_PROPOSALS_END,
@@ -79,6 +80,7 @@ from .config import (
     YARA_RULE_PROPOSALS_START,
     _normalize_shell_execution_mode,
     _normalize_validator_review_level,
+    _normalize_worker_role_prompt_mode,
     _resolve_repo_relative_path,
     resolve_pipeline_definition,
 )
@@ -146,6 +148,26 @@ def _worker_persona_overlay(stage_name: str) -> str:
         + "\n".join(f"- {rule}" for rule in rules)
         + "\n"
     )
+
+
+def _worker_role_prompt(stage_name: str, archetype_name: str) -> str:
+    if str(stage_name or "").split(".", 1)[0] != "workers":
+        return AGENT_ARCHETYPE_PROMPTS[archetype_name]
+    prompt_mode = _normalize_worker_role_prompt_mode(DEEP_WORKER_ROLE_PROMPT_MODE)
+    if prompt_mode == "blank":
+        return ""
+    return AGENT_ARCHETYPE_PROMPTS[archetype_name]
+
+
+def _worker_instruction_block(stage_name: str, archetype_name: str) -> str:
+    sections = []
+    role_prompt = str(_worker_role_prompt(stage_name, archetype_name) or "").strip()
+    if role_prompt:
+        sections.append(role_prompt)
+    persona_overlay = str(_worker_persona_overlay(stage_name) or "").strip()
+    if persona_overlay:
+        sections.append(persona_overlay)
+    return "\n\n".join(sections).strip()
 
 
 def _resolve_model_id(*candidates: Optional[str]) -> str:
@@ -1073,7 +1095,7 @@ def build_subagent_architecture(
 
         for idx in range(quantity):
             instance_name = archetype_name if quantity == 1 else f"{archetype_name}_{idx + 1}"
-            instructions = AGENT_ARCHETYPE_PROMPTS[archetype_name] + _worker_persona_overlay(stage_name)
+            instructions = _worker_instruction_block(stage_name, archetype_name)
             can_ask_questions = archetype_name not in {"evidence_validator", "reporting_analyst"}
             max_questions = 1 if can_ask_questions else 0
             if quantity > 1:
@@ -2934,7 +2956,7 @@ def build_host_worker_assignment_executor(
             f"Host-parallel worker requested {archetype_name!r}, but no {spec['tool_domain']} MCP toolsets are configured."
         )
 
-    instructions = (AGENT_ARCHETYPE_PROMPTS[archetype_name] + _worker_persona_overlay(stage_name)).rstrip()
+    instructions = _worker_instruction_block(stage_name, archetype_name).rstrip()
     instructions += (
         "\n\nExecution note:\n"
         "- You are a host-scheduled worker executing one assigned work item.\n"

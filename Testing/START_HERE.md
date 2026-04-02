@@ -25,6 +25,9 @@ The harness loads repo `.env` automatically.
 
 Notes:
 
+- When `./.venv/bin/python` exists, the launch doctor and preset launcher now
+  treat that repo interpreter as the effective runtime target for dependency
+  checks and child-run launches.
 - `requirements.txt` already includes the judge and visualization deps the doctor checks for, including `pydantic`, `pydantic-ai`, `matplotlib`, and `pandas`.
 - `upx` is optional. Packed-variant targets are skipped when `UPX_BIN` is not available.
 - The maintained experiment path targets Windows-style `.exe` samples. The corpus-local `*_gcc.exe` host builds are useful for development, but they are not the canonical full-experiment target.
@@ -108,7 +111,7 @@ One family only:
 ```bash
 python Testing/run_launch_doctor.py \
   --corpus experimental \
-  --variable worker_persona_prompt \
+  --variable worker_prompt_shape \
   --repetitions 1
 ```
 
@@ -119,7 +122,7 @@ python Testing/run_launch_doctor.py \
   --corpus experimental \
   --sample config_decoder_test.exe \
   --task config_value_recovery \
-  --variable worker_persona_prompt \
+  --variable worker_prompt_shape \
   --repetitions 1
 ```
 

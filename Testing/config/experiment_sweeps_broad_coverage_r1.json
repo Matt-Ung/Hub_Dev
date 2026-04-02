@@ -1,6 +1,6 @@
 {
   "version": "binary_experiment_sweep_broad_coverage_r1",
-  "description": "One-repetition broad-coverage sweep for the experimental corpus. This extends the maintained default sweep with wider architecture, pipeline, and model-profile coverage to maximize decision-useful breadth while still fitting under an approximately 60 USD heuristic budget.",
+  "description": "One-repetition broad-coverage sweep for the experimental corpus. This extends the maintained default sweep with selected extra architecture, pipeline, and model-profile coverage to maximize decision-useful breadth. The historical `60usd` preset name is retained for compatibility, but under the current 0.50-per-sample-task heuristic this plan projects well above 60 USD.",
   "repetitions": 1,
   "baseline": {
     "corpus": "experimental",
@@ -9,6 +9,7 @@
     "query_variant": "default",
     "subagent_profile": "default",
     "worker_persona_profile": "default",
+    "worker_role_prompt_mode": "default",
     "validator_review_level": "default",
     "tool_profile": "full",
     "model_profile": "repo_default",
@@ -32,18 +33,12 @@
   "sweeps": [
     {
       "variable": "query_verbosity",
-      "description": "Change only the task prompt/query detail level.",
+      "description": "Change only the task prompt/query detail level with a shorter-than-default query variant.",
       "variants": [
         {
           "name": "brief",
           "overrides": {
             "query_variant": "brief"
-          }
-        },
-        {
-          "name": "detailed",
-          "overrides": {
-            "query_variant": "detailed"
           }
         }
       ]
@@ -61,25 +56,21 @@
       ]
     },
     {
-      "variable": "worker_persona_prompt",
-      "description": "Change only the worker-stage persona overlay while keeping worker breadth, tools, and pipeline constant.",
+      "variable": "worker_prompt_shape",
+      "description": "Compare the maintained default worker prompts against an evidence-first overlay and an empty worker-role condition while keeping worker breadth, tools, and pipeline constant.",
       "variants": [
-        {
-          "name": "skeptical",
-          "overrides": {
-            "worker_persona_profile": "skeptical"
-          }
-        },
-        {
-          "name": "hypothesis_driven",
-          "overrides": {
-            "worker_persona_profile": "hypothesis_driven"
-          }
-        },
         {
           "name": "artifact_focused",
           "overrides": {
-            "worker_persona_profile": "artifact_focused"
+            "worker_persona_profile": "artifact_focused",
+            "worker_role_prompt_mode": "default"
+          }
+        },
+        {
+          "name": "empty",
+          "overrides": {
+            "worker_persona_profile": "default",
+            "worker_role_prompt_mode": "blank"
           }
         }
       ]
@@ -104,7 +95,7 @@
     },
     {
       "variable": "architecture_preset",
-      "description": "Broader worker-architecture study that includes all maintained non-baseline architecture presets.",
+      "description": "Selected worker-architecture study that keeps one lean variant and one Ghidra-centric variant beyond the balanced default.",
       "variants": [
         {
           "name": "minimal",
@@ -116,42 +107,6 @@
           "name": "ghidra_focused",
           "overrides": {
             "architecture": "ghidra_focused"
-          }
-        },
-        {
-          "name": "model_augmented",
-          "overrides": {
-            "architecture": "model_augmented"
-          }
-        },
-        {
-          "name": "aws_collaboration",
-          "overrides": {
-            "architecture": "aws_collaboration"
-          }
-        },
-        {
-          "name": "runtime_enriched",
-          "overrides": {
-            "architecture": "runtime_enriched"
-          }
-        },
-        {
-          "name": "static_swarm",
-          "overrides": {
-            "architecture": "static_swarm"
-          }
-        },
-        {
-          "name": "code_reconstruction",
-          "overrides": {
-            "architecture": "code_reconstruction"
-          }
-        },
-        {
-          "name": "ghidra_editing",
-          "overrides": {
-            "architecture": "ghidra_editing"
           }
         }
       ]

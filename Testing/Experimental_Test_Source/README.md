@@ -93,4 +93,4 @@ Bundles must be regenerated when:
 - the Ghidra export script changes
 - the bundle preparer version changes
 
-They do **not** need regeneration when only prompting or worker persona overlays change.
+They do **not** need regeneration when only prompting, worker persona overlays, or worker role prompt mode changes.

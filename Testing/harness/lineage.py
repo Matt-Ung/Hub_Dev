@@ -10,7 +10,7 @@ from .paths import RESULTS_ROOT, ensure_dir, read_json, slugify, write_json
 from .reporting import aggregate_records
 
 
-LINEAGE_SCHEMA_VERSION = "config_lineage_v1"
+LINEAGE_SCHEMA_VERSION = "config_lineage_v2"
 LINEAGES_ROOT = RESULTS_ROOT / "lineages"
 
 
@@ -30,6 +30,7 @@ def normalize_run_lineage_payload(run_metadata: Dict[str, Any]) -> Dict[str, Any
         "query_variant": str(metadata.get("query_variant") or "").strip(),
         "subagent_profile": str(metadata.get("subagent_profile") or "").strip(),
         "worker_persona_profile": str(metadata.get("worker_persona_profile") or "").strip(),
+        "worker_role_prompt_mode": str(metadata.get("worker_role_prompt_mode") or "").strip(),
         "validator_review_level": str(metadata.get("validator_review_level") or "").strip(),
         "tool_profile": str(metadata.get("tool_profile") or "").strip(),
         "model_profile": str(metadata.get("model_profile") or "").strip(),
@@ -169,6 +170,7 @@ def refresh_lineage_index_for_run(
             "architecture": lineage_payload["config_lineage_key"].get("architecture"),
             "query_variant": lineage_payload["config_lineage_key"].get("query_variant"),
             "worker_persona_profile": lineage_payload["config_lineage_key"].get("worker_persona_profile"),
+            "worker_role_prompt_mode": lineage_payload["config_lineage_key"].get("worker_role_prompt_mode"),
             "selected_samples": lineage_payload["config_lineage_key"].get("selected_samples"),
             "selected_tasks": lineage_payload["config_lineage_key"].get("selected_tasks"),
             "selected_difficulties": lineage_payload["config_lineage_key"].get("selected_difficulties"),

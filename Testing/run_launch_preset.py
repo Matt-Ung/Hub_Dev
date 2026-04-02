@@ -44,6 +44,7 @@ def main() -> None:
     parser.add_argument("--judge-model", default="", help="Optional explicit judge model override")
     parser.add_argument("--preflight-only", action="store_true", help="Only run the preset through its normal preflight path")
     parser.add_argument("--live-view", action="store_true", help="For sweep presets, start the lightweight local progress monitor")
+    parser.add_argument("--enable-budget-guardrails", action="store_true", help="Enable budget ceilings for the launched preset. By default preset budget values are not enforced.")
     parser.add_argument("--skip-build", action="store_true", help="Pass --skip-build through to the underlying runner")
     parser.add_argument("--skip-prepare", action="store_true", help="Pass --skip-prepare through to the underlying runner")
     parser.add_argument("--ghidra-install-dir", default="", help="Optional GHIDRA_INSTALL_DIR override")
@@ -57,6 +58,7 @@ def main() -> None:
         command = build_launch_preset_command(
             args.preset,
             explicit_judge_model=args.judge_model,
+            enable_budget_guardrails=args.enable_budget_guardrails,
             preflight_only=args.preflight_only,
             live_view=args.live_view,
             skip_build=args.skip_build,

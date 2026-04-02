@@ -179,6 +179,62 @@ class HostParallelWorkerRegressionTests(unittest.TestCase):
         self.assertFalse(created_agents[0]["context_manager"])
         self.assertTrue(str(meta["memory_dir"]).endswith("workers/control_flow_analyst/4"))
 
+    def test_blank_worker_role_prompt_mode_omits_archetype_prompt_for_host_workers(self) -> None:
+        runtime_mod = _import_runtime_with_stubs()
+        runtime_mod.DEEP_WORKER_ROLE_PROMPT_MODE = "blank"
+
+        runtime_mod.AGENT_ARCHETYPE_SPECS["test_worker"] = {
+            "tool_domain": "none",
+            "model": "openai:gpt-5-mini",
+        }
+        runtime_mod.AGENT_ARCHETYPE_PROMPTS["test_worker"] = "Test worker instructions"
+
+        created_agents = []
+
+        def fake_create_deep_agent(**kwargs):
+            created_agents.append(kwargs)
+            return {"agent": "fake"}
+
+        def fake_create_default_deps(backend=None):
+            return {"backend": backend}
+
+        class FakeBackend:
+            def __init__(self, root_dir):
+                self.root_dir = Path(root_dir)
+
+        fake_runtime = types.SimpleNamespace(
+            static_tools=[],
+            dynamic_tools=[],
+            skill_directories=[],
+            deep_backend=types.SimpleNamespace(root_dir=Path("/tmp/shared-deep-backend")),
+        )
+
+        with patch.object(runtime_mod, "create_deep_agent", side_effect=fake_create_deep_agent), patch.object(
+            runtime_mod,
+            "create_default_deps",
+            side_effect=fake_create_default_deps,
+        ), patch.object(
+            runtime_mod,
+            "_ControlledLocalBackend",
+            FakeBackend,
+        ), patch.object(
+            runtime_mod,
+            "_toolsets_for_domain",
+            return_value=[],
+        ):
+            runtime_mod.build_host_worker_assignment_executor(
+                fake_runtime,
+                stage_name="workers",
+                slot_name="control_flow_analyst",
+                archetype_name="test_worker",
+                work_item_id="7",
+                stage_model="openai:gpt-5-mini",
+            )
+
+        instructions = str(created_agents[0]["instructions"] or "")
+        self.assertNotIn("Test worker instructions", instructions)
+        self.assertIn("Execution note:", instructions)
+
     def test_loop_local_worker_runtime_clones_mcp_toolsets(self) -> None:
         runtime_mod = _import_runtime_with_stubs()
 

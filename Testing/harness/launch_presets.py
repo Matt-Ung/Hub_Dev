@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .paths import CONFIG_ROOT, read_json
+from .paths import CONFIG_ROOT, read_json, repo_python_executable
 
 
 _COMMON_FLAG_FIELDS: tuple[tuple[str, str], ...] = (
@@ -23,6 +22,7 @@ _SINGLE_RUN_FLAG_FIELDS: tuple[tuple[str, str], ...] = (
     ("query_variant", "--query-variant"),
     ("subagent_profile", "--subagent-profile"),
     ("worker_persona_profile", "--worker-persona-profile"),
+    ("worker_role_prompt_mode", "--worker-role-prompt-mode"),
     ("validator_review_level", "--validator-review-level"),
     ("tool_profile", "--tool-profile"),
     ("model_profile", "--model-profile"),
@@ -98,6 +98,7 @@ def build_launch_preset_command(
     preset_name: str,
     *,
     explicit_judge_model: str = "",
+    enable_budget_guardrails: bool = False,
     preflight_only: bool = False,
     live_view: bool = False,
     skip_build: bool = False,
@@ -115,7 +116,7 @@ def build_launch_preset_command(
     else:
         raise ValueError(f"Unsupported preset runner {runner!r} for preset {preset_name!r}")
 
-    command: List[str] = [sys.executable, script]
+    command: List[str] = [repo_python_executable(), script]
     command.extend(["--corpus", str(preset.get("corpus") or "experimental")])
 
     for sample in preset.get("samples") or []:
@@ -142,11 +143,13 @@ def build_launch_preset_command(
         for key, flag in _SWEEP_FLAG_FIELDS:
             _append_flag(command, flag, preset.get(key))
 
-    for key, flag in _RUN_BUDGET_FLAG_FIELDS:
-        _append_flag(command, flag, preset.get(key))
-    if runner == "sweep":
-        for key, flag in _EXPERIMENT_BUDGET_FLAG_FIELDS:
+    if enable_budget_guardrails:
+        command.append("--enable-budget-guardrails")
+        for key, flag in _RUN_BUDGET_FLAG_FIELDS:
             _append_flag(command, flag, preset.get(key))
+        if runner == "sweep":
+            for key, flag in _EXPERIMENT_BUDGET_FLAG_FIELDS:
+                _append_flag(command, flag, preset.get(key))
 
     if bool(preset.get("skip_visuals")) and runner == "sweep":
         command.append("--skip-visuals")

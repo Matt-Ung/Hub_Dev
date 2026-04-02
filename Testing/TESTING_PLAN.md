@@ -98,6 +98,7 @@ Current default baseline:
 | query variant | `default` |
 | worker subagent profile | `default` |
 | worker persona profile | `default` |
+| worker role prompt mode | `default` |
 | validator review level | `default` |
 | tool profile | `full` |
 | model profile | `repo_default` |
@@ -109,7 +110,7 @@ Current default baseline:
 |---|---|
 | `query_verbosity` | `brief`, `detailed` |
 | `worker_subagents` | `single_generalist` |
-| `worker_persona_prompt` | `skeptical`, `hypothesis_driven`, `artifact_focused` |
+| `worker_prompt_shape` | `artifact_focused`, `empty` |
 | `tool_availability` | `core_static`, `ghidra_only` |
 | `architecture_preset` | `minimal`, `ghidra_focused`, `model_augmented` |
 | `pipeline_preset` | `workers_reporter`, `planner_workers_reporter` |
@@ -130,7 +131,7 @@ Recommended operational presets for normal experiment work:
 - `budget_best_value_r2`
   - recommended under-budget comparison study
 - `coverage_broad_r1_60usd`
-  - one-repetition broad-coverage experiment near the 60 USD heuristic band
+  - one-repetition medium+hard broad-coverage preset that stays below the current 60 USD heuristic band by restricting the broad sweep to the query-verbosity, worker-subagent, and worker-prompt-shape families
 - `full_suite_default_r1`
   - broad one-repetition sweep after the smaller presets are healthy
 

@@ -12,7 +12,7 @@
     "max_experiment_estimated_cost_usd": 75.0,
     "hard_max_experiment_estimated_cost_usd": null,
     "projected_relative_cost_per_sample_task": 35.0,
-    "projected_estimated_cost_usd_per_sample_task": 0.08,
+    "projected_estimated_cost_usd_per_sample_task": 0.5,
     "abort_on_run_budget_exceeded": true,
     "abort_experiment_on_budget_exceeded": true,
     "require_explicit_judge_model": true,

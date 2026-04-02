@@ -210,6 +210,7 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--query-variant", default="default", help="Prompt/query detail variant name")
     parser.add_argument("--subagent-profile", default="default", help="Worker subagent breadth profile override")
     parser.add_argument("--worker-persona-profile", default="default", help="Worker-stage persona prompt overlay profile")
+    parser.add_argument("--worker-role-prompt-mode", default="default", help="Worker role prompt mode: default or blank")
     parser.add_argument("--validator-review-level", default="default", help="Validator review strictness: easy, default, intermediate, or strict")
     parser.add_argument("--tool-profile", default="full", help="Named MCP tool-availability profile for analysis ablations")
     parser.add_argument("--model-profile", default="", help="Experiment model profile label for reporting (for example: repo_default, budget, premium)")
@@ -233,12 +234,13 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--ghidra-headless", default="", help="Optional analyzeHeadless override")
     parser.add_argument("--judge-mode", choices=["agent", "disabled"], default="agent")
     parser.add_argument("--judge-model", default="", help="Optional judge model override")
-    parser.add_argument("--max-run-input-tokens", type=int, default=None, help="Abort the run after the current task if cumulative agent+judge input tokens exceed this ceiling")
-    parser.add_argument("--max-run-output-tokens", type=int, default=None, help="Abort the run after the current task if cumulative agent+judge output tokens exceed this ceiling")
-    parser.add_argument("--max-run-total-tokens", type=int, default=None, help="Abort the run after the current task if cumulative agent+judge input+output tokens exceed this ceiling")
-    parser.add_argument("--max-run-relative-cost-index", type=float, default=None, help="Abort the run after the current task if the cumulative relative cost index exceeds this ceiling")
-    parser.add_argument("--max-run-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for cumulative estimated USD cost. This is surfaced in preflight and budget_status.json but does not abort the run by itself.")
-    parser.add_argument("--hard-max-run-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for cumulative estimated USD cost.")
+    parser.add_argument("--enable-budget-guardrails", action="store_true", help="Enable run budget guardrails. When omitted, all budget ceilings are disabled even if config defaults or preset values exist.")
+    parser.add_argument("--max-run-input-tokens", type=int, default=None, help="Abort the run after the current task if cumulative agent+judge input tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-output-tokens", type=int, default=None, help="Abort the run after the current task if cumulative agent+judge output tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-total-tokens", type=int, default=None, help="Abort the run after the current task if cumulative agent+judge input+output tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-relative-cost-index", type=float, default=None, help="Abort the run after the current task if the cumulative relative cost index exceeds this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for cumulative estimated USD cost. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--hard-max-run-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for cumulative estimated USD cost. Only active with --enable-budget-guardrails.")
     parser.add_argument("--timeout-sec", type=int, default=0, help="Optional subprocess timeout in seconds for build, bundle prep, and external child tools; 0 disables it")
     parser.add_argument("--preflight-only", action="store_true", help="Validate rubric/config/build/bundle readiness and exit without running agents")
     args = parser.parse_args(argv)
@@ -254,6 +256,7 @@ def main(argv: List[str] | None = None) -> None:
     # same runtime configuration path.
     os.environ["DEEP_WORKER_SUBAGENT_PROFILE"] = str(args.subagent_profile or "default").strip() or "default"
     os.environ["DEEP_WORKER_PERSONA_PROFILE"] = str(args.worker_persona_profile or "default").strip() or "default"
+    os.environ["DEEP_WORKER_ROLE_PROMPT_MODE"] = str(args.worker_role_prompt_mode or "default").strip() or "default"
     if str(args.force_model or "").strip():
         os.environ["DEEP_FORCE_MODEL_ID"] = str(args.force_model).strip()
     else:
@@ -271,6 +274,7 @@ def main(argv: List[str] | None = None) -> None:
         "query_variant": str(args.query_variant or "default").strip() or "default",
         "subagent_profile": str(args.subagent_profile or "default").strip() or "default",
         "worker_persona_profile": str(args.worker_persona_profile or "default").strip() or "default",
+        "worker_role_prompt_mode": str(args.worker_role_prompt_mode or "default").strip() or "default",
         "validator_review_level": str(args.validator_review_level or "default").strip() or "default",
         "tool_profile": str(args.tool_profile or "full").strip() or "full",
         "model_profile": str(args.model_profile or "").strip(),
@@ -289,10 +293,12 @@ def main(argv: List[str] | None = None) -> None:
         "selected_samples": args.sample,
         "selected_tasks": args.task,
         "selected_difficulties": args.difficulty_filter,
+        "enable_budget_guardrails": bool(args.enable_budget_guardrails),
     }
     run_metadata["config_lineage_id"] = compute_lineage_id(run_metadata)
     run_metadata["config_lineage_key"] = normalize_run_lineage_payload(run_metadata)
     budget_config = resolve_budget_config(
+        enable_budget_guardrails=bool(args.enable_budget_guardrails),
         max_run_input_tokens=args.max_run_input_tokens,
         max_run_output_tokens=args.max_run_output_tokens,
         max_run_total_tokens=args.max_run_total_tokens,
@@ -408,6 +414,7 @@ def main(argv: List[str] | None = None) -> None:
         architecture=run_metadata["architecture"],
         query_variant=run_metadata["query_variant"],
         worker_persona_profile=run_metadata["worker_persona_profile"],
+        worker_role_prompt_mode=run_metadata["worker_role_prompt_mode"],
         validator_review_level=run_metadata["validator_review_level"],
         tool_profile=run_metadata["tool_profile"],
         judge_mode=args.judge_mode,
@@ -417,6 +424,19 @@ def main(argv: List[str] | None = None) -> None:
         bundle_root=bundle_root,
         require_ready_bundles=True,
     )
+    if not args.skip_build and not bool(build_record.get("ok")):
+        preflight.setdefault("warnings", []).append(
+            "Build step reported failure, but usable binaries for the selected scope were still found. "
+            "This run can continue with existing artifacts, but it is not a clean-rebuild validation. "
+            "See build_record.json for the failing make step."
+        )
+    if not args.skip_prepare and not bool(prepare_record.get("ready_for_analysis", True)):
+        preflight.setdefault("warnings", []).append(
+            "Bundle preparation reported issues, but existing bundles were still inspected for readiness. "
+            "See prepare_record.json for the regeneration details."
+        )
+    if preflight.get("warnings"):
+        preflight["warnings"] = list(dict.fromkeys(preflight.get("warnings") or []))
     run_budget_projection = project_experiment_budget(
         child_runs=1,
         tasks_per_child_run=len(evaluation_tasks),

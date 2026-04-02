@@ -34,6 +34,8 @@ from multi_agent_wf.config import (
     DEEP_AGENT_ARCHITECTURE_PRESETS,
     DEEP_AGENT_PIPELINE_PRESETS,
     VALIDATOR_REVIEW_LEVEL_LABELS,
+    WORKER_ROLE_PROMPT_MODE_LABELS,
+    _normalize_worker_role_prompt_mode,
 )
 
 
@@ -183,7 +185,12 @@ def _module_available_in_python(python_executable: str, module_name: str) -> boo
     executable = str(python_executable or "").strip()
     if executable:
         try:
-            if Path(executable).resolve() != Path(sys.executable).resolve():
+            # Compare the interpreter path without resolving symlinks. A repo
+            # virtualenv often points back to the same underlying Homebrew or
+            # system binary, and resolving both paths would incorrectly treat
+            # the venv interpreter as "the current interpreter" and skip the
+            # subprocess probe.
+            if Path(executable).absolute() != Path(sys.executable).absolute():
                 completed = subprocess.run(
                     [
                         executable,
@@ -222,6 +229,7 @@ def validate_run_configuration(
     architecture: str,
     query_variant: str,
     worker_persona_profile: str,
+    worker_role_prompt_mode: str,
     validator_review_level: str,
     tool_profile: str,
     judge_mode: str,
@@ -240,7 +248,8 @@ def validate_run_configuration(
       - selected_samples / selected_task_ids / selected_difficulties: optional
         CLI filters that narrow the intended evaluation scope.
       - pipeline / architecture / query_variant / worker_persona_profile /
-        validator_review_level / tool_profile: requested runtime knobs to verify.
+        worker_role_prompt_mode / validator_review_level / tool_profile:
+        requested runtime knobs to verify.
       - judge_mode / explicit_judge_model / forced_model / python_executable:
         judge and environment settings that affect launch viability.
       - bundle_root: optional bundle directory tree to inspect.
@@ -286,6 +295,31 @@ def validate_run_configuration(
         errors.append(
             f"Unknown worker_persona_profile {selected_persona_profile!r}. "
             f"Available: {', '.join(sorted(persona_profiles))}"
+        )
+
+    requested_worker_role_prompt_mode = str(worker_role_prompt_mode or "default").strip() or "default"
+    normalized_worker_role_prompt_mode = _normalize_worker_role_prompt_mode(requested_worker_role_prompt_mode)
+    allowed_worker_role_prompt_inputs = {
+        "default",
+        "blank",
+        "empty",
+        "none",
+        "off",
+        "disabled",
+        "disable",
+        "no_role",
+        "no_role_prompt",
+        "bare",
+    }
+    if requested_worker_role_prompt_mode.lower() not in allowed_worker_role_prompt_inputs:
+        errors.append(
+            f"Unknown worker_role_prompt_mode {requested_worker_role_prompt_mode!r}. "
+            f"Available canonical values: {', '.join(sorted(WORKER_ROLE_PROMPT_MODE_LABELS))}"
+        )
+    elif normalized_worker_role_prompt_mode not in WORKER_ROLE_PROMPT_MODE_LABELS:
+        errors.append(
+            f"Unknown worker_role_prompt_mode {requested_worker_role_prompt_mode!r}. "
+            f"Available canonical values: {', '.join(sorted(WORKER_ROLE_PROMPT_MODE_LABELS))}"
         )
 
     if validator_review_level not in VALIDATOR_REVIEW_LEVEL_LABELS:

@@ -90,13 +90,17 @@ Prefer these launch presets before using the full default sweep:
 - `budget_best_value_r2`
   - recommended under-budget study for decision-useful comparisons across the experimental corpus
 - `coverage_broad_r1_60usd`
-  - one-repetition broad-coverage experiment that uses the full experimental task set and lands near a 60 USD heuristic cost
+  - one-repetition medium+hard broad-coverage preset that stays below the current 60 USD heuristic band by restricting the broad sweep to the query-verbosity, worker-subagent, and worker-prompt-shape families
 - `full_suite_default_r1`
   - broad one-repetition research sweep after the smaller studies above are healthy
 
 The harness does not impose a default subprocess timeout on builds, bundle
 preparation, or child runs anymore. Use `--timeout-sec <seconds>` only when you
 want an explicit ceiling; `0` disables it.
+
+If a repo `.venv` exists, the launch doctor and preset launcher target that
+interpreter for dependency checks and child-run launches instead of whatever
+system Python happened to invoke the wrapper script.
 
 For a live developer-facing sweep monitor, add `--live-view` to
 `run_experiment_sweep.py` or `run_launch_preset.py`. The sweep will print a
@@ -111,7 +115,7 @@ It currently studies these one-variable-at-a-time families:
 
 - `query_verbosity`
 - `worker_subagents`
-- `worker_persona_prompt`
+- `worker_prompt_shape`
 - `tool_availability`
 - `architecture_preset`
 - `pipeline_preset`

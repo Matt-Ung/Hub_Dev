@@ -5,6 +5,23 @@ from typing import Any, Dict, Iterable, List
 from .costing import add_usage_snapshots, coerce_usage_snapshot
 from .paths import CONFIG_ROOT, read_json
 
+_BUDGET_LIMIT_KEYS = (
+    "max_run_input_tokens",
+    "max_run_output_tokens",
+    "max_run_total_tokens",
+    "max_run_relative_cost_index",
+    "max_run_estimated_cost_usd",
+    "hard_max_run_estimated_cost_usd",
+    "max_experiment_relative_cost_index",
+    "max_experiment_estimated_cost_usd",
+    "hard_max_experiment_estimated_cost_usd",
+)
+
+_BUDGET_ABORT_KEYS = (
+    "abort_on_run_budget_exceeded",
+    "abort_experiment_on_budget_exceeded",
+)
+
 
 def load_budget_guardrails() -> Dict[str, Any]:
     path = CONFIG_ROOT / "budget_guardrails.json"
@@ -15,6 +32,7 @@ def load_budget_guardrails() -> Dict[str, Any]:
 
 def resolve_budget_config(
     *,
+    enable_budget_guardrails: bool = False,
     max_run_input_tokens: int | None = None,
     max_run_output_tokens: int | None = None,
     max_run_total_tokens: int | None = None,
@@ -41,6 +59,12 @@ def resolve_budget_config(
     for key, value in overrides.items():
         if value is not None:
             defaults[key] = value
+    defaults["budget_guardrails_enabled"] = bool(enable_budget_guardrails)
+    if not enable_budget_guardrails:
+        for key in _BUDGET_LIMIT_KEYS:
+            defaults[key] = None
+        for key in _BUDGET_ABORT_KEYS:
+            defaults[key] = False
     return defaults
 
 
