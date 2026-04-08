@@ -99,8 +99,11 @@ def build_launch_preset_command(
     *,
     explicit_judge_model: str = "",
     enable_budget_guardrails: bool = False,
+    prefer_upx_unpacked: bool = False,
+    task_failure_retries: int | None = None,
     preflight_only: bool = False,
     live_view: bool = False,
+    max_concurrent_repetitions: int | None = None,
     skip_build: bool = False,
     skip_prepare: bool = False,
     ghidra_install_dir: str = "",
@@ -132,6 +135,11 @@ def build_launch_preset_command(
     repetitions = preset.get("repetitions")
     if runner == "sweep" and repetitions is not None:
         command.extend(["--repetitions", str(int(repetitions))])
+    preset_concurrency = max_concurrent_repetitions
+    if preset_concurrency is None:
+        preset_concurrency = preset.get("max_concurrent_repetitions")
+    if runner == "sweep" and preset_concurrency is not None and int(preset_concurrency) > 0:
+        command.extend(["--max-concurrent-repetitions", str(int(preset_concurrency))])
 
     for key, flag in _COMMON_FLAG_FIELDS:
         _append_flag(command, flag, preset.get(key))
@@ -155,6 +163,13 @@ def build_launch_preset_command(
         command.append("--skip-visuals")
     if live_view and runner == "sweep":
         command.append("--live-view")
+    if prefer_upx_unpacked or bool(preset.get("prefer_upx_unpacked")):
+        command.append("--prefer-unpacked-upx")
+    resolved_task_failure_retries = task_failure_retries
+    if resolved_task_failure_retries is None:
+        resolved_task_failure_retries = preset.get("task_failure_retries")
+    if resolved_task_failure_retries is not None and int(resolved_task_failure_retries) > 0:
+        command.extend(["--task-failure-retries", str(int(resolved_task_failure_retries))])
     if skip_build:
         command.append("--skip-build")
     if skip_prepare:

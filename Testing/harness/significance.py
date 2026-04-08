@@ -491,9 +491,11 @@ def build_significance_outputs(
     report_lines.append("# Statistical Significance Summary")
     report_lines.append("")
     report_lines.append("- Scoring significance is evaluated against the relevant comparison baseline using a two-sided permutation test on replicate-level scores.")
+    report_lines.append("- Score-based significance includes zero-score non-results when a configuration failed to produce an accepted output, so interpret it as combined performance-plus-reliability rather than answer quality alone.")
     report_lines.append("- Confidence target: `0.95`")
     report_lines.append("- Alpha threshold: `0.05`")
     report_lines.append("- `statistically_significant_95pct=true` means the observed score shift achieved `p <= 0.05`.")
+    report_lines.append("- No multiple-comparison correction is applied. Task-level and difficulty-level significance rows are exploratory and should not be read as confirmatory evidence.")
     report_lines.append("- When repetitions are too small, rows are marked `insufficient_repetitions` instead of forcing a misleading significance claim.")
     report_lines.append("")
     report_lines.append("## Overall")
@@ -508,7 +510,7 @@ def build_significance_outputs(
     report_lines.append("## Paired Across-Task")
     report_lines.append("")
     report_lines.append("- This test does not require repeated whole-run replicates. It compares each variant to its baseline over matched sample-task score deltas within the same sweep.")
-    report_lines.append("- It is appropriate for overall and per-difficulty questions when you only ran one repetition per configuration.")
+    report_lines.append("- Treat it as an exploratory within-sweep stability signal when repetitions are scarce, not as a substitute for independent replicate-level inference.")
     report_lines.append("")
     report_lines.append("| Variant | Variable | Baseline | Matched Tasks | Mean Task Delta | p-value | Significant (95%) | Status |")
     report_lines.append("|---|---|---|---:|---:|---:|---|---|")
@@ -524,6 +526,7 @@ def build_significance_outputs(
         "confidence_level_target": DEFAULT_CONFIDENCE_LEVEL,
         "alpha_threshold": DEFAULT_ALPHA,
         "test_name": "two_sided_permutation_test_on_replicate_level_scores",
+        "multiple_comparison_correction": "none",
         "overall": overall_rows,
         "by_difficulty": difficulty_rows,
         "by_task": task_rows,

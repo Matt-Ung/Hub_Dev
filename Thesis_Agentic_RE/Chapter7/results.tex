@@ -1,0 +1,80 @@
+\chapter{Results and Analysis}
+\label{sec:results}
+
+This chapter is intentionally left as a structured scaffold. The repository contains experiment outputs, repaired experiments, charts, and result browsers, but the thesis should only present finalized analyses after the experiment set and interpretation strategy are locked.
+
+\section{Headline Comparisons}
+
+\begin{itemize}
+\item Baseline versus primary variable families.
+\item Overall score movement across matched tasks.
+\item Task success, error, and recovery-adjusted comparisons.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Insert the final headline tables and figures summarizing baseline-versus-variant movement.}
+\item \TODO{State which variable family produced the most meaningful improvement after repaired experiments were incorporated.}
+\item \TODO{Report cost, runtime, and stability tradeoffs alongside quality metrics.}
+\end{itemize}
+
+\section{Per-Family Analysis}
+
+\begin{itemize}
+\item Query shaping effects.
+\item Worker specialization and subagent effects.
+\item Tool-availability ablations.
+\item Validator topology and review-level effects.
+\item Architecture and pipeline preset effects, if retained in the final experiment set.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{For each retained family, explain not only whether the score moved, but why the behavior changed.}
+\item \TODO{Use representative task examples to show when a configuration helped broad synthesis versus focused evidence recovery.}
+\item \TODO{Separate descriptive trends from statistically supported claims.}
+\end{itemize}
+
+\section{Config Decoder Depth Study}
+
+The deeper \texttt{config\_decoder\_test} study should serve as a focused case study rather than just another row in the broad sweep.
+
+\begin{itemize}
+\item Compare stripped versus packed-and-stripped variants.
+\item Compare default analysis with focused configuration-recovery tasks.
+\item Analyze whether the selected variable family improves depth of understanding or only broad summary quality.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Insert the dedicated decoder-depth figures and tables.}
+\item \TODO{Explain why \texttt{config\_decoder\_test} is a useful stress test for reverse-engineering depth.}
+\item \TODO{Discuss whether the packed variant changes the relative value of tool orchestration or unpacking support.}
+\end{itemize}
+
+\section{Qualitative Failure Analysis}
+
+The thesis should include concrete examples of failures, not just averages. This is particularly important in agentic systems where some runs fail because the workflow reasoned poorly, while others fail because the tool chain or orchestration broke down.
+
+\begin{itemize}
+\item Analysis errors and worker assignment failures.
+\item Cases where the report completed but important evidence was missing.
+\item Cases where recovery reruns changed the aggregate interpretation.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Select two or three illustrative failure cases and analyze them in detail.}
+\item \TODO{Differentiate reasoning failures, tool failures, and judging or recovery artifacts.}
+\item \TODO{Show how the live monitor or result browser made these failures inspectable.}
+\end{itemize}
+
+\section{Interpreting the Results}
+
+\begin{itemize}
+\item Which interventions improve evidence quality?
+\item Which interventions merely change style or verbosity?
+\item Which workflow changes improve some task types while hurting others?
+\item What do the results imply for future reverse-engineering assistants?
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{End the chapter with a concise synthesis of what the results imply for the thesis research questions.}
+\item \TODO{Ensure every claim here is supported by a table, figure, or explicitly cited run artifact.}
+\end{itemize}

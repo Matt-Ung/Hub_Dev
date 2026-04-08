@@ -1,0 +1,68 @@
+\chapter{Related Work}
+\label{sec:related}
+
+This chapter should position the thesis against three overlapping research areas: AI-assisted reverse engineering and malware analysis, autonomous or semi-autonomous software agents, and binary-analysis evaluation methodology. The goal is not just to collect citations but to explain what technical gap this thesis fills.
+
+\section{AI-Assisted Reverse Engineering and Malware Analysis}
+
+\begin{itemize}
+\item Prior work on language models for code understanding and security analysis.
+\item Prior work on automated malware triage, family classification, unpacking, capability extraction, or analyst-assistance workflows.
+\item Prior work on reverse engineering assistance that relies on decompiler output, symbolic artifacts, or prompt engineering.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Survey literature on LLM-supported binary analysis and identify how much tool access those systems expose.}
+\item \TODO{Separate work that performs classification from work that performs open-ended reasoning about behavior, configuration, or provenance.}
+\item \TODO{Explain why malware triage and reverse engineering require more than summarizing decompiler text.}
+\end{itemize}
+
+\section{Tool-Using Agents and Multi-Agent Orchestration}
+
+\begin{itemize}
+\item Research on agents that select tools, manage intermediate state, and decompose tasks.
+\item Planner-worker or manager-executor style systems that distribute work among specialists.
+\item Work on verification, critique, or self-review stages that resemble validator and reporter roles.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Add citations for agent architectures that explicitly separate planning, execution, and review.}
+\item \TODO{Discuss what this thesis contributes beyond generic multi-agent orchestration, especially in binary-analysis constraints.}
+\item \TODO{Explain why explicit tooling contracts matter more here than in text-only benchmarks.}
+\end{itemize}
+
+\section{Program Analysis Toolchains and Human Analyst Workflows}
+
+\begin{itemize}
+\item Literature on decompilers and binary-analysis frameworks such as Ghidra.
+\item Work on analyst workflows that combine strings, signatures, configuration extraction, and behavioral context.
+\item Research on when dynamic analysis is necessary to validate static conclusions.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Cite foundational binary-analysis and reverse-engineering tooling papers or practitioner references.}
+\item \TODO{Describe where this thesis follows established analyst workflow and where it departs by automating orchestration.}
+\end{itemize}
+
+\section{Evaluation of Security and Reverse-Engineering Systems}
+
+\begin{itemize}
+\item Benchmarks for malware or binary understanding.
+\item Human evaluation versus rubric-based judging.
+\item Repetition, paired comparisons, and significance testing in tool-augmented agent evaluations.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Add citations for benchmark design and judging methodology in security-oriented AI systems.}
+\item \TODO{Explain why the thesis uses sample-task pairs, repeated runs, and judge-scored artifacts rather than only pass/fail labels.}
+\item \TODO{Position the custom experimental corpus relative to prior benchmarks and explain the tradeoffs.}
+\end{itemize}
+
+\section{Thesis Positioning}
+
+The distinctive claim of this thesis is not merely that language models can help with reverse engineering. The system contribution is that explicit tool orchestration, staged specialization, and evidence review can be made first-class design elements in a reverse-engineering workflow, and that those choices can be evaluated systematically rather than anecdotally.
+
+\begin{itemize}
+\item \TODO{End the chapter with a concise statement of the gap in prior work that this thesis addresses.}
+\item \TODO{State why MCP-style tool orchestration is the right abstraction to highlight in the thesis narrative.}
+\end{itemize}

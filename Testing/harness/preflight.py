@@ -21,11 +21,12 @@ import importlib.util
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from .artifacts import inspect_corpus_bundles, load_tool_profiles
+from .artifacts import inspect_corpus_bundles, load_tool_profiles, resolve_analyze_headless
 from .judge import Agent, PYDANTIC_AVAILABLE
 from .paths import CONFIG_ROOT, PROMPTS_ROOT, REPO_ROOT, read_json
 from .query_variants import load_query_variants
-from .samples import build_evaluation_tasks
+from .samples import build_evaluation_tasks, normalize_sample_task_key, sample_task_key
+from .subprocess_utils import tool_available
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -224,6 +225,7 @@ def validate_run_configuration(
     manifest: Dict[str, Any],
     selected_samples: Iterable[str],
     selected_task_ids: Iterable[str],
+    selected_task_keys: Iterable[str] = (),
     selected_difficulties: Iterable[str],
     pipeline: str,
     architecture: str,
@@ -232,7 +234,10 @@ def validate_run_configuration(
     worker_role_prompt_mode: str,
     validator_review_level: str,
     tool_profile: str,
-    judge_mode: str,
+    judge_mode: str = "agent",
+    prefer_upx_unpacked: bool = False,
+    ghidra_install_dir: str = "",
+    ghidra_headless: str = "",
     explicit_judge_model: str = "",
     forced_model: str = "",
     python_executable: str = "",
@@ -245,10 +250,12 @@ def validate_run_configuration(
       - corpus_name: logical corpus identifier for the requested run.
       - sample_paths: built sample binaries currently available on disk.
       - manifest: parsed sample manifest for the corpus.
-      - selected_samples / selected_task_ids / selected_difficulties: optional
-        CLI filters that narrow the intended evaluation scope.
+      - selected_samples / selected_task_ids / selected_task_keys /
+        selected_difficulties: optional CLI filters that narrow the intended
+        evaluation scope.
       - pipeline / architecture / query_variant / worker_persona_profile /
-        worker_role_prompt_mode / validator_review_level / tool_profile:
+        worker_role_prompt_mode / validator_review_level / tool_profile /
+        prefer_upx_unpacked:
         requested runtime knobs to verify.
       - judge_mode / explicit_judge_model / forced_model / python_executable:
         judge and environment settings that affect launch viability.
@@ -340,6 +347,15 @@ def validate_run_configuration(
             f"Unknown tool_profile {requested_tool_profile!r}. "
             f"Available: {', '.join(sorted(available_tool_profiles))}"
         )
+    if prefer_upx_unpacked:
+        if not tool_available("upx"):
+            warnings.append(
+                "prefer_upx_unpacked is enabled, but `upx` is not available on PATH. Packed samples will fall back to the original prepared bundle."
+            )
+        if resolve_analyze_headless(ghidra_install_dir, ghidra_headless) is None:
+            warnings.append(
+                "prefer_upx_unpacked is enabled, but analyzeHeadless was not resolved from GHIDRA_HEADLESS/GHIDRA_INSTALL_DIR/PATH. Packed samples will fall back to the original prepared bundle."
+            )
 
     if pipeline not in DEEP_AGENT_PIPELINE_PRESETS:
         errors.append(
@@ -379,21 +395,29 @@ def validate_run_configuration(
             )
 
     task_ids = [str(item).strip() for item in selected_task_ids if str(item).strip()]
+    task_keys = [normalize_sample_task_key(str(item)) for item in selected_task_keys if str(item).strip()]
     resolved_tasks = build_evaluation_tasks(
         corpus_name,
         sample_paths,
         manifest=manifest,
         selected_task_ids=task_ids,
+        selected_task_keys=task_keys,
         selected_difficulties=selected_difficulties,
     )
     if not resolved_tasks:
         errors.append("No evaluation tasks resolved for the selected sample/task scope.")
     else:
         seen_task_ids = {task.task_id for task in resolved_tasks}
+        seen_task_keys = {sample_task_key(task.sample_name, task.task_id) for task in resolved_tasks}
         missing_tasks = [task_id for task_id in task_ids if task_id not in seen_task_ids]
         if missing_tasks:
             errors.append(
                 "Requested task id(s) were not found in the selected sample set: " + ", ".join(sorted(missing_tasks))
+            )
+        missing_task_keys = [task_key for task_key in task_keys if task_key not in seen_task_keys]
+        if missing_task_keys:
+            errors.append(
+                "Requested sample_task_key(s) were not found in the selected sample set: " + ", ".join(sorted(missing_task_keys))
             )
         for task in resolved_tasks:
             if not task.expected_evidence:

@@ -1,0 +1,69 @@
+\chapter{Limitations and Threats to Validity}
+\label{sec:limitations}
+
+This thesis should be explicit about what the system and experiments do not establish. The project already has enough complexity that a serious limitations chapter will strengthen the final argument.
+
+\section{Benchmark and Corpus Limitations}
+
+\begin{itemize}
+\item The benchmark corpus is authored and curated rather than harvested from unrestricted real-world malware collections.
+\item Sample-task pairs cover important reverse-engineering skills, but they cannot span the full diversity of malicious software.
+\item Some tasks are intentionally interpretable and may not capture the hardest real-world analyst workflows.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{State how representative the experimental corpus is and where it is intentionally simplified.}
+\item \TODO{Discuss any bias introduced by using authored samples whose ground truth is known.}
+\end{itemize}
+
+\section{Model, Tool, and Infrastructure Variability}
+
+\begin{itemize}
+\item Model behavior may drift over time even under the same nominal configuration.
+\item Tool outputs can change with version upgrades or environment differences.
+\item Dynamic-analysis infrastructure adds host and VM variability that can affect reproducibility.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Document which versions, APIs, and runtime environments were fixed for the final experiments.}
+\item \TODO{Explain how bundle reuse and artifact tracking mitigate, but do not eliminate, this problem.}
+\end{itemize}
+
+\section{Judging and Measurement Limitations}
+
+\begin{itemize}
+\item Judge scores are a proxy for analyst usefulness, not the same thing as human expert review.
+\item Some tasks may reward well-structured reporting more than deep mechanistic understanding.
+\item Recovered runs and rebuilt experiments improve completeness but may complicate strict independence assumptions.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Discuss how judge quality was validated and where the rubric may still be weak.}
+\item \TODO{Explain any remaining mismatch between automated scoring and analyst value.}
+\end{itemize}
+
+\section{Scope of Automation Claims}
+
+\begin{itemize}
+\item The system assists reverse engineering; it does not eliminate the need for expert analyst review.
+\item Tool orchestration can improve evidence gathering without guaranteeing correctness of interpretation.
+\item Automatic unpacking or dynamic execution can help analysis but can also alter the artifact under study or introduce new risks.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Be precise about what kinds of analyst effort this system reduces and what it still cannot replace.}
+\item \TODO{Address the correctness and security risks of automatically switching to unpacked artifacts.}
+\end{itemize}
+
+\section{Ethical and Operational Considerations}
+
+\begin{itemize}
+\item Malware-oriented tooling creates dual-use concerns.
+\item Automated binary analysis can surface dangerous capabilities or operational details.
+\item Safer experimentation may require containment, logging, and restricted dynamic execution.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Add a short ethics discussion covering dual-use risk, containment, and responsible publication choices.}
+\item \TODO{State any restrictions on sharing binaries, prompts, or unpacked artifacts in the final appendix or artifact release.}
+\end{itemize}

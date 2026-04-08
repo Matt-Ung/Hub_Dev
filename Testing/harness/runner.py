@@ -41,7 +41,15 @@ from .preflight import validate_run_configuration
 from .query_variants import apply_query_variant
 from .result_layout import build_run_output_layout
 from .reporting import aggregate_records, build_sample_record, write_markdown_report, write_summary_csv
-from .samples import build_evaluation_tasks, get_corpus_config, list_sample_binaries, load_sample_manifest, resolve_sample_metadata, sample_slug
+from .samples import (
+    build_evaluation_tasks,
+    get_corpus_config,
+    list_sample_binaries,
+    load_sample_manifest,
+    normalize_sample_task_key,
+    resolve_sample_metadata,
+    sample_slug,
+)
 
 
 def _parse_metadata(values: List[str]) -> Dict[str, str]:
@@ -99,6 +107,46 @@ def _write_live_status(run_dir: Path, payload: Dict[str, Any]) -> None:
       Overwrites `live_status.json` inside the run directory.
     """
     write_json(run_dir / "live_status.json", payload)
+
+
+def _should_retry_task_failure(
+    agent_result: Dict[str, Any],
+    *,
+    attempt_index: int,
+    max_attempts: int,
+) -> bool:
+    if attempt_index >= max_attempts:
+        return False
+    status = str(agent_result.get("status") or "").strip().lower()
+    if status in {"", "completed", "validator_blocked"}:
+        return False
+    return bool(agent_result.get("failure_retryable"))
+
+
+def _annotate_task_retry_result(
+    agent_result: Dict[str, Any],
+    *,
+    attempt_index: int,
+    max_attempts: int,
+    attempt_history: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    annotated = dict(agent_result or {})
+    annotated["task_attempt_count"] = int(attempt_index)
+    annotated["task_retry_count"] = max(0, int(attempt_index) - 1)
+    annotated["task_retried"] = bool(attempt_index > 1)
+    annotated["task_retry_exhausted"] = bool(
+        str(annotated.get("status") or "").strip().lower() != "completed"
+        and bool(annotated.get("failure_retryable"))
+        and int(attempt_index) >= int(max_attempts)
+    )
+    annotated["task_retry"] = {
+        "attempt_count": int(attempt_index),
+        "max_attempts": int(max_attempts),
+        "retried": bool(attempt_index > 1),
+        "retry_exhausted": bool(annotated.get("task_retry_exhausted")),
+        "attempts": list(attempt_history or []),
+    }
+    return annotated
 
 
 def _build_terminal_live_status(
@@ -203,6 +251,7 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--corpus", choices=["prototype", "experimental"], default="experimental")
     parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict to")
     parser.add_argument("--task", action="append", default=[], help="Optional task id(s) to restrict to when the sample manifest defines multiple evaluation tasks")
+    parser.add_argument("--sample-task-key", action="append", default=[], help="Optional exact sample::task key(s) to restrict the run to, for example config_decoder_test::config_value_recovery or config_decoder_test.exe::config_value_recovery")
     parser.add_argument("--difficulty-filter", action="append", default=[], help="Optional difficulty label(s) to restrict to, e.g. --difficulty-filter medium --difficulty-filter hard")
     parser.add_argument("--pipeline", default="", help="Pipeline preset override")
     parser.add_argument("--architecture", default="", help="Architecture preset override")
@@ -213,6 +262,8 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--worker-role-prompt-mode", default="default", help="Worker role prompt mode: default or blank")
     parser.add_argument("--validator-review-level", default="default", help="Validator review strictness: easy, default, intermediate, or strict")
     parser.add_argument("--tool-profile", default="full", help="Named MCP tool-availability profile for analysis ablations")
+    parser.add_argument("--prefer-unpacked-upx", action="store_true", help="When the prepared sample is recognized as UPX-packed, build a derived unpacked bundle and continue downstream analysis against it. Falls back to the original bundle if detection or unpacking fails.")
+    parser.add_argument("--task-failure-retries", type=int, default=0, help="Retry a sample-task this many times after the first attempt when the failure is classified as retryable. Validator-blocked outcomes are not retried.")
     parser.add_argument("--model-profile", default="", help="Experiment model profile label for reporting (for example: repo_default, budget, premium)")
     parser.add_argument("--force-model", default="", help="Optional model ID to force across the run")
     parser.add_argument("--label", default="", help="Optional short label for this run")
@@ -244,6 +295,8 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--timeout-sec", type=int, default=0, help="Optional subprocess timeout in seconds for build, bundle prep, and external child tools; 0 disables it")
     parser.add_argument("--preflight-only", action="store_true", help="Validate rubric/config/build/bundle readiness and exit without running agents")
     args = parser.parse_args(argv)
+
+    normalized_task_keys = [normalize_sample_task_key(str(item)) for item in args.sample_task_key if str(item).strip()]
 
     config = get_corpus_config(args.corpus)
     manifest = load_sample_manifest(args.corpus)
@@ -277,6 +330,8 @@ def main(argv: List[str] | None = None) -> None:
         "worker_role_prompt_mode": str(args.worker_role_prompt_mode or "default").strip() or "default",
         "validator_review_level": str(args.validator_review_level or "default").strip() or "default",
         "tool_profile": str(args.tool_profile or "full").strip() or "full",
+        "prefer_upx_unpacked": bool(args.prefer_unpacked_upx),
+        "task_failure_retries": max(0, int(args.task_failure_retries or 0)),
         "model_profile": str(args.model_profile or "").strip(),
         "force_model": str(args.force_model or "").strip(),
         "judge_mode": args.judge_mode,
@@ -292,6 +347,7 @@ def main(argv: List[str] | None = None) -> None:
         "metadata": _parse_metadata(args.meta),
         "selected_samples": args.sample,
         "selected_tasks": args.task,
+        "selected_task_keys": normalized_task_keys,
         "selected_difficulties": args.difficulty_filter,
         "enable_budget_guardrails": bool(args.enable_budget_guardrails),
     }
@@ -347,7 +403,15 @@ def main(argv: List[str] | None = None) -> None:
         )
     write_json(run_dir / "build_record.json", build_record)
 
-    sample_paths = list_sample_binaries(args.corpus, selected=args.sample, difficulty_filters=args.difficulty_filter, manifest=manifest)
+    task_key_stems = {str(item).split("::", 1)[0].strip() for item in normalized_task_keys if "::" in str(item)}
+    sample_key_samples = [
+        name
+        for name in (manifest.get("sample_order") or [])
+        if Path(str(name)).stem in task_key_stems
+    ]
+    selected_samples = list(args.sample) or sample_key_samples
+    run_metadata["selected_samples"] = selected_samples
+    sample_paths = list_sample_binaries(args.corpus, selected=selected_samples, difficulty_filters=args.difficulty_filter, manifest=manifest)
     if not sample_paths:
         raise SystemExit(f"No built sample binaries found for corpus={args.corpus} under {config.build_root}")
     evaluation_tasks = build_evaluation_tasks(
@@ -355,6 +419,7 @@ def main(argv: List[str] | None = None) -> None:
         sample_paths,
         manifest=manifest,
         selected_task_ids=args.task,
+        selected_task_keys=normalized_task_keys,
         selected_difficulties=args.difficulty_filter,
     )
     if not evaluation_tasks:
@@ -407,8 +472,9 @@ def main(argv: List[str] | None = None) -> None:
         corpus_name=args.corpus,
         sample_paths=sample_paths,
         manifest=manifest,
-        selected_samples=args.sample,
+        selected_samples=selected_samples,
         selected_task_ids=args.task,
+        selected_task_keys=normalized_task_keys,
         selected_difficulties=args.difficulty_filter,
         pipeline=run_metadata["pipeline"],
         architecture=run_metadata["architecture"],
@@ -417,6 +483,9 @@ def main(argv: List[str] | None = None) -> None:
         worker_role_prompt_mode=run_metadata["worker_role_prompt_mode"],
         validator_review_level=run_metadata["validator_review_level"],
         tool_profile=run_metadata["tool_profile"],
+        prefer_upx_unpacked=bool(run_metadata.get("prefer_upx_unpacked")),
+        ghidra_install_dir=str(args.ghidra_install_dir or ""),
+        ghidra_headless=str(args.ghidra_headless or ""),
         judge_mode=args.judge_mode,
         explicit_judge_model=str(args.judge_model or "").strip(),
         forced_model=run_metadata["force_model"],
@@ -513,6 +582,7 @@ def main(argv: List[str] | None = None) -> None:
         "aborted_early": False,
     }
     run_budget_triggered = False
+    max_task_attempts = 1 + max(0, int(args.task_failure_retries or 0))
     for task_index, task in enumerate(evaluation_tasks, start=1):
         sample_path = task.sample_path
         slug = sample_slug(sample_path)
@@ -542,19 +612,107 @@ def main(argv: List[str] | None = None) -> None:
         )
         task_started = time.monotonic()
         task_started_epoch = time.time()
-        with _heartbeat(f"Analysis for {sample_path.name} :: {task.task_id}"):
-            agent_result = run_agent_case(
-                bundle_dir,
-                query=effective_query,
-                pipeline=run_metadata["pipeline"],
-                architecture=run_metadata["architecture"],
-                validator_review_level=run_metadata["validator_review_level"],
-                tool_profile=run_metadata["tool_profile"],
-                output_json=sample_dir / "agent_result.json",
+        attempt_history: List[Dict[str, Any]] = []
+        for attempt_index in range(1, max_task_attempts + 1):
+            attempt_dir = sample_dir
+            if max_task_attempts > 1:
+                attempt_dir = ensure_dir(sample_dir / "attempts" / f"attempt_{attempt_index:02d}")
+            live_status["tasks"][task_index - 1]["attempt_count"] = attempt_index
+            live_status["tasks"][task_index - 1]["max_attempts"] = max_task_attempts
+            live_status["tasks"][task_index - 1]["status"] = "running"
+            live_status["last_message"] = (
+                f"Starting analysis for {sample_path.name} :: {task.task_id}"
+                + (f" (attempt {attempt_index}/{max_task_attempts})" if max_task_attempts > 1 else "")
+            )
+            live_status["updated_at_epoch"] = time.time()
+            _write_live_status(run_dir, live_status)
+            with _heartbeat(
+                f"Analysis for {sample_path.name} :: {task.task_id}"
+                + (f" (attempt {attempt_index}/{max_task_attempts})" if max_task_attempts > 1 else "")
+            ):
+                agent_result = run_agent_case(
+                    bundle_dir,
+                    query=effective_query,
+                    pipeline=run_metadata["pipeline"],
+                    architecture=run_metadata["architecture"],
+                    validator_review_level=run_metadata["validator_review_level"],
+                    tool_profile=run_metadata["tool_profile"],
+                    prefer_upx_unpacked=bool(run_metadata.get("prefer_upx_unpacked")),
+                    timeout_sec=args.timeout_sec,
+                    ghidra_install_dir=str(args.ghidra_install_dir or ""),
+                    ghidra_headless=str(args.ghidra_headless or ""),
+                    skip_cli_tools=bool(args.skip_cli_tools),
+                    keep_project=bool(args.keep_project),
+                    output_json=attempt_dir / "agent_result.json",
+                )
+            should_retry = _should_retry_task_failure(
+                agent_result,
+                attempt_index=attempt_index,
+                max_attempts=max_task_attempts,
+            )
+            attempt_history.append(
+                {
+                    "attempt_index": int(attempt_index),
+                    "status": str(agent_result.get("status") or ""),
+                    "failure_category": str(agent_result.get("failure_category") or ""),
+                    "failure_retryable": bool(agent_result.get("failure_retryable")),
+                    "failure_reason": str(agent_result.get("failure_reason") or ""),
+                    "artifact_dir": str(attempt_dir),
+                    "retried": bool(should_retry),
+                }
+            )
+            if max_task_attempts > 1:
+                attempt_result = _annotate_task_retry_result(
+                    agent_result,
+                    attempt_index=attempt_index,
+                    max_attempts=max_task_attempts,
+                    attempt_history=attempt_history,
+                )
+                write_json(attempt_dir / "agent_result.json", attempt_result)
+            if should_retry:
+                retry_delay_sec = min(5, attempt_index)
+                _emit_progress(
+                    f"[{task_index}/{len(evaluation_tasks)}] Retrying {sample_path.name} :: {task.task_id} "
+                    f"after attempt {attempt_index}/{max_task_attempts} "
+                    f"status={agent_result.get('status', 'unknown')} "
+                    f"category={agent_result.get('failure_category', '') or 'unknown'} "
+                    f"in {retry_delay_sec}s"
+                )
+                live_status["tasks"][task_index - 1]["status"] = "retrying"
+                live_status["last_message"] = (
+                    f"Retrying {sample_path.name} :: {task.task_id} after attempt {attempt_index}/{max_task_attempts}"
+                )
+                live_status["updated_at_epoch"] = time.time()
+                _write_live_status(run_dir, live_status)
+                time.sleep(retry_delay_sec)
+                continue
+            break
+        agent_result = _annotate_task_retry_result(
+            agent_result,
+            attempt_index=len(attempt_history) or 1,
+            max_attempts=max_task_attempts,
+            attempt_history=attempt_history,
+        )
+        write_json(sample_dir / "agent_result.json", agent_result)
+        analysis_target = (
+            dict(agent_result.get("analysis_target") or {})
+            if isinstance(agent_result.get("analysis_target"), dict)
+            else {}
+        )
+        if str(analysis_target.get("kind") or "") == "upx_unpacked":
+            _emit_progress(
+                f"[{task_index}/{len(evaluation_tasks)}] Using UPX-unpacked analysis target for {sample_path.name} :: {task.task_id}"
+            )
+        elif bool(analysis_target.get("packed_detected")) and str(analysis_target.get("selection_reason") or "").strip():
+            _emit_progress(
+                f"[{task_index}/{len(evaluation_tasks)}] UPX-packed target fell back to original bundle for {sample_path.name} :: {task.task_id}: "
+                f"{str(analysis_target.get('selection_reason') or '').strip()}"
             )
         _emit_progress(
             f"[{task_index}/{len(evaluation_tasks)}] Analysis finished for {sample_path.name} :: {task.task_id} "
-            f"status={agent_result.get('status', 'unknown')} elapsed={int(time.monotonic() - task_started)}s"
+            f"status={agent_result.get('status', 'unknown')} "
+            f"attempts={int(agent_result.get('task_attempt_count') or 1)} "
+            f"elapsed={int(time.monotonic() - task_started)}s"
         )
         live_status.update(
             {
@@ -563,12 +721,27 @@ def main(argv: List[str] | None = None) -> None:
                 "last_message": (
                     f"Analysis finished for {sample_path.name} :: {task.task_id} "
                     f"status={agent_result.get('status', 'unknown')}"
+                    + (
+                        f" after {int(agent_result.get('task_attempt_count') or 1)} attempt(s)"
+                        if int(agent_result.get("task_attempt_count") or 1) > 1
+                        else ""
+                    )
                 ),
                 "updated_at_epoch": time.time(),
             }
         )
         live_status["tasks"][task_index - 1]["status"] = str(agent_result.get("status") or "completed")
+        if analysis_target:
+            live_status["tasks"][task_index - 1]["analysis_target_kind"] = str(analysis_target.get("kind") or "")
+            live_status["tasks"][task_index - 1]["analysis_target_path"] = str(
+                analysis_target.get("effective_executable_path") or ""
+            )
         _write_live_status(run_dir, live_status)
+
+        analysis_bundle_manifest = bundle_manifest
+        analysis_bundle_manifest_path = Path(str(agent_result.get("analysis_bundle_manifest_path") or "")).expanduser()
+        if analysis_bundle_manifest_path.exists():
+            analysis_bundle_manifest = read_json(analysis_bundle_manifest_path)
 
         judge_result = None
         if args.judge_mode == "agent":
@@ -598,7 +771,7 @@ def main(argv: List[str] | None = None) -> None:
                         "acceptance_targets": list(task.acceptance_targets),
                         "tags": list(task.tags),
                     },
-                    bundle_manifest,
+                    analysis_bundle_manifest,
                     agent_result,
                     judge_model=args.judge_model,
                     output_json=sample_dir / "judge_result.json",
@@ -632,7 +805,7 @@ def main(argv: List[str] | None = None) -> None:
                 "acceptance_targets": list(task.acceptance_targets),
                 "tags": list(task.tags),
             },
-            bundle_manifest,
+            analysis_bundle_manifest,
             agent_result,
             judge_result,
             {

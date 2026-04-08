@@ -15,6 +15,7 @@ Summary:
 
 from __future__ import annotations
 
+import csv
 import json
 import mimetypes
 import threading
@@ -63,8 +64,9 @@ _BROWSER_HTML = """<!doctype html>
       color: var(--ink);
     }
     h1, h2, h3 { margin: 0; }
-    .wrap { padding: 24px; max-width: 1760px; margin: 0 auto; }
+    .wrap { padding: 24px; max-width: 1760px; margin: 0 auto; display: flex; flex-direction: column; }
     .topbar {
+      order: 0;
       display: flex;
       flex-direction: column;
       gap: 18px;
@@ -170,7 +172,12 @@ _BROWSER_HTML = """<!doctype html>
       overflow-wrap: anywhere;
       word-break: break-word;
     }
+    .analysis-panel {
+      order: 1;
+      margin-bottom: 18px;
+    }
     .workspace {
+      order: 2;
       display: grid;
       grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr) minmax(540px, 2fr);
       gap: 18px;
@@ -189,6 +196,28 @@ _BROWSER_HTML = """<!doctype html>
       border-bottom: 1px solid var(--line);
       background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(246,250,255,0.94));
     }
+    .panel-head-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .panel-toggle {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.94);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 8px 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .panel-toggle:hover {
+      border-color: var(--line-strong);
+      color: var(--ink);
+    }
     .panel-body {
       padding: 14px;
       min-width: 0;
@@ -198,7 +227,7 @@ _BROWSER_HTML = """<!doctype html>
     .detail-panel {
       display: flex;
       flex-direction: column;
-      min-height: 780px;
+      min-height: 0;
     }
     .queue-panel .panel-body,
     .runs-panel .panel-body,
@@ -215,8 +244,8 @@ _BROWSER_HTML = """<!doctype html>
       display: flex;
       flex-direction: column;
       gap: 18px;
-      max-height: calc(100vh - 290px);
-      overflow: auto;
+      max-height: none;
+      overflow: visible;
     }
     .kicker {
       display: inline-flex;
@@ -246,6 +275,176 @@ _BROWSER_HTML = """<!doctype html>
       color: var(--muted);
       background: rgba(255,255,255,0.56);
       line-height: 1.6;
+    }
+    .analysis-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .analysis-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+    }
+    .analysis-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px 16px;
+      background: rgba(255,255,255,0.94);
+    }
+    .analysis-card .label {
+      font-size: 11px;
+      color: var(--muted-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .analysis-card .value {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.25;
+    }
+    .analysis-card .subvalue {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .analysis-meta {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .analysis-meta strong {
+      color: var(--ink);
+    }
+    .analysis-section > details {
+      display: block;
+    }
+    .analysis-section summary.title {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .analysis-section summary.title::-webkit-details-marker {
+      display: none;
+    }
+    .analysis-section .collapse-indicator::before {
+      content: "▸";
+      font-size: 12px;
+      transition: transform 160ms ease;
+    }
+    .analysis-section details[open] .collapse-indicator::before {
+      transform: rotate(90deg);
+    }
+    .notice-banner {
+      border: 1px solid rgba(180, 35, 24, 0.18);
+      border-radius: 18px;
+      padding: 14px 16px;
+      background: rgba(251, 226, 223, 0.82);
+      color: var(--fail);
+      line-height: 1.6;
+    }
+    .notice-banner strong {
+      display: block;
+      margin-bottom: 4px;
+      color: #7a271a;
+    }
+    .fallback-chart-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 14px;
+    }
+    .fallback-chart {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255,255,255,0.96);
+      padding: 14px 16px 16px;
+    }
+    .fallback-chart h4 {
+      margin: 0 0 6px;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+    }
+    .fallback-chart .sub {
+      margin: 0 0 14px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .bar-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: minmax(120px, 1.1fr) minmax(0, 2.2fr) auto;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+    }
+    .bar-label {
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+    .bar-value {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .bar-track {
+      position: relative;
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.08);
+      overflow: hidden;
+    }
+    .bar-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(36, 89, 209, 0.96), rgba(82, 139, 255, 0.96));
+    }
+    .bar-fill.success {
+      background: linear-gradient(90deg, rgba(21, 127, 94, 0.96), rgba(58, 186, 131, 0.92));
+    }
+    .bar-fill.variance {
+      background: linear-gradient(90deg, rgba(154, 100, 18, 0.96), rgba(224, 166, 54, 0.92));
+    }
+    .delta-track {
+      display: grid;
+      grid-template-columns: 1fr 2px 1fr;
+      align-items: center;
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.04);
+      overflow: hidden;
+    }
+    .delta-axis {
+      height: 100%;
+      background: rgba(15, 23, 42, 0.16);
+    }
+    .delta-fill-neg,
+    .delta-fill-pos {
+      height: 100%;
+    }
+    .delta-fill-neg {
+      justify-self: end;
+      border-radius: 999px 0 0 999px;
+      background: linear-gradient(90deg, rgba(180, 35, 24, 0.92), rgba(232, 99, 84, 0.92));
+    }
+    .delta-fill-pos {
+      justify-self: start;
+      border-radius: 0 999px 999px 0;
+      background: linear-gradient(90deg, rgba(21, 127, 94, 0.96), rgba(58, 186, 131, 0.92));
     }
     .queue-card,
     .run-card {
@@ -445,6 +644,15 @@ _BROWSER_HTML = """<!doctype html>
       background: var(--panel-strong);
       min-width: 0;
     }
+    .surface.collapsible {
+      overflow: hidden;
+    }
+    .surface.collapsible > details {
+      display: block;
+    }
+    .surface.collapsible > details[open] {
+      background: var(--panel-strong);
+    }
     .output-panel {
       display: flex;
       flex-direction: column;
@@ -463,6 +671,39 @@ _BROWSER_HTML = """<!doctype html>
       margin-bottom: 6px;
     }
     .surface .title .sub { margin-top: 0; }
+    details > summary.title {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    details > summary.title::-webkit-details-marker {
+      display: none;
+    }
+    .collapse-copy {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    .collapse-indicator {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    details > summary.title .collapse-indicator::before {
+      content: "▸";
+      font-size: 12px;
+      transition: transform 160ms ease;
+    }
+    details[open] > summary.title .collapse-indicator::before {
+      transform: rotate(90deg);
+    }
     .output-panel .title {
       min-height: 84px;
       display: flex;
@@ -480,12 +721,13 @@ _BROWSER_HTML = """<!doctype html>
       overflow: auto;
     }
     .output-panel pre {
-      min-height: 320px;
-      max-height: 620px;
-      flex: 1 1 auto;
+      min-height: 220px;
+      max-height: none;
+      flex: 0 0 auto;
     }
     .logs-panel pre {
-      max-height: 320px;
+      max-height: none;
+      min-height: 180px;
       background: #09111f;
       color: #d8e3f5;
     }
@@ -511,36 +753,39 @@ _BROWSER_HTML = """<!doctype html>
     .task-row.sel { background: rgba(36, 89, 209, 0.08); }
     .visual-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 18px;
       padding: 16px;
+      align-items: start;
     }
     .visual-card {
       border: 1px solid var(--line);
-      border-radius: 18px;
+      border-radius: 20px;
       overflow: hidden;
       background: rgba(255,255,255,0.98);
+      box-shadow: 0 14px 30px rgba(15, 23, 42, 0.06);
     }
     .visual-card img {
       display: block;
       width: 100%;
-      height: 220px;
+      height: 300px;
       object-fit: contain;
-      background: #f8fbff;
+      background: linear-gradient(180deg, #fbfdff 0%, #f4f8fd 100%);
       border-bottom: 1px solid var(--line);
+      padding: 16px;
     }
     .visual-card-body {
-      padding: 12px 14px;
+      padding: 14px 16px 16px;
     }
     .visual-card-title {
       font-weight: 700;
-      line-height: 1.35;
-      margin-bottom: 6px;
+      line-height: 1.4;
+      margin-bottom: 8px;
     }
     .visual-card-copy {
       color: var(--muted);
       font-size: 13px;
-      line-height: 1.5;
+      line-height: 1.6;
     }
     .link-row {
       display: flex;
@@ -559,6 +804,10 @@ _BROWSER_HTML = """<!doctype html>
       text-decoration: none;
       font-size: 12px;
       font-weight: 700;
+    }
+    .table-wrap {
+      padding: 0 16px 16px;
+      overflow: auto;
     }
     .muted { color: var(--muted); }
     code {
@@ -615,6 +864,45 @@ _BROWSER_HTML = """<!doctype html>
       <div class="summary" id="summary"></div>
     </div>
 
+    <section class="panel analysis-panel">
+      <div class="panel-head">
+        <div class="kicker">Experiment Analysis</div>
+        <h2>Aggregate Comparisons</h2>
+        <div class="sub" id="analysis-meta">Experiment-level charts should aggregate repetitions and compare configurations before you inspect any one run.</div>
+      </div>
+      <div class="panel-body">
+        <div class="analysis-stack">
+          <div class="analysis-summary-grid" id="analysis-summary"></div>
+
+          <div class="surface">
+            <div class="title">
+              <h3>Configuration Comparison</h3>
+              <div class="sub" id="analysis-table-meta">Mean score, repetition variance, and task success aggregated across child runs.</div>
+            </div>
+            <div class="table-wrap" id="analysis-table"></div>
+          </div>
+
+          <div class="surface">
+            <div class="title">
+              <h3>Task Comparison Matrix</h3>
+              <div class="sub" id="analysis-task-meta">Compare every configuration against baseline for each task in the selected scope.</div>
+            </div>
+            <div class="table-wrap" id="analysis-task-movers"></div>
+          </div>
+
+          <div id="analysis-chart-groups"></div>
+
+          <div class="surface">
+            <div class="title">
+              <h3>Task Comparison Pages</h3>
+              <div class="sub" id="analysis-pages-meta">Experiment-level task comparison pages. These can be filtered to the selected executable.</div>
+            </div>
+            <div class="link-row" id="analysis-task-pages"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <div class="workspace">
       <section class="panel queue-panel">
         <div class="panel-head">
@@ -627,8 +915,13 @@ _BROWSER_HTML = """<!doctype html>
 
       <section class="panel runs-panel">
         <div class="panel-head">
-          <div class="kicker">Step 2</div>
-          <h2 id="run-list-title">Runs For Executable</h2>
+          <div class="panel-head-row">
+            <div>
+              <div class="kicker">Step 2</div>
+              <h2 id="run-list-title">Runs For Executable</h2>
+            </div>
+            <button type="button" class="panel-toggle" id="runs-panel-toggle" aria-expanded="true">Hide Step 2</button>
+          </div>
           <div class="sub" id="run-list-meta">Select an executable to view its baseline and variants.</div>
         </div>
         <div class="panel-body" id="run-rows"></div>
@@ -636,15 +929,20 @@ _BROWSER_HTML = """<!doctype html>
 
       <section class="panel detail-panel">
         <div class="panel-head">
-          <div class="kicker">Step 3</div>
-          <div class="detail-head">
-            <div class="detail-title-block">
-              <h2 id="detail-title">Run Detail</h2>
-              <div class="detail-meta" id="run-meta">No run selected.</div>
+          <div class="panel-head-row">
+            <div style="min-width:0; flex:1 1 auto;">
+              <div class="kicker">Step 3</div>
+              <div class="detail-head">
+                <div class="detail-title-block">
+                  <h2 id="detail-title">Run Detail</h2>
+                  <div class="detail-meta" id="run-meta">No run selected.</div>
+                </div>
+                <div id="detail-status"></div>
+              </div>
+              <div class="focus-strip" id="detail-context"></div>
             </div>
-            <div id="detail-status"></div>
+            <button type="button" class="panel-toggle" id="detail-panel-toggle" aria-expanded="true">Hide Step 3</button>
           </div>
-          <div class="focus-strip" id="detail-context"></div>
         </div>
         <div class="panel-body">
           <div class="pipeline-box">
@@ -689,22 +987,19 @@ _BROWSER_HTML = """<!doctype html>
             <div style="padding: 0 16px 16px;" id="task-list"></div>
           </div>
 
-          <div class="surface logs-panel">
-            <div class="title">
-              <h3>Server Status</h3>
-              <div class="sub" id="server-status-meta">Live server logs and transient status messages.</div>
-            </div>
-            <pre id="server-log"></pre>
+          <div class="surface collapsible logs-panel">
+            <details id="server-status-details">
+              <summary class="title">
+                <div class="collapse-copy">
+                  <h3>Server Status</h3>
+                  <div class="sub" id="server-status-meta">Live server logs and transient status messages.</div>
+                </div>
+                <span class="collapse-indicator">Log view</span>
+              </summary>
+              <pre id="server-log"></pre>
+            </details>
           </div>
 
-          <div class="surface visuals-panel">
-            <div class="title">
-              <h3>Visuals</h3>
-              <div class="sub" id="visuals-meta">Charts and sample-specific comparison pages for the selected experiment.</div>
-            </div>
-            <div class="link-row" id="visual-links"></div>
-            <div class="visual-grid" id="visual-grid"></div>
-          </div>
         </div>
       </section>
     </div>
@@ -716,6 +1011,11 @@ _BROWSER_HTML = """<!doctype html>
     let selectedExecutable = params.get("sample") || "";
     let selectedRunId = params.get("run_id") || "";
     let selectedSampleTaskId = params.get("sample_task_id") || "";
+    let analysisSectionState = {};
+    let workspacePanelState = {
+      runs: true,
+      detail: true,
+    };
 
     function escapeHtml(value) {
       return String(value || "")
@@ -756,6 +1056,28 @@ _BROWSER_HTML = """<!doctype html>
       return text.replaceAll("_", " ");
     }
 
+    function numericValue(value) {
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    }
+
+    function formatNumber(value, digits = 2) {
+      const num = numericValue(value);
+      return num === null ? "—" : num.toFixed(digits);
+    }
+
+    function formatSigned(value, digits = 2) {
+      const num = numericValue(value);
+      if (num === null) return "—";
+      return `${num >= 0 ? "+" : ""}${num.toFixed(digits)}`;
+    }
+
+    function clampPercent(value) {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return 0;
+      return Math.max(0, Math.min(100, num));
+    }
+
     async function loadJson(path) {
       const response = await fetch(path, { cache: "no-store" });
       if (!response.ok) {
@@ -780,6 +1102,27 @@ _BROWSER_HTML = """<!doctype html>
     function renderCountChip(label, count, status) {
       if (!count) return "";
       return `<span class="count-chip ${statusClass(status)}"><strong>${escapeHtml(count)}</strong>${escapeHtml(label)}</span>`;
+    }
+
+    function applyWorkspacePanelState() {
+      const runsBody = document.querySelector(".runs-panel .panel-body");
+      const detailBody = document.querySelector(".detail-panel .panel-body");
+      const runsToggle = document.getElementById("runs-panel-toggle");
+      const detailToggle = document.getElementById("detail-panel-toggle");
+      if (runsBody) {
+        runsBody.style.display = workspacePanelState.runs ? "" : "none";
+      }
+      if (detailBody) {
+        detailBody.style.display = workspacePanelState.detail ? "" : "none";
+      }
+      if (runsToggle) {
+        runsToggle.textContent = workspacePanelState.runs ? "Hide Step 2" : "Show Step 2";
+        runsToggle.setAttribute("aria-expanded", workspacePanelState.runs ? "true" : "false");
+      }
+      if (detailToggle) {
+        detailToggle.textContent = workspacePanelState.detail ? "Hide Step 3" : "Show Step 3";
+        detailToggle.setAttribute("aria-expanded", workspacePanelState.detail ? "true" : "false");
+      }
     }
 
     function normalizeExperimentSelection(catalog) {
@@ -821,6 +1164,9 @@ _BROWSER_HTML = """<!doctype html>
         current.run_count ? `${current.run_count} run(s)` : "",
         current.has_visuals ? `${current.visual_count || 0} chart(s)` : "no charts yet",
       ].filter(Boolean);
+      if (current.visualization_error) {
+        metaParts.push("static charts failed to build");
+      }
       document.getElementById("experiment-meta").textContent = metaParts.join(" • ");
       select.onchange = () => {
         const nextExperiment = select.value || "";
@@ -900,6 +1246,337 @@ _BROWSER_HTML = """<!doctype html>
         subtitleParts.push(`${catalogEntry.visual_count || 0} chart(s) available`);
       }
       document.getElementById("subtitle").textContent = subtitleParts.join(" • ");
+    }
+
+    function renderAnalysis(state) {
+      const analysis = (state || {}).experiment_analysis || {};
+      const sectionOpen = (key, defaultOpen) => {
+        if (Object.prototype.hasOwnProperty.call(analysisSectionState, key)) {
+          return !!analysisSectionState[key];
+        }
+        return !!defaultOpen;
+      };
+      document.getElementById("analysis-meta").textContent =
+        analysis.meta || "Experiment-level charts should aggregate repetitions and compare configurations before you inspect any one run.";
+
+      const summaryCards = [
+        {
+          label: "Configurations",
+          value: String(analysis.configuration_count || 0),
+          subvalue: `${analysis.sample_count || 0} executable(s) • ${analysis.task_scope_count || 0} sample-task cases`,
+        },
+        {
+          label: "Repetitions",
+          value: `${analysis.completed_repetitions || 0}/${analysis.planned_repetitions || 0}`,
+          subvalue: "Completed vs planned repetitions across compared configurations",
+        },
+        {
+          label: "Best Variant",
+          value: ((analysis.best_variant || {}).display_label) || "No comparison yet",
+          subvalue: analysis.best_variant
+            ? `score delta ${formatSigned(analysis.best_variant.score_delta, 2)} • success delta ${formatSigned(analysis.best_variant.task_success_delta, 2)}`
+            : "No non-baseline aggregate rows available",
+        },
+        {
+          label: "Highest Variance",
+          value: ((analysis.highest_variance_variant || {}).display_label) || "No variance yet",
+          subvalue: analysis.highest_variance_variant
+            ? `score sd ${formatNumber(analysis.highest_variance_variant.overall_score_stddev, 2)}`
+            : "Repeat variance not available yet",
+        },
+        {
+          label: "Largest Task Swing",
+          value: ((analysis.widest_task_shift || {}).sample_task_id) || "No task deltas yet",
+          subvalue: analysis.widest_task_shift
+            ? `${analysis.widest_task_shift.display_label} • ${formatSigned(analysis.widest_task_shift.score_delta, 2)}`
+            : "Task-level deltas not available yet",
+        },
+        {
+          label: "Chart Coverage",
+          value: String(analysis.chart_count || 0),
+          subvalue: `${analysis.task_page_count || 0} task comparison page(s) • ${(analysis.variable_families || []).join(", ") || "no variant families"}`,
+        },
+      ];
+
+      document.getElementById("analysis-summary").innerHTML = summaryCards.map((card) => `
+        <div class="analysis-card">
+          <div class="label">${escapeHtml(card.label)}</div>
+          <div class="value">${escapeHtml(card.value)}</div>
+          <div class="subvalue">${escapeHtml(card.subvalue)}</div>
+        </div>
+      `).join("");
+
+      const variantRows = (analysis.variant_rows || []);
+      document.getElementById("analysis-table-meta").textContent =
+        "Rows are aggregated by configuration across repetitions. Score and success plots use the same variant-level grouping.";
+      if (!variantRows.length) {
+        document.getElementById("analysis-table").innerHTML = `<div class="column-empty">No aggregate comparison rows are available for this experiment yet.</div>`;
+      } else {
+        const rows = variantRows.map((row) => `
+          <tr>
+            <td>${escapeHtml(row.display_label || row.variant_id || "")}</td>
+            <td>${escapeHtml(row.changed_variable || "")}</td>
+            <td>${formatNumber(row.overall_score_mean, 2)}</td>
+            <td>${formatSigned(row.score_delta, 2)}</td>
+            <td>${formatNumber(row.task_success_rate, 2)}</td>
+            <td>${formatNumber(row.overall_score_stddev, 2)}</td>
+            <td>${escapeHtml(`${row.completed_repetitions || 0}/${row.planned_repetitions || 0}`)}</td>
+          </tr>
+        `).join("");
+        document.getElementById("analysis-table").innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>Configuration</th>
+                <th>Variable</th>
+                <th>Mean score</th>
+                <th>Score delta</th>
+                <th>Task success</th>
+                <th>Score sd</th>
+                <th>Repetitions</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      }
+
+      const selectedSample = selectedExecutable || "";
+      const taskRows = (analysis.task_spotlights || []);
+      const taskMatrixColumns = (analysis.task_matrix_columns || []);
+      const taskMatrixRows = (analysis.task_matrix_rows || []);
+      document.getElementById("analysis-task-meta").textContent = selectedSample
+        ? `Experiment-wide task matrix. The executable selection below does not filter this table; it stays scoped to all executables/tasks in the experiment.`
+        : "Experiment-wide task matrix across all executables and tasks in the selected experiment.";
+      if (!taskMatrixRows.length) {
+        document.getElementById("analysis-task-movers").innerHTML = `<div class="column-empty">No task comparison rows are available for this view yet.</div>`;
+      } else {
+        const headerCells = [
+          "<th>Executable</th>",
+          "<th>Task</th>",
+          "<th>Baseline</th>",
+          ...taskMatrixColumns.map((column) => `<th>${escapeHtml(column.display_label || column.variant_id || "")}</th>`),
+        ].join("");
+        const rows = taskMatrixRows.map((row) => {
+          const configs = row.configs || {};
+          const cells = taskMatrixColumns.map((column) => {
+            const cell = configs[column.variant_id] || null;
+            if (!cell) {
+              return "<td>—</td>";
+            }
+            return `
+              <td>
+                <div>${escapeHtml(formatNumber(cell.score, 2))}</div>
+                <div class="muted">${escapeHtml(formatSigned(cell.delta, 2))}</div>
+              </td>
+            `;
+          }).join("");
+          return `
+            <tr>
+              <td>${escapeHtml(row.sample || "")}</td>
+              <td>${escapeHtml(row.task_name || row.task_id || row.sample_task_id || "")}</td>
+              <td>${escapeHtml(formatNumber(row.baseline_score, 2))}</td>
+              ${cells}
+            </tr>
+          `;
+        }).join("");
+        document.getElementById("analysis-task-movers").innerHTML = `
+          <table>
+            <thead>
+              <tr>${headerCells}</tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      }
+
+      const chartGroups = (analysis.chart_sections || []);
+      const variantRowsForCharts = (analysis.variant_rows || []);
+      const fallbackCharts = [];
+      if (variantRowsForCharts.length) {
+        const scoreRows = variantRowsForCharts.map((row) => {
+          const score = numericValue(row.overall_score_mean);
+          return `
+            <div class="bar-row">
+              <div class="bar-label">${escapeHtml(row.display_label || row.variant_id || "")}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:${clampPercent(score)}%;"></div></div>
+              <div class="bar-value">${formatNumber(score, 2)}</div>
+            </div>
+          `;
+        }).join("");
+        fallbackCharts.push(`
+          <div class="fallback-chart">
+            <h4>Mean Score By Configuration</h4>
+            <div class="sub">Aggregated score across completed repetitions. Scale assumes a 0-100 score range.</div>
+            <div class="bar-list">${scoreRows}</div>
+          </div>
+        `);
+
+        const successRows = variantRowsForCharts.map((row) => {
+          const rate = numericValue(row.task_success_rate);
+          return `
+            <div class="bar-row">
+              <div class="bar-label">${escapeHtml(row.display_label || row.variant_id || "")}</div>
+              <div class="bar-track"><div class="bar-fill success" style="width:${clampPercent((rate || 0) * 100)}%;"></div></div>
+              <div class="bar-value">${formatNumber(rate, 2)}</div>
+            </div>
+          `;
+        }).join("");
+        fallbackCharts.push(`
+          <div class="fallback-chart">
+            <h4>Task Success Rate</h4>
+            <div class="sub">Fraction of tasks marked successful across completed repetitions.</div>
+            <div class="bar-list">${successRows}</div>
+          </div>
+        `);
+
+        const maxDelta = Math.max(...variantRowsForCharts.map((row) => Math.abs(numericValue(row.score_delta) || 0)), 1);
+        const deltaRows = variantRowsForCharts.map((row) => {
+          const delta = numericValue(row.score_delta) || 0;
+          const width = clampPercent((Math.abs(delta) / maxDelta) * 100);
+          return `
+            <div class="bar-row">
+              <div class="bar-label">${escapeHtml(row.display_label || row.variant_id || "")}</div>
+              <div class="delta-track">
+                <div class="delta-fill-neg" style="width:${delta < 0 ? width : 0}%;"></div>
+                <div class="delta-axis"></div>
+                <div class="delta-fill-pos" style="width:${delta > 0 ? width : 0}%;"></div>
+              </div>
+              <div class="bar-value">${formatSigned(delta, 2)}</div>
+            </div>
+          `;
+        }).join("");
+        fallbackCharts.push(`
+          <div class="fallback-chart">
+            <h4>Score Delta Vs Baseline</h4>
+            <div class="sub">Positive bars improve on baseline; negative bars underperform it.</div>
+            <div class="bar-list">${deltaRows}</div>
+          </div>
+        `);
+
+        const varianceMax = Math.max(...variantRowsForCharts.map((row) => numericValue(row.overall_score_stddev) || 0), 1);
+        const varianceRows = variantRowsForCharts.map((row) => {
+          const sd = numericValue(row.overall_score_stddev) || 0;
+          return `
+            <div class="bar-row">
+              <div class="bar-label">${escapeHtml(row.display_label || row.variant_id || "")}</div>
+              <div class="bar-track"><div class="bar-fill variance" style="width:${clampPercent((sd / varianceMax) * 100)}%;"></div></div>
+              <div class="bar-value">${formatNumber(sd, 2)}</div>
+            </div>
+          `;
+        }).join("");
+        fallbackCharts.push(`
+          <div class="fallback-chart">
+            <h4>Repetition Variance</h4>
+            <div class="sub">Standard deviation of score across repetitions for each configuration.</div>
+            <div class="bar-list">${varianceRows}</div>
+          </div>
+        `);
+      }
+
+      if (taskRows.length) {
+        const maxTaskDelta = Math.max(...taskRows.slice(0, 8).map((row) => Math.abs(numericValue(row.score_delta) || 0)), 1);
+        const taskDeltaRows = taskRows.slice(0, 8).map((row) => {
+          const delta = numericValue(row.score_delta) || 0;
+          const width = clampPercent((Math.abs(delta) / maxTaskDelta) * 100);
+          return `
+            <div class="bar-row">
+              <div class="bar-label">${escapeHtml(row.sample_task_id || "")}</div>
+              <div class="delta-track">
+                <div class="delta-fill-neg" style="width:${delta < 0 ? width : 0}%;"></div>
+                <div class="delta-axis"></div>
+                <div class="delta-fill-pos" style="width:${delta > 0 ? width : 0}%;"></div>
+              </div>
+              <div class="bar-value">${formatSigned(delta, 2)}</div>
+            </div>
+          `;
+        }).join("");
+        fallbackCharts.push(`
+          <div class="fallback-chart">
+            <h4>${selectedSample ? "Task Movers For Selected Executable" : "Largest Task Movers"}</h4>
+            <div class="sub">Largest task-level score deltas currently in view.</div>
+            <div class="bar-list">${taskDeltaRows}</div>
+          </div>
+        `);
+      }
+
+      const chartLead = analysis.visualization_error
+        ? `<div class="notice-banner"><strong>Static experiment charts were not generated.</strong>${escapeHtml(analysis.visualization_error)}. The browser is showing inline fallback charts built from the aggregate CSV data instead.</div>`
+        : "";
+
+      if (!chartGroups.length) {
+        if (fallbackCharts.length) {
+          document.getElementById("analysis-chart-groups").innerHTML = `
+            ${chartLead}
+            <div class="surface analysis-section">
+              <details data-analysis-section="browser-native" ${sectionOpen("browser-native", true) ? "open" : ""}>
+                <summary class="title">
+                  <div class="collapse-copy">
+                    <h3>Browser-Native Charts</h3>
+                    <div class="sub">Experiment-level charts rendered directly from the aggregate tables when static chart artifacts are unavailable.</div>
+                  </div>
+                  <span class="collapse-indicator">Charts</span>
+                </summary>
+                <div style="padding:16px;">
+                  <div class="fallback-chart-grid">${fallbackCharts.join("")}</div>
+                </div>
+              </details>
+            </div>
+          `;
+        } else {
+          document.getElementById("analysis-chart-groups").innerHTML = `
+            ${chartLead}
+            <div class="column-empty">No experiment charts were found yet.</div>
+          `;
+        }
+      } else {
+        document.getElementById("analysis-chart-groups").innerHTML = `
+          ${chartLead}
+          ${chartGroups.map((section) => `
+            <div class="surface analysis-section">
+              <details data-analysis-section="${escapeAttr(section.key || "")}" ${sectionOpen(section.key || "", section.open) ? "open" : ""}>
+                <summary class="title">
+                  <div class="collapse-copy">
+                    <h3>${escapeHtml(section.title || "Charts")}</h3>
+                    <div class="sub">${escapeHtml(section.description || "")}</div>
+                  </div>
+                  <span class="collapse-indicator">Charts</span>
+                </summary>
+                <div class="visual-grid">
+                  ${(section.images || []).map((entry) => `
+                    <a class="visual-card" href="${escapeAttr(entry.url || "#")}" target="_blank" rel="noreferrer">
+                      <img src="${escapeAttr(entry.url || "")}" alt="${escapeAttr(entry.title || entry.filename || "chart")}" loading="lazy">
+                      <div class="visual-card-body">
+                        <div class="visual-card-title">${escapeHtml(entry.title || entry.filename || "Chart")}</div>
+                        <div class="visual-card-copy">${escapeHtml(entry.description || entry.filename || "")}</div>
+                      </div>
+                    </a>
+                  `).join("")}
+                </div>
+              </details>
+            </div>
+          `).join("")}
+        `;
+      }
+      document.querySelectorAll("#analysis-chart-groups details[data-analysis-section]").forEach((details) => {
+        const key = details.getAttribute("data-analysis-section") || "";
+        if (!key) return;
+        details.addEventListener("toggle", () => {
+          analysisSectionState[key] = details.open;
+        });
+      });
+
+      const taskPages = (analysis.task_pages || []).filter((entry) => !selectedSample || entry.sample === selectedSample);
+      document.getElementById("analysis-pages-meta").textContent = selectedSample
+        ? `Task comparison pages for ${selectedSample}.`
+        : "Experiment-level task comparison pages. Select an executable to narrow this list.";
+      document.getElementById("analysis-task-pages").innerHTML = taskPages.length
+        ? taskPages.slice(0, 12).map((entry) => `
+            <a class="link-chip" href="${escapeAttr(entry.url || "#")}" target="_blank" rel="noreferrer">
+              ${escapeHtml(entry.task_name || entry.sample_task_id || "task comparison")}
+            </a>
+          `).join("")
+        : `<div class="column-empty">No task comparison pages were found for this view yet.</div>`;
     }
 
     function renderExecutableQueue(state) {
@@ -1071,32 +1748,6 @@ _BROWSER_HTML = """<!doctype html>
       `).join("");
     }
 
-    function renderVisuals(detail) {
-      const gallery = (detail || {}).visual_gallery || {};
-      const images = gallery.images || [];
-      const taskPages = gallery.task_pages || [];
-      document.getElementById("visuals-meta").textContent =
-        gallery.meta || "Charts and sample-specific comparison pages for the selected experiment.";
-      document.getElementById("visual-links").innerHTML = taskPages.map((entry) => `
-        <a class="link-chip" href="${escapeAttr(entry.url || "#")}" target="_blank" rel="noreferrer">
-          ${escapeHtml(entry.task_name || entry.sample_task_id || "task comparison")}
-        </a>
-      `).join("");
-      if (!images.length) {
-        document.getElementById("visual-grid").innerHTML = `<div class="column-empty">No chart images were found for this experiment yet.</div>`;
-        return;
-      }
-      document.getElementById("visual-grid").innerHTML = images.map((entry) => `
-        <a class="visual-card" href="${escapeAttr(entry.url || "#")}" target="_blank" rel="noreferrer">
-          <img src="${escapeAttr(entry.url || "")}" alt="${escapeAttr(entry.title || entry.filename || "chart")}" loading="lazy">
-          <div class="visual-card-body">
-            <div class="visual-card-title">${escapeHtml(entry.title || entry.filename || "Chart")}</div>
-            <div class="visual-card-copy">${escapeHtml(entry.description || entry.filename || "")}</div>
-          </div>
-        </a>
-      `).join("");
-    }
-
     function renderDetail(state, detail) {
       const run = (state.runs || []).find((entry) => entry.run_id === selectedRunId) || null;
       if (!run || !detail) {
@@ -1116,9 +1767,6 @@ _BROWSER_HTML = """<!doctype html>
         document.getElementById("task-list").innerHTML = "";
         document.getElementById("pipeline-summary").textContent = "Pipeline state not available yet.";
         document.getElementById("pipeline-stages").innerHTML = "";
-        document.getElementById("visuals-meta").textContent = "";
-        document.getElementById("visual-links").innerHTML = "";
-        document.getElementById("visual-grid").innerHTML = "";
         return;
       }
 
@@ -1189,7 +1837,6 @@ _BROWSER_HTML = """<!doctype html>
 
       renderPipeline(detail);
       renderTasks(detail);
-      renderVisuals(detail);
     }
 
     async function refresh() {
@@ -1208,6 +1855,7 @@ _BROWSER_HTML = """<!doctype html>
         const state = await loadJson(`/api/state?experiment_id=${encodeURIComponent(selectedExperimentId)}`);
         normalizeSelection(state);
         renderSummary(catalogEntry, state);
+        renderAnalysis(state);
         renderExecutableQueue(state);
         renderRunList(state);
         if (selectedRunId) {
@@ -1223,7 +1871,20 @@ _BROWSER_HTML = """<!doctype html>
       }
     }
 
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.id === "runs-panel-toggle") {
+        workspacePanelState.runs = !workspacePanelState.runs;
+        applyWorkspacePanelState();
+      } else if (target.id === "detail-panel-toggle") {
+        workspacePanelState.detail = !workspacePanelState.detail;
+        applyWorkspacePanelState();
+      }
+    });
+
     refresh();
+    applyWorkspacePanelState();
     setInterval(refresh, 2500);
   </script>
 </body>
@@ -1329,7 +1990,41 @@ def _match_score(sample_name: str, haystack: str) -> int:
     return 0
 
 
-def _build_visual_gallery_payload(experiment_root: Path, sample_name: str = "") -> Dict[str, Any]:
+def _safe_csv_rows(path: Path) -> List[Dict[str, str]]:
+    try:
+        if not path.exists():
+            return []
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            return list(csv.DictReader(handle))
+    except Exception:
+        return []
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        return float(text)
+    except Exception:
+        return None
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        return int(float(text))
+    except Exception:
+        return None
+
+
+def _as_bool(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def _collect_chart_entries(experiment_root: Path) -> List[Dict[str, Any]]:
     experiment_id = experiment_root.name
     outputs_root = experiment_root / "outputs"
     chart_manifest = _safe_json(outputs_root / "chart_manifest.json")
@@ -1344,19 +2039,17 @@ def _build_visual_gallery_payload(experiment_root: Path, sample_name: str = "") 
             if artifact_path is None:
                 continue
             relative_path = artifact_path.relative_to(experiment_root)
-            title = str(raw_entry.get("title") or artifact_path.stem.replace("_", " ").title()).strip()
-            description = str(raw_entry.get("description") or "").strip()
-            relevance = _match_score(sample_name, f"{artifact_path.name} {title} {description}")
             image_entries.append(
                 {
                     "filename": artifact_path.name,
-                    "title": title,
-                    "description": description,
-                    "relevance": relevance,
+                    "title": str(raw_entry.get("title") or artifact_path.stem.replace("_", " ").title()).strip(),
+                    "description": str(raw_entry.get("description") or "").strip(),
                     "url": _artifact_url(experiment_id, relative_path),
                 }
             )
-    elif outputs_root.exists():
+        return image_entries
+
+    if outputs_root.exists():
         for artifact_path in sorted(outputs_root.rglob("*")):
             if artifact_path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".svg"}:
                 continue
@@ -1368,23 +2061,32 @@ def _build_visual_gallery_payload(experiment_root: Path, sample_name: str = "") 
                     "filename": artifact_path.name,
                     "title": artifact_path.stem.replace("_", " ").title(),
                     "description": str(relative_path.parent),
-                    "relevance": _match_score(sample_name, str(relative_path)),
                     "url": _artifact_url(experiment_id, relative_path),
                 }
             )
+    return image_entries
 
-    sample_specific = [entry for entry in image_entries if int(entry.get("relevance") or 0) > 0]
-    if sample_name and sample_specific:
-        image_entries = sample_specific + [entry for entry in image_entries if int(entry.get("relevance") or 0) == 0][:4]
 
+def _load_visualization_status(experiment_root: Path) -> Dict[str, Any]:
+    outputs_root = experiment_root / "outputs"
+    chart_manifest = _safe_json(outputs_root / "chart_manifest.json")
+    error_payload = _safe_json(outputs_root / "visualization_error.json")
+    created_files = chart_manifest.get("created_files") if isinstance(chart_manifest.get("created_files"), list) else []
+    return {
+        "has_static_charts": bool(created_files),
+        "chart_count": len(created_files or []),
+        "visualization_error": str(error_payload.get("error") or "").strip() if isinstance(error_payload, dict) else "",
+    }
+
+
+def _collect_task_page_entries(experiment_root: Path) -> List[Dict[str, str]]:
+    experiment_id = experiment_root.name
+    outputs_root = experiment_root / "outputs"
     task_pages: List[Dict[str, str]] = []
     comparison_manifest = _safe_json(outputs_root / "task_output_comparisons" / "comparison_manifest.json")
     tasks_payload = comparison_manifest.get("tasks") if isinstance(comparison_manifest.get("tasks"), dict) else {}
     for sample_task_id, raw_entry in sorted(tasks_payload.items()):
         if not isinstance(raw_entry, dict):
-            continue
-        sample = str(raw_entry.get("sample") or "").strip()
-        if sample_name and sample != sample_name and not str(sample_task_id).startswith(f"{sample_name}::"):
             continue
         page_path = str(raw_entry.get("page") or "").strip()
         if not page_path:
@@ -1392,11 +2094,239 @@ def _build_visual_gallery_payload(experiment_root: Path, sample_name: str = "") 
         relative_path = Path("outputs") / "task_output_comparisons" / page_path
         task_pages.append(
             {
+                "sample": str(raw_entry.get("sample") or "").strip(),
                 "sample_task_id": str(sample_task_id),
                 "task_name": str(raw_entry.get("task_name") or raw_entry.get("task_id") or sample_task_id),
                 "url": _artifact_url(experiment_id, relative_path),
             }
         )
+    return task_pages
+
+
+def _chart_section_key(entry: Dict[str, Any]) -> str:
+    haystack = " ".join(
+        [
+            str(entry.get("filename") or ""),
+            str(entry.get("title") or ""),
+            str(entry.get("description") or ""),
+        ]
+    ).lower()
+    if any(token in haystack for token in ("reliability", "coverage", "failure", "validator", "judge error", "outcome breakdown")):
+        return "reliability"
+    if any(token in haystack for token in ("time", "duration", "runtime")):
+        return "timing"
+    if any(token in haystack for token in ("task", "difficulty", "technique", "distribution", "category")):
+        return "task"
+    return "overview"
+
+
+def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
+    manifest = _safe_json(experiment_root / "experiment_manifest.json")
+    variant_rows = _safe_csv_rows(experiment_root / "variant_summary.csv")
+    task_rows = _safe_csv_rows(experiment_root / "task_comparison.csv")
+    charts = _collect_chart_entries(experiment_root)
+    task_pages = _collect_task_page_entries(experiment_root)
+    visualization_status = _load_visualization_status(experiment_root)
+
+    section_meta = {
+        "overview": {
+            "title": "Performance And Tradeoffs",
+            "description": "Overall ranking, runtime/cost tradeoffs, and effect-size summaries for the compared configurations.",
+            "open": True,
+        },
+        "reliability": {
+            "title": "Reliability And Coverage",
+            "description": "Validation, analysis, judge, and coverage outcomes separated so infrastructure failures do not get conflated with performance.",
+            "open": True,
+        },
+        "task": {
+            "title": "Task And Category Effects",
+            "description": "Category-level score shifts and task-score consistency views showing where configurations helped or hurt.",
+            "open": False,
+        },
+        "timing": {
+            "title": "Timing And Bottlenecks",
+            "description": "Task-category runtime views showing where time is being spent and which configurations slow categories down.",
+            "open": False,
+        },
+    }
+    grouped_images: Dict[str, List[Dict[str, Any]]] = {"overview": [], "reliability": [], "task": [], "timing": []}
+    for entry in charts:
+        grouped_images[_chart_section_key(entry)].append(entry)
+
+    chart_sections = [
+        {
+            "key": key,
+            "title": meta["title"],
+            "description": meta["description"],
+            "open": meta["open"],
+            "images": grouped_images.get(key, []),
+        }
+        for key, meta in section_meta.items()
+        if grouped_images.get(key)
+    ]
+
+    sorted_variants = []
+    for row in variant_rows:
+        sorted_variants.append(
+            {
+                "variant_id": str(row.get("variant_id") or ""),
+                "display_label": str(row.get("display_label") or row.get("variant_id") or ""),
+                "changed_variable": str(row.get("changed_variable") or ""),
+                "is_baseline": _as_bool(row.get("is_baseline")),
+                "overall_score_mean": _as_float(row.get("overall_score_mean")),
+                "overall_score_stddev": _as_float(row.get("overall_score_stddev")),
+                "score_delta": _as_float(row.get("score_delta")),
+                "task_success_rate": _as_float(row.get("task_success_rate")),
+                "task_success_delta": _as_float(row.get("task_success_delta")),
+                "analysis_failure_rate": _as_float(row.get("analysis_failure_rate")),
+                "completed_repetitions": _as_int(row.get("completed_repetitions")),
+                "planned_repetitions": _as_int(row.get("planned_repetitions")),
+                "included_in_complete_aggregate": _as_bool(row.get("included_in_complete_aggregate")),
+            }
+        )
+    sorted_variants.sort(
+        key=lambda row: (
+            0 if row.get("is_baseline") else 1,
+            -9999.0 if row.get("score_delta") is None else -float(row.get("score_delta") or 0.0),
+            str(row.get("display_label") or ""),
+        )
+    )
+
+    non_baseline_variants = [row for row in sorted_variants if not row.get("is_baseline")]
+    best_variant = max(
+        [row for row in non_baseline_variants if row.get("score_delta") is not None],
+        key=lambda row: float(row.get("score_delta") or 0.0),
+        default=None,
+    )
+    highest_variance = max(
+        [row for row in sorted_variants if row.get("overall_score_stddev") is not None],
+        key=lambda row: float(row.get("overall_score_stddev") or 0.0),
+        default=None,
+    )
+
+    task_spotlights = []
+    task_matrix_map: Dict[str, Dict[str, Any]] = {}
+    for row in task_rows:
+        score_delta = _as_float(row.get("score_delta"))
+        sample_task_id = str(row.get("sample_task_id") or "")
+        variant_id = str(row.get("variant_id") or "")
+        display_label = str(row.get("display_label") or variant_id or "")
+        matrix_entry = task_matrix_map.setdefault(
+            sample_task_id,
+            {
+                "sample": str(row.get("sample") or ""),
+                "task_id": str(row.get("task_id") or ""),
+                "task_name": str(row.get("task_name") or row.get("task_id") or ""),
+                "sample_task_id": sample_task_id,
+                "baseline_score": _as_float(row.get("baseline_score")),
+                "configs": {},
+            },
+        )
+        baseline_score = _as_float(row.get("baseline_score"))
+        if baseline_score is not None:
+            matrix_entry["baseline_score"] = baseline_score
+        score_value = _as_float(row.get("score"))
+        if variant_id == "baseline" or display_label == "baseline":
+            if score_value is not None:
+                matrix_entry["baseline_score"] = score_value
+        elif variant_id:
+            matrix_entry["configs"][variant_id] = {
+                "variant_id": variant_id,
+                "display_label": display_label,
+                "score": score_value,
+                "delta": score_delta,
+                "task_success_rate": _as_float(row.get("task_success_rate")),
+            }
+        if score_delta is None:
+            continue
+        task_spotlights.append(
+            {
+                "display_label": display_label,
+                "sample": str(row.get("sample") or ""),
+                "task_id": str(row.get("task_id") or ""),
+                "task_name": str(row.get("task_name") or row.get("task_id") or ""),
+                "sample_task_id": sample_task_id,
+                "score": _as_float(row.get("score")),
+                "baseline_score": _as_float(row.get("baseline_score")),
+                "score_delta": score_delta,
+                "task_success_rate": _as_float(row.get("task_success_rate")),
+            }
+        )
+    task_spotlights = [row for row in task_spotlights if row.get("display_label") != "baseline"]
+    task_spotlights.sort(key=lambda row: abs(float(row.get("score_delta") or 0.0)), reverse=True)
+    widest_task_shift = task_spotlights[0] if task_spotlights else None
+    task_matrix_columns = [
+        {
+            "variant_id": str(row.get("variant_id") or ""),
+            "display_label": str(row.get("display_label") or row.get("variant_id") or ""),
+        }
+        for row in non_baseline_variants
+        if str(row.get("variant_id") or "")
+    ]
+    task_matrix_rows = sorted(
+        list(task_matrix_map.values()),
+        key=lambda row: (
+            str(row.get("sample") or ""),
+            str(row.get("task_name") or row.get("task_id") or ""),
+            str(row.get("sample_task_id") or ""),
+        ),
+    )
+
+    planned_repetitions = max([row.get("planned_repetitions") or 0 for row in sorted_variants], default=0)
+    completed_repetitions = min([row.get("completed_repetitions") or 0 for row in sorted_variants], default=0)
+    selected_samples = manifest.get("selected_samples") if isinstance(manifest.get("selected_samples"), list) else []
+    selected_task_keys = manifest.get("selected_task_keys") if isinstance(manifest.get("selected_task_keys"), list) else []
+    variable_families = sorted(
+        {
+            str(row.get("changed_variable") or "").strip()
+            for row in non_baseline_variants
+            if str(row.get("changed_variable") or "").strip()
+        }
+    )
+
+    return {
+        "meta": "Experiment-level analysis combines child runs by configuration across repetitions. Use the run detail below for raw outputs and per-run debugging.",
+        "sample_count": len(selected_samples),
+        "task_scope_count": len(selected_task_keys),
+        "configuration_count": len(sorted_variants),
+        "planned_repetitions": planned_repetitions,
+        "completed_repetitions": completed_repetitions,
+        "chart_count": len(charts),
+        "has_static_charts": bool(visualization_status.get("has_static_charts")),
+        "visualization_error": str(visualization_status.get("visualization_error") or ""),
+        "task_page_count": len(task_pages),
+        "variable_families": variable_families,
+        "best_variant": best_variant,
+        "highest_variance_variant": highest_variance,
+        "widest_task_shift": widest_task_shift,
+        "variant_rows": sorted_variants,
+        "task_spotlights": task_spotlights[:10],
+        "task_matrix_columns": task_matrix_columns,
+        "task_matrix_rows": task_matrix_rows,
+        "chart_sections": chart_sections,
+        "task_pages": task_pages,
+    }
+
+
+def _build_visual_gallery_payload(experiment_root: Path, sample_name: str = "") -> Dict[str, Any]:
+    visualization_status = _load_visualization_status(experiment_root)
+    image_entries: List[Dict[str, Any]] = []
+    for entry in _collect_chart_entries(experiment_root):
+        relevance = _match_score(sample_name, " ".join([entry.get("filename") or "", entry.get("title") or "", entry.get("description") or ""]))
+        image_entries.append({**entry, "relevance": relevance})
+
+    sample_specific = [entry for entry in image_entries if int(entry.get("relevance") or 0) > 0]
+    if sample_name and sample_specific:
+        image_entries = sample_specific + [entry for entry in image_entries if int(entry.get("relevance") or 0) == 0][:4]
+
+    task_pages: List[Dict[str, str]] = []
+    for entry in _collect_task_page_entries(experiment_root):
+        sample = str(entry.get("sample") or "").strip()
+        sample_task_id = str(entry.get("sample_task_id") or "").strip()
+        if sample_name and sample != sample_name and not sample_task_id.startswith(f"{sample_name}::"):
+            continue
+        task_pages.append(entry)
 
     meta = "Experiment-level visuals."
     if sample_name and sample_specific:
@@ -1406,6 +2336,7 @@ def _build_visual_gallery_payload(experiment_root: Path, sample_name: str = "") 
     return {
         "sample": str(sample_name or "").strip(),
         "meta": meta,
+        "visualization_error": str(visualization_status.get("visualization_error") or ""),
         "images": image_entries[:8],
         "task_pages": task_pages[:10],
     }
@@ -1417,11 +2348,9 @@ def load_results_browser_catalog(results_root: Path = RESULTS_ROOT) -> Dict[str,
         manifest = _safe_json(experiment_root / "experiment_manifest.json")
         state = load_live_view_state(experiment_root) if (experiment_root / "run_catalog.json").exists() else {"summary": {"total_runs": 0}}
         outputs_root = experiment_root / "outputs"
-        chart_manifest = _safe_json(outputs_root / "chart_manifest.json")
-        visual_count = 0
-        if isinstance(chart_manifest.get("created_files"), list):
-            visual_count = len(chart_manifest.get("created_files") or [])
-        elif outputs_root.exists():
+        visual_status = _load_visualization_status(experiment_root)
+        visual_count = int(visual_status.get("chart_count") or 0)
+        if not visual_count and outputs_root.exists():
             visual_count = len(
                 [
                     path
@@ -1441,6 +2370,7 @@ def load_results_browser_catalog(results_root: Path = RESULTS_ROOT) -> Dict[str,
                 ),
                 "has_visuals": visual_count > 0,
                 "visual_count": visual_count,
+                "visualization_error": str(visual_status.get("visualization_error") or ""),
                 "path": str(experiment_root),
             }
         )
@@ -1454,7 +2384,9 @@ def load_results_browser_state(results_root: Path, experiment_id: str) -> Dict[s
     experiment_root = _resolve_experiment_root(results_root, experiment_id)
     if experiment_root is None:
         return {"summary": {"total_runs": 0}, "runs": [], "executables": []}
-    return load_live_view_state(experiment_root)
+    state = load_live_view_state(experiment_root)
+    state["experiment_analysis"] = _build_experiment_analysis_payload(experiment_root)
+    return state
 
 
 def load_results_browser_detail(

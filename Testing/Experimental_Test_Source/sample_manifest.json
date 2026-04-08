@@ -355,6 +355,311 @@
       ]
     },
     {
+      "sample": "config_decoder_test_stripped.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "stripped symbols",
+        "single-byte XOR config blob",
+        "key=value parser",
+        "stack buffer decode",
+        "validation branching"
+      ],
+      "expected_evidence": [
+        "Recovered XOR key or decode loop mechanics without relying on symbol names",
+        "Decoded concrete config values such as C:\\ProgramData\\agent\\config.ini, 8443, or persist=true",
+        "Decode-to-parser flow and validation behavior reconstructed from control and data flow rather than names"
+      ],
+      "acceptance_targets": [
+        "Recover the config-decoder behavior without relying on preserved symbol names",
+        "Report the highest-confidence decoded values such as the path, port, or persist flag",
+        "Explain how the parser and validation logic gate or warn on malformed input"
+      ],
+      "target_tools": [
+        "flareflossmcp",
+        "stringmcp",
+        "ghidramcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this stripped executable, recover the underlying config-decoder behavior without relying on symbol names, and report the highest-confidence decoded values plus the parser and validation logic.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this stripped executable, recover the underlying config-decoder behavior without relying on symbol names, and report the highest-confidence decoded values plus the parser and validation logic.",
+          "target_tools": [
+            "flareflossmcp",
+            "stringmcp",
+            "ghidramcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "Recovered XOR key or decode loop mechanics without relying on symbol names",
+            "Decoded concrete config values such as C:\\ProgramData\\agent\\config.ini, 8443, or persist=true",
+            "Decode-to-parser flow and validation behavior reconstructed from control and data flow rather than names"
+          ],
+          "acceptance_targets": [
+            "Recover the config-decoder behavior without relying on preserved symbol names",
+            "Report the highest-confidence decoded values such as the path, port, or persist flag",
+            "Explain how the parser and validation logic gate or warn on malformed input"
+          ],
+          "tags": [
+            "decoding",
+            "config",
+            "stripped"
+          ]
+        },
+        {
+          "task_id": "config_value_recovery",
+          "name": "Config Value Recovery",
+          "query": "Recover the decoded configuration values from this stripped executable, explain the XOR decode loop and parser, and list the highest-confidence recovered values without relying on symbol names.",
+          "target_tools": [
+            "flareflossmcp",
+            "ghidramcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "Recovered XOR key or decode loop mechanics for the single-byte XOR config blob",
+            "Concrete decoded values such as C:\\ProgramData\\agent\\config.ini, 8443, or persist=true",
+            "Key=value parser logic tied to the decoded buffer handling"
+          ],
+          "acceptance_targets": [
+            "Report at least three concrete recovered config values",
+            "Explain how the decode loop feeds the parser",
+            "Avoid inventing a second encoding layer or unsupported network behavior"
+          ],
+          "tags": [
+            "decoding",
+            "config",
+            "extraction",
+            "stripped"
+          ]
+        },
+        {
+          "task_id": "decode_parser_flow_recovery",
+          "name": "Decode And Parser Flow Recovery",
+          "query": "Reconstruct how the encoded blob becomes parsed configuration state in this stripped executable. Trace the XOR decode step, the line-splitting logic, the per-line key matching, and the final print path that exposes the recovered fields.",
+          "target_tools": [
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "XOR decode loop and key 0x4B or equivalent decode mechanics identified",
+            "Decoded buffer split on newlines and routed into a per-line parser with '=' matching",
+            "Recovered fields tied back to the final print path for path, port, and flag"
+          ],
+          "acceptance_targets": [
+            "Tie the decode step to the parser and final output path",
+            "Describe at least two concrete parser sub-behaviors such as newline splitting, key matching, or numeric accumulation",
+            "Avoid claiming the program reads an external config file instead of decoding an embedded blob"
+          ],
+          "tags": [
+            "control_flow",
+            "data_flow",
+            "parsing",
+            "stripped"
+          ]
+        },
+        {
+          "task_id": "parser_validation_audit",
+          "name": "Parser Validation Audit",
+          "query": "Audit the parser and validation logic in this stripped executable. Explain how malformed lines, unknown keys, and non-numeric port values are handled, and relate those branches to the program's warnings or final parsed state.",
+          "target_tools": [
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "Port parsing accepts digits only and returns an error on non-numeric values",
+            "Malformed lines without '=' and their warning path or offset reporting behavior identified",
+            "Unknown keys distinguished from malformed lines and shown to be skipped rather than treated as fatal"
+          ],
+          "acceptance_targets": [
+            "Identify at least two validation or error-handling behaviors with control-flow support",
+            "Explain the difference between malformed lines, unknown keys, and valid parsed entries",
+            "Avoid inferring network communication merely from the recovered port value"
+          ],
+          "tags": [
+            "validation",
+            "parsing",
+            "correctness",
+            "stripped"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "config_decoder_test_upx_stripped.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "UPX packing",
+        "stripped symbols",
+        "single-byte XOR config blob",
+        "key=value parser",
+        "stack buffer decode",
+        "validation branching"
+      ],
+      "expected_evidence": [
+        "UPX packing indicators recognized and separated from the underlying config-decoder behavior",
+        "Recovered XOR key or decode loop mechanics plus the key=value parser after unpacking or equivalent recovery",
+        "Decoded concrete config values such as C:\\ProgramData\\agent\\config.ini, 8443, or persist=true"
+      ],
+      "acceptance_targets": [
+        "Determine whether the stripped sample is UPX-packed and describe the evidence",
+        "Separate the packer wrapper from the underlying config-decoder logic",
+        "Recover the decoded values and parser or validation behavior after or despite unpacking"
+      ],
+      "target_tools": [
+        "upxmcp",
+        "binwalkmcp",
+        "flareflossmcp",
+        "stringmcp",
+        "ghidramcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this UPX-packed stripped executable. Determine whether packing is present, explain how to get past the packing layer, and recover the underlying config-decoder behavior plus the highest-confidence decoded values.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this UPX-packed stripped executable. Determine whether packing is present, explain how to get past the packing layer, and recover the underlying config-decoder behavior plus the highest-confidence decoded values.",
+          "target_tools": [
+            "upxmcp",
+            "binwalkmcp",
+            "flareflossmcp",
+            "stringmcp",
+            "ghidramcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "UPX packing indicators recognized and separated from the underlying config-decoder behavior",
+            "Recovered XOR key or decode loop mechanics plus the key=value parser after unpacking or equivalent recovery",
+            "Decoded concrete config values such as C:\\ProgramData\\agent\\config.ini, 8443, or persist=true"
+          ],
+          "acceptance_targets": [
+            "Determine whether the stripped sample is UPX-packed and describe the evidence",
+            "Separate the packer wrapper from the underlying config-decoder logic",
+            "Recover the decoded values and parser or validation behavior after or despite unpacking"
+          ],
+          "tags": [
+            "packing",
+            "decoding",
+            "config",
+            "stripped"
+          ]
+        },
+        {
+          "task_id": "packing_decoder_triage",
+          "name": "Packing And Decoder Triage",
+          "query": "Determine whether this stripped sample is UPX-packed, explain the concrete evidence, describe how to unpack or continue analysis past the packing layer, and then summarize the underlying config-decoder logic once that layer is accounted for.",
+          "target_tools": [
+            "upxmcp",
+            "binwalkmcp",
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "UPX or packer indicators called out with concrete evidence",
+            "Tool-specific contributions from at least two tools toward unpacking or post-pack analysis",
+            "Underlying XOR config decode and key=value parser behavior described after or despite packing"
+          ],
+          "acceptance_targets": [
+            "Make a supported packed or not-packed determination",
+            "Identify at least two tools or analysis steps with concrete contributions rather than a generic tool list",
+            "Separate the outer packer layer from the underlying config-decoder logic"
+          ],
+          "tags": [
+            "packing",
+            "tool_selection",
+            "orchestration",
+            "stripped"
+          ]
+        },
+        {
+          "task_id": "config_value_recovery",
+          "name": "Config Value Recovery",
+          "query": "Recover the decoded configuration values from this packed stripped executable, explain how the analysis got past the packing layer, and list the highest-confidence recovered values from the underlying config decoder.",
+          "target_tools": [
+            "upxmcp",
+            "flareflossmcp",
+            "ghidramcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "Recovered XOR key or decode loop mechanics for the underlying single-byte XOR config blob",
+            "Concrete decoded values such as C:\\ProgramData\\agent\\config.ini, 8443, or persist=true",
+            "Key=value parser logic tied to the decoded buffer handling after unpacking or equivalent recovery"
+          ],
+          "acceptance_targets": [
+            "Report at least three concrete recovered config values",
+            "Explain how the analysis got past the packing layer before discussing the parser",
+            "Avoid inventing a second encoding layer or unsupported network behavior"
+          ],
+          "tags": [
+            "packing",
+            "decoding",
+            "config",
+            "extraction"
+          ]
+        },
+        {
+          "task_id": "decode_parser_flow_recovery",
+          "name": "Decode And Parser Flow Recovery",
+          "query": "After accounting for the packing layer, reconstruct how the embedded blob becomes parsed configuration state. Trace the XOR decode step, the line-splitting logic, the per-line key matching, and the final print path that exposes the recovered fields.",
+          "target_tools": [
+            "upxmcp",
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "UPX unpacking or equivalent post-pack analysis path acknowledged",
+            "XOR decode loop and key 0x4B or equivalent decode mechanics identified",
+            "Recovered fields tied back to the final print path for path, port, and flag"
+          ],
+          "acceptance_targets": [
+            "Acknowledge the packer layer before describing the underlying decode path",
+            "Tie the decode step to the parser and final output path",
+            "Avoid claiming the program reads an external config file instead of decoding an embedded blob"
+          ],
+          "tags": [
+            "packing",
+            "control_flow",
+            "data_flow",
+            "parsing"
+          ]
+        },
+        {
+          "task_id": "parser_validation_audit",
+          "name": "Parser Validation Audit",
+          "query": "Audit the parser and validation logic in this packed stripped executable after accounting for the UPX wrapper. Explain how malformed lines, unknown keys, and non-numeric port values are handled, and relate those branches to the program's warnings or final parsed state.",
+          "target_tools": [
+            "upxmcp",
+            "ghidramcp",
+            "flareflossmcp",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "Port parsing accepts digits only and returns an error on non-numeric values",
+            "Malformed lines without '=' and their warning path or offset reporting behavior identified",
+            "Unknown keys distinguished from malformed lines and shown to be skipped rather than treated as fatal"
+          ],
+          "acceptance_targets": [
+            "Explain the difference between malformed lines, unknown keys, and valid parsed entries",
+            "Identify at least two validation or error-handling behaviors with control-flow support",
+            "Avoid inferring network communication merely from the recovered port value"
+          ],
+          "tags": [
+            "packing",
+            "validation",
+            "parsing",
+            "correctness"
+          ]
+        }
+      ]
+    },
+    {
       "sample": "signal_router_report_test.exe",
       "difficulty": "medium",
       "primary_techniques": [

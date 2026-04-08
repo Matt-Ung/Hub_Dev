@@ -25,8 +25,16 @@ When adding harder discrimination cases, prefer explicit variant additions over
 global build-rule changes:
 
 - add stripped hard variants for symbol-light evaluation
+- add packed variants only when packing itself is part of the evaluation question
 - vary leakage profiles across samples instead of making every sample equally opaque
 - keep at least some medium samples analyzable without turning the tier into a second hard bucket
+
+The `config_decoder_test.c` family now includes two deeper maintained variants:
+
+- `config_decoder_test_stripped.exe`
+  - same `-O0` compile as the baseline decoder sample, but stripped for symbol-light recovery work
+- `config_decoder_test_upx_stripped.exe`
+  - the stripped `-O0` decoder variant packed with UPX for packer-aware continuation testing
 
 ## Build
 
@@ -34,6 +42,10 @@ global build-rule changes:
 make -C Testing/Experimental_Test_Source all-with-gcc
 make -C Testing/Experimental_Test_Source upx
 ```
+
+`make ... all-with-gcc` builds the baseline and stripped variants. `make ... upx`
+builds the maintained packed variants, including
+`config_decoder_test_upx_stripped.exe`.
 
 ## Add A New Sample
 
@@ -92,5 +104,9 @@ Bundles must be regenerated when:
 - the built executable changes
 - the Ghidra export script changes
 - the bundle preparer version changes
+
+That means the new `config_decoder_test_stripped.exe` and
+`config_decoder_test_upx_stripped.exe` variants need fresh bundles the first
+time you add them, even though prompt-only sweep changes would not.
 
 They do **not** need regeneration when only prompting, worker persona overlays, or worker role prompt mode changes.

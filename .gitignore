@@ -18,7 +18,7 @@
 
 # Logs
 *.log
-logs/
+logs/agentToolBench_*/
 
 # Java crash logs (if any)
 hs_err_pid*
@@ -112,6 +112,7 @@ mvnw.cmd
 # =========================
 
 .deep_backend/
+.deep/auto_triage_unpack/
 In_Progress/*
 MCPServers/capa-rules
 MCPServers/capa-sigs
@@ -126,9 +127,11 @@ Testing/generated/
 Testing/build/
 Testing/reference_binaries/
 
-# Track docs/templates under Testing/results, ignore generated outputs by default.
-Testing/results/*
-!Testing/results/README.md
-!Testing/results/run_record_template.md
-!Testing/results/reference_examples/
-!Testing/results/reference_examples/README.md
+# Generated local test/runtime state. Keep curated examples and docs under
+# Testing/results/ tracked; live run trees and local browser state stay local.
+Testing/results/browser/
+Testing/results/catalog/
+Testing/results/doctor/
+Testing/results/experiments/
+Testing/results/lineages/
+Testing/results/runs/

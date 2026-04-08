@@ -1,0 +1,103 @@
+\chapter{Evaluation Methodology and Experimental Design}
+\label{sec:evaluation}
+
+This chapter should explain how the thesis evaluates the system without overstating what the current data can support. The repository already contains a concrete binary-analysis harness, and the final chapter should align tightly with that implementation.
+
+\section{Evaluation Goals}
+
+\begin{itemize}
+\item Measure whether tool-orchestrated workflows outperform weaker baselines on binary-analysis tasks.
+\item Separate the effects of tool access, workflow topology, prompt shaping, and review strictness.
+\item Capture both successful analyses and structured failure modes such as analysis errors, validator blocks, and judge failures.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{State the primary evaluation objective in thesis-ready language.}
+\item \TODO{List the secondary ablation questions and map each one to a configuration family.}
+\end{itemize}
+
+\section{Benchmark Corpus and Task Model}
+
+The maintained binary benchmark uses an experimental corpus of authored executables and executable variants. The evaluation unit is a sample-task pair rather than only a sample. This detail is important because it lets the thesis distinguish broad understanding tasks from focused recovery tasks.
+
+\begin{itemize}
+\item Sample variants cover conditions such as stripping, packing, deceptive strings, anti-analysis behavior, and configuration decoding.
+\item Tasks include default analysis as well as focused recovery questions such as config extraction, decode-flow recovery, packing triage, and behavioral reconstruction.
+\item The corpus supports both breadth-oriented sweeps and depth-oriented studies on selected executables such as \texttt{config\_decoder\_test}.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Describe the experimental corpus, including how many source programs, executable variants, and sample-task pairs were used for the final thesis experiments.}
+\item \TODO{Add a short table summarizing representative samples and the reasoning skills they are intended to stress.}
+\item \TODO{Explain why \texttt{config\_decoder\_test} became a centerpiece for deeper analysis.}
+\end{itemize}
+
+\section{Single Runs, Sweeps, and Repetitions}
+
+The harness supports both single-run evaluation and experiment sweeps. Maintained sweeps are baseline-first and primarily one-variable-at-a-time. The thesis should explain this choice clearly, because it affects how causal claims can be interpreted.
+
+\begin{itemize}
+\item A global baseline defines the default workflow configuration.
+\item Variant families change one configuration surface at a time.
+\item Some families insert local family baselines where a fair comparison requires it.
+\item Repetitions support stronger claims about stability and significance.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Explain why the broad sweep uses one-variable-at-a-time comparisons instead of a full factorial design.}
+\item \TODO{Document the final repetition counts used for the headline experiments and for the decoder depth study.}
+\item \TODO{Clarify how repaired experiments are handled when failed tasks are rerun and merged.}
+\end{itemize}
+
+\section{Baselines and Experimental Variables}
+
+The current harness exposes several variable families that can be studied empirically:
+
+\begin{itemize}
+\item query verbosity
+\item worker subagent profile
+\item worker prompt shape and worker role-prompt mode
+\item tool availability
+\item architecture preset
+\item pipeline preset
+\item validator topology
+\item validator review level
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Decide which of these families will be discussed in the thesis body versus moved to appendix material.}
+\item \TODO{Explain the rationale for the chosen baseline in the final experiments.}
+\item \TODO{Document the deeper \texttt{config\_decoder\_test} study separately from the broad sweep.}
+\end{itemize}
+
+\section{Judging and Scoring}
+
+Run outputs are judged with a structured binary-analysis rubric and converted into continuous scores. This thesis should make the judging methodology explicit, including both its usefulness and its limitations.
+
+\begin{itemize}
+\item Per-task judge outputs preserve structured feedback and an overall score.
+\item Legacy pass or fail thresholds still exist, but sweep analysis should focus on score deltas, success rates, and error rates.
+\item The harness preserves analysis outcomes such as completed, analysis error, no result, judge error, and validator blocked.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Describe the rubric dimensions used by the judge and justify why they align with reverse-engineering quality.}
+\item \TODO{Explain whether human spot-checking was used to validate judge outputs.}
+\item \TODO{Discuss the difference between completed-but-weak analyses and infrastructure failures.}
+\end{itemize}
+
+\section{Statistical Treatment and Comparison Strategy}
+
+The final thesis should not report only descriptive movement. The harness supports paired comparisons and limited significance analysis when repetitions or enough matched task pairs exist.
+
+\begin{itemize}
+\item Replicate-level comparison when repeated runs exist.
+\item Paired-task comparison across matched sample-task pairs.
+\item Reporting of score deltas, task success deltas, and significance outputs where supported.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{State the statistical tests actually used in the final thesis and justify their assumptions.}
+\item \TODO{Document how missing or recovered tasks are treated in the analysis set.}
+\item \TODO{Explain what level of evidence is sufficient for claims in the results chapter.}
+\end{itemize}

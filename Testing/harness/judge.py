@@ -327,7 +327,9 @@ def _build_non_result_judge_result(
         ] if status == "worker_assignment_failed" else [
             "Resolve the execution failure and rerun the analysis.",
         ],
-        "confidence_0_to_1": 1.0,
+        # Synthetic non-results should not look like high-confidence judged
+        # conclusions. Reserve non-zero confidence for real judge outputs.
+        "confidence_0_to_1": 0.0,
         "usage": {},
         "cost_estimate": {},
         "duration_sec": 0.0,
@@ -413,10 +415,14 @@ def _build_judge_payload(
             "identity": bundle_manifest.get("identity") or {},
             "ghidra_analysis_summary": bundle_manifest.get("ghidra_analysis_summary") or {},
             "cli_tool_outputs": bundle_manifest.get("cli_tool_outputs") or {},
+            "analysis_target": bundle_manifest.get("analysis_target") or {},
+            "upx_detection": bundle_manifest.get("upx_detection") or {},
+            "upx_unpack": bundle_manifest.get("upx_unpack") or {},
         },
         "agent_result": {
             "ok": bool(agent_result.get("ok")),
             "query": str(agent_result.get("query") or ""),
+            "analysis_target": agent_result.get("analysis_target") or {},
             "final_report": str(agent_result.get("final_report") or ""),
             "tool_usage": agent_result.get("tool_usage") or {},
             "planned_work_items": agent_result.get("planned_work_items") or [],

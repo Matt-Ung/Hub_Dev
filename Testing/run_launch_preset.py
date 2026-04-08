@@ -44,9 +44,12 @@ def main() -> None:
     parser.add_argument("--judge-model", default="", help="Optional explicit judge model override")
     parser.add_argument("--preflight-only", action="store_true", help="Only run the preset through its normal preflight path")
     parser.add_argument("--live-view", action="store_true", help="For sweep presets, start the lightweight local progress monitor")
+    parser.add_argument("--max-concurrent-repetitions", type=int, default=0, help="For sweep presets, allow up to this many repetitions of the same planned configuration to run at once. 0 keeps the preset/default behavior.")
     parser.add_argument("--enable-budget-guardrails", action="store_true", help="Enable budget ceilings for the launched preset. By default preset budget values are not enforced.")
     parser.add_argument("--skip-build", action="store_true", help="Pass --skip-build through to the underlying runner")
     parser.add_argument("--skip-prepare", action="store_true", help="Pass --skip-prepare through to the underlying runner")
+    parser.add_argument("--prefer-unpacked-upx", action="store_true", help="Pass --prefer-unpacked-upx through to the underlying runner")
+    parser.add_argument("--task-failure-retries", type=int, default=0, help="Retry retryable sample-task failures this many times after the first attempt.")
     parser.add_argument("--ghidra-install-dir", default="", help="Optional GHIDRA_INSTALL_DIR override")
     parser.add_argument("--ghidra-headless", default="", help="Optional analyzeHeadless override")
     parser.add_argument("--timeout-sec", type=int, default=0, help="Optional subprocess timeout in seconds; 0 disables it")
@@ -59,8 +62,11 @@ def main() -> None:
             args.preset,
             explicit_judge_model=args.judge_model,
             enable_budget_guardrails=args.enable_budget_guardrails,
+            prefer_upx_unpacked=args.prefer_unpacked_upx,
+            task_failure_retries=(int(args.task_failure_retries) if int(args.task_failure_retries) > 0 else None),
             preflight_only=args.preflight_only,
             live_view=args.live_view,
+            max_concurrent_repetitions=(int(args.max_concurrent_repetitions) if int(args.max_concurrent_repetitions) > 0 else None),
             skip_build=args.skip_build,
             skip_prepare=args.skip_prepare,
             ghidra_install_dir=args.ghidra_install_dir,

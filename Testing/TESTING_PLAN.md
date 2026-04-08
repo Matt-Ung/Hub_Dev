@@ -32,8 +32,8 @@ This is the benchmark corpus used for sweeps.
 Current shape:
 
 - `11` source programs
-- `15` executable variants
-- `24` manifest-defined sample-task pairs
+- `17` executable variants
+- `33` manifest-defined sample-task pairs
 
 The atomic evaluation unit is a **sample-task pair**, not just a sample.
 
@@ -135,6 +135,14 @@ Recommended operational presets for normal experiment work:
   - recommended under-budget comparison study
 - `coverage_broad_r1_60usd`
   - one-repetition medium+hard broad-coverage preset that stays below the current 60 USD heuristic band by restricting the broad sweep to the query-verbosity, worker-subagent, and worker-prompt-shape families
+- `sweep_decoder_depth_r3`
+  - three-repetition combined decoder depth study over `config_decoder_test_stripped.exe` and `config_decoder_test_upx_stripped.exe`, trimmed to the single worker-subagent family so the current heuristic stays below 30 USD
+- `sweep_decoder_depth_followups_r3`
+  - same decoder-depth scope and repetitions, but reduced to worker prompt shape plus one validator-backed pipeline follow-up while keeping the original decoder-depth baseline unchanged
+- `sweep_decoder_depth_stripped_r3`
+  - stripped-only three-repetition decoder depth study
+- `sweep_decoder_depth_upx_stripped_r3`
+  - packed-only three-repetition decoder depth study
 - `full_suite_default_r1`
   - broad one-repetition sweep after the smaller presets are healthy
 

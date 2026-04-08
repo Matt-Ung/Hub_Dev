@@ -182,6 +182,7 @@ def build_sample_record(
     judge_relative_cost = _cost_value(judge_cost, "relative_cost_index")
     agent_usd = _cost_value(agent_cost, "estimated_cost_usd")
     judge_usd = _cost_value(judge_cost, "estimated_cost_usd")
+    analysis_target = agent_result.get("analysis_target") if isinstance(agent_result.get("analysis_target"), dict) else {}
 
     # Collect all cross-cutting execution metrics in one normalized block so
     # later aggregation code can stay schema-driven instead of re-deriving
@@ -194,14 +195,31 @@ def build_sample_record(
         "validator_blocked": str(agent_result.get("status") or "") == "validator_blocked",
         "worker_assignment_failed": str(agent_result.get("status") or "") == "worker_assignment_failed",
         "failure_reason": str(agent_result.get("failure_reason") or agent_result.get("error") or ""),
+        "failure_category": str(agent_result.get("failure_category") or ""),
+        "failure_retryable": bool(agent_result.get("failure_retryable")),
+        "failure_source": str(agent_result.get("failure_source") or ""),
+        "failure_stage": str(agent_result.get("failure_stage") or ""),
+        "task_attempt_count": int(agent_result.get("task_attempt_count") or 1),
+        "task_retry_count": int(agent_result.get("task_retry_count") or 0),
+        "task_retried": bool(agent_result.get("task_retried")),
+        "task_retry_exhausted": bool(agent_result.get("task_retry_exhausted")),
         "validator_review_level": str(agent_result.get("validator_review_level") or "default"),
+        "judge_evaluation_mode": str(judge.get("evaluation_mode") or ""),
+        "synthetic_judge_result": str(judge.get("evaluation_mode") or "") == "synthetic_non_result",
+        "analysis_target_kind": str(analysis_target.get("kind") or "original"),
+        "analysis_target_path": str(analysis_target.get("effective_executable_path") or ""),
+        "packed_detected": bool(analysis_target.get("packed_detected")),
         "validation_attempts": int((((agent_result.get("validation") or {}) if isinstance(agent_result.get("validation"), dict) else {}) or {}).get("retry_count") or 0),
         "validation_max_retries": int((((agent_result.get("validation") or {}) if isinstance(agent_result.get("validation"), dict) else {}) or {}).get("max_retries") or 0),
         "judge_ok": bool(judge.get("ok")),
         "judge_status": _judge_status(judge),
         "judge_failure_reason": str(judge.get("error") or ""),
         "judge_pass": bool(judge.get("pass")),
-        "scored_result": score_value is not None,
+        # Only count real completed judge outputs as "scored results". Synthetic
+        # non-result judge payloads intentionally preserve a zero score for
+        # aggregate performance accounting, but they should not inflate judged
+        # coverage metrics.
+        "scored_result": _judge_status(judge) == "completed" and score_value is not None,
         "task_success": bool(agent_result.get("produced_result")) and bool(judge.get("pass")),
         "overall_score_0_to_100": score_value,
         "raw_total_score": judge.get("raw_total_score"),
@@ -297,6 +315,7 @@ def _aggregate_bucket(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "judge_pass_rate": round(len(judge_passes) / len(records), 3) if records else None,
         "scored_result_rate": round(len(scored_results) / len(records), 3) if records else None,
         "produced_result_rate": _rate(records, lambda record: bool((record.get("metrics") or {}).get("produced_result"))),
+        "synthetic_judge_rate": _rate(records, lambda record: bool((record.get("metrics") or {}).get("synthetic_judge_result"))),
         "validator_blocked_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "validator_blocked"),
         "worker_assignment_failed_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "worker_assignment_failed"),
         "analysis_failure_rate": _rate(
@@ -385,6 +404,7 @@ def aggregate_records(run_metadata: Dict[str, Any], records: List[Dict[str, Any]
         "task_success_rate": round(sum(1 for record in records if record.get("metrics", {}).get("task_success")) / len(records), 3) if records else None,
         "judge_pass_rate": round(sum(1 for record in records if record.get("metrics", {}).get("judge_pass")) / len(records), 3) if records else None,
         "produced_result_rate": _rate(records, lambda record: bool((record.get("metrics") or {}).get("produced_result"))),
+        "synthetic_judge_rate": _rate(records, lambda record: bool((record.get("metrics") or {}).get("synthetic_judge_result"))),
         "validator_blocked_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "validator_blocked"),
         "worker_assignment_failed_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "worker_assignment_failed"),
         "analysis_failure_rate": _rate(
@@ -444,11 +464,21 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
         "judge_model",
         "analysis_status",
         "judge_status",
+        "judge_evaluation_mode",
         "produced_result",
         "scored_result",
+        "synthetic_judge_result",
         "validator_blocked",
         "worker_assignment_failed",
         "failure_reason",
+        "failure_category",
+        "failure_retryable",
+        "failure_source",
+        "failure_stage",
+        "task_attempt_count",
+        "task_retry_count",
+        "task_retried",
+        "task_retry_exhausted",
         "judge_failure_reason",
         "overall_score_0_to_100",
         "judge_pass",
@@ -499,11 +529,21 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
                 "judge_model": judge.get("judge_model", ""),
                 "analysis_status": metrics.get("analysis_status", ""),
                 "judge_status": metrics.get("judge_status", ""),
+                "judge_evaluation_mode": metrics.get("judge_evaluation_mode", ""),
                 "produced_result": metrics.get("produced_result", ""),
                 "scored_result": metrics.get("scored_result", ""),
+                "synthetic_judge_result": metrics.get("synthetic_judge_result", ""),
                 "validator_blocked": metrics.get("validator_blocked", ""),
                 "worker_assignment_failed": metrics.get("worker_assignment_failed", ""),
                 "failure_reason": metrics.get("failure_reason", ""),
+                "failure_category": metrics.get("failure_category", ""),
+                "failure_retryable": metrics.get("failure_retryable", ""),
+                "failure_source": metrics.get("failure_source", ""),
+                "failure_stage": metrics.get("failure_stage", ""),
+                "task_attempt_count": metrics.get("task_attempt_count", ""),
+                "task_retry_count": metrics.get("task_retry_count", ""),
+                "task_retried": metrics.get("task_retried", ""),
+                "task_retry_exhausted": metrics.get("task_retry_exhausted", ""),
                 "judge_failure_reason": metrics.get("judge_failure_reason", ""),
                 "overall_score_0_to_100": metrics.get("overall_score_0_to_100", ""),
                 "judge_pass": metrics.get("judge_pass", ""),
@@ -565,12 +605,13 @@ def write_markdown_report(path, aggregate: Dict[str, Any]) -> None:
     lines.append("## Aggregate")
     lines.append("")
     lines.append(f"- Samples: `{aggregate.get('sample_count', 0)}`")
-    lines.append(f"- Judged: `{aggregate.get('judged_count', 0)}`")
+    lines.append(f"- Real judge completions: `{aggregate.get('judged_count', 0)}`")
     lines.append(f"- Mean score: `{aggregate.get('overall_score_mean')}`")
     lines.append(f"- Task success rate: `{aggregate.get('task_success_rate')}`")
     lines.append(f"- Judge pass rate: `{aggregate.get('judge_pass_rate')}`")
-    lines.append(f"- Scored result rate: `{aggregate.get('scored_result_rate')}`")
+    lines.append(f"- Scored result rate (real judge scores only): `{aggregate.get('scored_result_rate')}`")
     lines.append(f"- Produced result rate: `{aggregate.get('produced_result_rate')}`")
+    lines.append(f"- Synthetic non-result judge rate: `{aggregate.get('synthetic_judge_rate')}`")
     lines.append(f"- Validator blocked rate: `{aggregate.get('validator_blocked_rate')}`")
     lines.append(f"- Worker assignment failed rate: `{aggregate.get('worker_assignment_failed_rate')}`")
     lines.append(f"- Analysis failure rate: `{aggregate.get('analysis_failure_rate')}`")

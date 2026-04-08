@@ -5,6 +5,7 @@ import html
 import json
 from collections import defaultdict
 from pathlib import Path
+from statistics import median
 from typing import Any, Dict, Iterable, List, Tuple
 
 from .paths import ensure_dir, slugify, write_json
@@ -56,17 +57,26 @@ def _variant_sort_key(row: Dict[str, Any]) -> Tuple[int, str]:
 
 
 def _representative_row(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    def sort_key(row: Dict[str, Any]) -> Tuple[int, float, int]:
-        has_report = 1 if str(row.get("final_report") or "").strip() else 0
-        score = _safe_float(row.get("overall_score_0_to_100"))
-        produced = 1 if row.get("produced_result") else 0
-        return (
-            has_report,
-            score if score is not None else (-1.0 if produced else -2.0),
-            -int(row.get("replicate_index") or 0),
-        )
+    scored_rows = [
+        row for row in rows
+        if _safe_float(row.get("overall_score_0_to_100")) is not None
+    ]
+    if scored_rows:
+        target = float(median([float(_safe_float(row.get("overall_score_0_to_100")) or 0.0) for row in scored_rows]))
+        return sorted(
+            scored_rows,
+            key=lambda row: (
+                abs(float(_safe_float(row.get("overall_score_0_to_100")) or 0.0) - target),
+                -int(bool(str(row.get("final_report") or "").strip())),
+                -int(row.get("replicate_index") or 0),
+            ),
+        )[0]
 
-    return sorted(rows, key=sort_key, reverse=True)[0]
+    produced_rows = [row for row in rows if row.get("produced_result")]
+    if produced_rows:
+        return sorted(produced_rows, key=lambda row: int(row.get("replicate_index") or 0), reverse=True)[0]
+
+    return sorted(rows, key=lambda row: int(row.get("replicate_index") or 0), reverse=True)[0]
 
 
 def _detail_row(entry: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
@@ -174,13 +184,13 @@ def _render_task_markdown(sample_task_id: str, rows: List[Dict[str, Any]]) -> st
         lines.append(f"- Changed variable: `{rep.get('changed_variable', '') or 'baseline'}`")
         lines.append(f"- Comparison baseline: `{rep.get('comparison_baseline_label', '') or 'baseline'}`")
         lines.append(f"- Replicates captured: `{len(group)}`")
-        lines.append(f"- Representative run: `{rep.get('run_id', '')}`")
+        lines.append(f"- Representative run (median-scoring when scores exist): `{rep.get('run_id', '')}`")
         lines.append(f"- Score: `{rep.get('overall_score_0_to_100', '')}`")
         lines.append(f"- Task success: `{rep.get('task_success', False)}`")
         lines.append(f"- Cost index: `{rep.get('total_relative_cost_index', '')}`")
         lines.append(f"- Task duration (s): `{rep.get('task_wall_clock_duration_sec', '')}`")
         lines.append(f"- Effective query: `{rep.get('effective_query', '')}`")
-        lines.append(f"- Judge summary: `{rep.get('technical_summary', '')}`")
+        lines.append(f"- Judge summary (model-generated): `{rep.get('technical_summary', '')}`")
         if rep.get("missed_expected_points"):
             lines.append(f"- Missed expected points: `{rep.get('missed_expected_points', '')}`")
         lines.append("")
@@ -290,7 +300,7 @@ def _render_task_html(sample_task_id: str, rows: List[Dict[str, Any]]) -> str:
               <p><strong>Changed variable:</strong> {esc(rep.get('changed_variable') or 'baseline')}</p>
               <p><strong>Comparison baseline:</strong> {esc(rep.get('comparison_baseline_label') or 'baseline')}</p>
               <p><strong>Replicates captured:</strong> {esc(len(group))}</p>
-              <p><strong>Representative run:</strong> {esc(rep.get('run_id'))}</p>
+              <p><strong>Representative run (median-scoring when scores exist):</strong> {esc(rep.get('run_id'))}</p>
               <p><strong>Score:</strong> {esc(rep.get('overall_score_0_to_100'))}</p>
               <p><strong>Task success:</strong> {esc(rep.get('task_success'))}</p>
               <p><strong>Cost index:</strong> {esc(rep.get('total_relative_cost_index'))}</p>
@@ -304,8 +314,8 @@ def _render_task_html(sample_task_id: str, rows: List[Dict[str, Any]]) -> str:
               </details>
               <details>
                 <summary>Judge notes</summary>
-                <p><strong>Technical summary:</strong> {esc(rep.get('technical_summary'))}</p>
-                <p><strong>Writing summary:</strong> {esc(rep.get('writing_summary'))}</p>
+                <p><strong>Technical summary (model-generated):</strong> {esc(rep.get('technical_summary'))}</p>
+                <p><strong>Writing summary (model-generated):</strong> {esc(rep.get('writing_summary'))}</p>
                 <p><strong>Strongest points:</strong> {esc(rep.get('strongest_points'))}</p>
                 <p><strong>Missed expected points:</strong> {esc(rep.get('missed_expected_points'))}</p>
                 <p><strong>Follow-up recommendations:</strong> {esc(rep.get('follow_up_recommendations'))}</p>

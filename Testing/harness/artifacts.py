@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -17,6 +19,56 @@ REQUIRED_BUNDLE_FILES = ("bundle_manifest.json", "ghidra_analysis.json")
 OPTIONAL_BUNDLE_FILES = ("automation_payload.json", "file_identity.json")
 BUNDLE_INPUT_FINGERPRINT_VERSION = "bundle_inputs_v1"
 BUNDLE_PREPARER_VERSION = "bundle_preparer_v1"
+UPX_DERIVED_BUNDLE_LABEL = "upx_unpacked"
+UPX_DERIVED_LOCK_WAIT_TIMEOUT_SEC = 1800
+UPX_DERIVED_LOCK_STALE_AFTER_SEC = 3600
+
+
+@contextmanager
+def _bundle_materialization_lock(
+    bundle_dir: Path,
+    *,
+    wait_timeout_sec: int = UPX_DERIVED_LOCK_WAIT_TIMEOUT_SEC,
+    stale_after_sec: int = UPX_DERIVED_LOCK_STALE_AFTER_SEC,
+):
+    lock_dir = (bundle_dir.resolve() / "derived" / ".upx_unpacked_build.lock").resolve()
+    ensure_dir(lock_dir.parent)
+    deadline = time.monotonic() + max(1, int(wait_timeout_sec or 1))
+    acquired = False
+    while True:
+        try:
+            lock_dir.mkdir(parents=False, exist_ok=False)
+            write_json(
+                lock_dir / "owner.json",
+                {
+                    "pid": os.getpid(),
+                    "started_at_epoch": time.time(),
+                    "bundle_dir": str(bundle_dir.resolve()),
+                },
+            )
+            acquired = True
+            break
+        except FileExistsError:
+            if stale_after_sec > 0:
+                try:
+                    age_sec = time.time() - lock_dir.stat().st_mtime
+                    if age_sec >= float(stale_after_sec):
+                        shutil.rmtree(lock_dir, ignore_errors=True)
+                        continue
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for the shared UPX-derived bundle lock at {lock_dir}"
+                )
+            time.sleep(1.0)
+    try:
+        yield lock_dir
+    finally:
+        if acquired:
+            shutil.rmtree(lock_dir, ignore_errors=True)
 
 
 def compute_file_identity(path: Path, chunk_size: int = 1024 * 1024) -> Dict[str, Any]:
@@ -44,6 +96,136 @@ def compute_file_identity(path: Path, chunk_size: int = 1024 * 1024) -> Dict[str
 
 def _compute_text_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _resolve_bundle_executable_path(bundle_dir: Path, bundle_manifest: Dict[str, Any], automation_payload: Dict[str, Any]) -> Path | None:
+    candidates = [
+        str(automation_payload.get("executable_path") or "").strip(),
+        str((((bundle_manifest.get("identity") or {}) if isinstance(bundle_manifest.get("identity"), dict) else {}) or {}).get("path") or "").strip(),
+    ]
+    for value in candidates:
+        if not value:
+            continue
+        candidate = Path(value).expanduser()
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def _upx_recognized(stdout: str, stderr: str) -> bool:
+    combined = f"{stdout or ''}\n{stderr or ''}".lower()
+    return "not packed by upx" not in combined and "not packed" not in combined
+
+
+def _run_upx_test(sample_path: Path, timeout_sec: int | None) -> Dict[str, Any]:
+    if not tool_available("upx"):
+        return {
+            "available": False,
+            "ok": False,
+            "recognized": False,
+            "command": ["upx", "-t", str(sample_path.resolve())],
+            "file_path": str(sample_path.resolve()),
+            "error": "upx not found on PATH",
+        }
+    completed = run_command(["upx", "-t", str(sample_path.resolve())], timeout_sec=timeout_sec or 30)
+    stdout = shorten_text(str(completed.get("stdout") or ""))
+    stderr = shorten_text(str(completed.get("stderr") or ""))
+    return {
+        "available": True,
+        "ok": bool(completed.get("ok")),
+        "recognized": _upx_recognized(stdout, stderr),
+        "returncode": completed.get("returncode"),
+        "command": completed.get("command") or ["upx", "-t", str(sample_path.resolve())],
+        "file_path": str(sample_path.resolve()),
+        "stdout": stdout,
+        "stderr": stderr,
+        "error": str(completed.get("error") or "").strip(),
+    }
+
+
+def _run_upx_unpack(sample_path: Path, output_path: Path, timeout_sec: int | None, *, force: bool = True) -> Dict[str, Any]:
+    if not tool_available("upx"):
+        return {
+            "available": False,
+            "ok": False,
+            "file_path": str(sample_path.resolve()),
+            "output_path": str(output_path.resolve()),
+            "output_exists": output_path.exists(),
+            "command": ["upx", "-d", "-o", str(output_path.resolve()), str(sample_path.resolve())],
+            "error": "upx not found on PATH",
+        }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if force and output_path.exists():
+        output_path.unlink()
+    command = ["upx", "-d", "-o", str(output_path.resolve()), str(sample_path.resolve())]
+    completed = run_command(command, timeout_sec=timeout_sec or 180)
+    stdout = shorten_text(str(completed.get("stdout") or ""))
+    stderr = shorten_text(str(completed.get("stderr") or ""))
+    output_exists = output_path.exists()
+    return {
+        "available": True,
+        "ok": bool(completed.get("ok")) and output_exists,
+        "returncode": completed.get("returncode"),
+        "command": completed.get("command") or command,
+        "file_path": str(sample_path.resolve()),
+        "output_path": str(output_path.resolve()),
+        "output_exists": output_exists,
+        "stdout": stdout,
+        "stderr": stderr,
+        "error": str(completed.get("error") or ("" if (bool(completed.get("ok")) and output_exists) else (stderr or stdout))).strip(),
+    }
+
+
+def _bundle_identity(bundle_manifest: Dict[str, Any], sample_path: Path | None = None) -> Dict[str, Any]:
+    identity = bundle_manifest.get("identity") if isinstance(bundle_manifest.get("identity"), dict) else {}
+    if identity:
+        return dict(identity)
+    if sample_path is not None and sample_path.exists():
+        return compute_file_identity(sample_path)
+    return {}
+
+
+def _write_analysis_target_metadata(
+    bundle_dir: Path,
+    *,
+    analysis_target: Dict[str, Any],
+    original_identity: Dict[str, Any],
+    original_bundle_dir: Path,
+    upx_detection: Dict[str, Any],
+    upx_unpack: Dict[str, Any],
+) -> None:
+    manifest_path = bundle_dir / "bundle_manifest.json"
+    manifest = read_json(manifest_path) if manifest_path.exists() else {}
+    manifest["analysis_target"] = analysis_target
+    manifest["original_identity"] = dict(original_identity)
+    manifest["derived_from_bundle_dir"] = str(original_bundle_dir.resolve())
+    manifest["upx_detection"] = dict(upx_detection)
+    manifest["upx_unpack"] = dict(upx_unpack)
+    write_json(manifest_path, manifest)
+
+    payload_path = bundle_dir / "automation_payload.json"
+    payload = read_json(payload_path) if payload_path.exists() else {}
+    payload["analysis_target"] = analysis_target
+    payload["original_sample"] = {
+        "path": str(original_identity.get("path") or ""),
+        "md5": str(original_identity.get("md5") or ""),
+        "sha256": str(original_identity.get("sha256") or ""),
+        "name": str(original_identity.get("name") or ""),
+    }
+    payload["upx_detection"] = dict(upx_detection)
+    payload["upx_unpack"] = dict(upx_unpack)
+    write_json(payload_path, payload)
+
+    write_json(
+        bundle_dir / "upx_unpack.json",
+        {
+            "analysis_target": analysis_target,
+            "original_identity": dict(original_identity),
+            "original_bundle_dir": str(original_bundle_dir.resolve()),
+            "upx_detection": dict(upx_detection),
+            "upx_unpack": dict(upx_unpack),
+        },
+    )
 
 
 def compute_bundle_inputs(sample_path: Path, analyze_headless: Path | None = None) -> Dict[str, Any]:
@@ -321,6 +503,190 @@ def prepare_bundle(
     return result_record
 
 
+def resolve_analysis_bundle(
+    bundle_dir: Path,
+    *,
+    prefer_upx_unpacked: bool = False,
+    timeout_sec: int | None = None,
+    ghidra_install_dir: str = "",
+    ghidra_headless: str = "",
+    skip_cli_tools: bool = False,
+    keep_project: bool = False,
+) -> Dict[str, Any]:
+    """
+    Function: resolve_analysis_bundle
+    Inputs:
+      - bundle_dir: original prepared bundle directory for the packed-or-plain sample.
+      - prefer_upx_unpacked: when true, attempt UPX detect -> unpack -> derived bundle.
+      - timeout_sec / ghidra_install_dir / ghidra_headless / skip_cli_tools / keep_project:
+        preparation knobs reused when materializing a derived unpacked bundle.
+    Description:
+      Resolve the effective analysis bundle for one run. By default this is the
+      original prepared bundle. When `prefer_upx_unpacked` is enabled and the
+      original executable is recognized by UPX, this helper materializes a
+      derived unpacked bundle and returns it as the effective target.
+    Outputs:
+      Returns a dictionary containing the effective bundle dir, manifest,
+      automation payload, and structured analysis-target provenance.
+    Side Effects:
+      May run `upx -t`, `upx -d`, `analyzeHeadless`, and optional CLI tools to
+      create a derived unpacked bundle under `<bundle_dir>/derived/`.
+    """
+    bundle_dir = bundle_dir.resolve()
+    bundle_manifest_path = bundle_dir / "bundle_manifest.json"
+    automation_payload_path = bundle_dir / "automation_payload.json"
+    bundle_manifest = read_json(bundle_manifest_path) if bundle_manifest_path.exists() else {}
+    automation_payload = read_json(automation_payload_path) if automation_payload_path.exists() else {}
+    original_sample_path = _resolve_bundle_executable_path(bundle_dir, bundle_manifest, automation_payload)
+    original_identity = _bundle_identity(bundle_manifest, sample_path=original_sample_path)
+    analysis_target: Dict[str, Any] = {
+        "requested_mode": "prefer_upx_unpacked" if prefer_upx_unpacked else "original_only",
+        "kind": "original",
+        "selection_reason": (
+            "UPX-unpacked analysis was not requested."
+            if not prefer_upx_unpacked
+            else "Falling back to the original prepared bundle."
+        ),
+        "effective_bundle_dir": str(bundle_dir),
+        "effective_executable_path": str(original_sample_path.resolve()) if original_sample_path is not None else "",
+        "effective_executable_md5": str(original_identity.get("md5") or ""),
+        "effective_executable_sha256": str(original_identity.get("sha256") or ""),
+        "original_bundle_dir": str(bundle_dir),
+        "original_executable_path": str(original_identity.get("path") or ""),
+        "original_executable_md5": str(original_identity.get("md5") or ""),
+        "original_executable_sha256": str(original_identity.get("sha256") or ""),
+        "packer": "",
+        "packed_detected": False,
+        "derived_bundle_ready": False,
+        "upx_detection": {},
+        "upx_unpack": {},
+    }
+    result = {
+        "bundle_dir": bundle_dir,
+        "bundle_manifest": bundle_manifest,
+        "automation_payload": automation_payload,
+        "analysis_target": analysis_target,
+    }
+    if not prefer_upx_unpacked:
+        return result
+    if original_sample_path is None:
+        analysis_target["selection_reason"] = "Unable to resolve the original executable path from the prepared bundle."
+        return result
+
+    upx_detection = _run_upx_test(original_sample_path, timeout_sec=timeout_sec)
+    analysis_target["upx_detection"] = dict(upx_detection)
+    analysis_target["packer"] = "upx" if bool(upx_detection.get("recognized")) else ""
+    analysis_target["packed_detected"] = bool(upx_detection.get("recognized"))
+    if not bool(upx_detection.get("available")):
+        analysis_target["selection_reason"] = "UPX was requested but the `upx` executable is not available on PATH."
+        return result
+    if not bool(upx_detection.get("recognized")):
+        analysis_target["selection_reason"] = "UPX did not recognize the original sample as packed."
+        return result
+
+    analyze_headless = resolve_analyze_headless(ghidra_install_dir, ghidra_headless)
+    if analyze_headless is None:
+        analysis_target["selection_reason"] = (
+            "UPX was detected, but analyzeHeadless is unavailable so the derived unpacked bundle could not be built."
+        )
+        return result
+
+    derived_output_path = (
+        bundle_dir
+        / "derived"
+        / "upx_unpacked_binary"
+        / f"{original_sample_path.stem}_upx_unpacked{(original_sample_path.suffix or '.bin')}"
+    ).resolve()
+    derived_root = ensure_dir(bundle_dir / "derived" / UPX_DERIVED_BUNDLE_LABEL)
+    derived_bundle_dir = derived_root / sample_slug(derived_output_path)
+    try:
+        with _bundle_materialization_lock(bundle_dir):
+            derived_readiness = (
+                inspect_bundle_dir(derived_bundle_dir, sample_path=derived_output_path, analyze_headless=analyze_headless)
+                if derived_output_path.exists()
+                else {"ready_for_analysis": False, "fresh_for_analysis": False}
+            )
+            if not (bool(derived_readiness.get("ready_for_analysis")) and bool(derived_readiness.get("fresh_for_analysis"))):
+                upx_unpack = _run_upx_unpack(original_sample_path, derived_output_path, timeout_sec=timeout_sec, force=True)
+                analysis_target["upx_unpack"] = dict(upx_unpack)
+                if not bool(upx_unpack.get("ok")):
+                    analysis_target["selection_reason"] = (
+                        "UPX detected the sample, but unpacking failed. Continuing with the original prepared bundle."
+                    )
+                    return result
+
+                derived_corpus_name = str(bundle_manifest.get("corpus") or automation_payload.get("corpus") or "experimental").strip() or "experimental"
+                derived_prepare = prepare_bundle(
+                    derived_corpus_name,
+                    derived_output_path,
+                    ((bundle_manifest.get("manifest") or {}) if isinstance(bundle_manifest.get("manifest"), dict) else {}),
+                    output_root=derived_root,
+                    timeout_sec=timeout_sec,
+                    analyze_headless=analyze_headless,
+                    skip_cli_tools=skip_cli_tools,
+                    keep_project=keep_project,
+                )
+                derived_bundle_dir = Path(str(derived_prepare.get("bundle_dir") or derived_bundle_dir)).resolve()
+                derived_readiness = inspect_bundle_dir(
+                    derived_bundle_dir,
+                    sample_path=derived_output_path,
+                    analyze_headless=analyze_headless,
+                )
+                if not bool(derived_readiness.get("ready_for_analysis")):
+                    analysis_target["selection_reason"] = (
+                        "UPX unpacking succeeded, but the derived unpacked bundle is incomplete. Continuing with the original prepared bundle."
+                    )
+                    return result
+            else:
+                analysis_target["upx_unpack"] = {
+                    "available": True,
+                    "ok": True,
+                    "output_path": str(derived_output_path),
+                    "output_exists": True,
+                    "skipped": True,
+                    "reason": "fresh_derived_bundle",
+                }
+
+            derived_manifest_path = derived_bundle_dir / "bundle_manifest.json"
+            derived_payload_path = derived_bundle_dir / "automation_payload.json"
+            derived_manifest = read_json(derived_manifest_path) if derived_manifest_path.exists() else {}
+            derived_payload = read_json(derived_payload_path) if derived_payload_path.exists() else {}
+            derived_identity = _bundle_identity(derived_manifest, sample_path=derived_output_path)
+            analysis_target.update(
+                {
+                    "kind": UPX_DERIVED_BUNDLE_LABEL,
+                    "selection_reason": "UPX packing was detected; downstream analysis is using a derived unpacked bundle.",
+                    "effective_bundle_dir": str(derived_bundle_dir),
+                    "effective_executable_path": str(derived_identity.get("path") or derived_output_path),
+                    "effective_executable_md5": str(derived_identity.get("md5") or ""),
+                    "effective_executable_sha256": str(derived_identity.get("sha256") or ""),
+                    "derived_bundle_ready": True,
+                }
+            )
+            _write_analysis_target_metadata(
+                derived_bundle_dir,
+                analysis_target=analysis_target,
+                original_identity=original_identity,
+                original_bundle_dir=bundle_dir,
+                upx_detection=upx_detection,
+                upx_unpack=analysis_target["upx_unpack"],
+            )
+            result.update(
+                {
+                    "bundle_dir": derived_bundle_dir,
+                    "bundle_manifest": read_json(derived_manifest_path) if derived_manifest_path.exists() else derived_manifest,
+                    "automation_payload": read_json(derived_payload_path) if derived_payload_path.exists() else derived_payload,
+                    "analysis_target": analysis_target,
+                }
+            )
+            return result
+    except TimeoutError as exc:
+        analysis_target["selection_reason"] = (
+            f"{exc}. Continuing with the original prepared bundle."
+        )
+        return result
+
+
 def prepare_corpus_bundles(
     corpus_name: str,
     sample_paths: List[Path],
@@ -485,11 +851,24 @@ def _filtered_server_manifest(manifest: Dict[str, Any], profile: Dict[str, Any])
     return filtered
 
 
-def build_artifact_servers_manifest(bundle_dir: Path, output_path: Path, *, tool_profile: str = "full") -> Path:
+def build_artifact_servers_manifest(
+    bundle_dir: Path,
+    output_path: Path,
+    *,
+    tool_profile: str = "full",
+    analysis_target_kind: str = "",
+) -> Path:
     raw_manifest = read_json(DEFAULT_SERVERS_MANIFEST)
     manifest = absolutize_server_manifest(raw_manifest, DEFAULT_SERVERS_MANIFEST)
     profile = resolve_tool_profile(tool_profile)
     manifest = _filtered_server_manifest(manifest, profile)
+    normalized_analysis_target_kind = str(analysis_target_kind or "").strip().lower().replace("-", "_")
+    if normalized_analysis_target_kind == "upx_unpacked":
+        # The harness already resolved and selected a derived unpacked sample for
+        # this case. Leaving the UPX MCP server available encourages redundant
+        # `upxUnpack` calls against a target that is no longer the canonical
+        # analysis executable for the run.
+        manifest.pop("upxmcp", None)
     artifact_server = REPO_ROOT / "MCPServers" / "artifactGhidraMCP.py"
     manifest["ghidramcp"] = {
         "transport": "stdio",

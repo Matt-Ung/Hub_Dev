@@ -115,6 +115,160 @@ class LaunchPresetTests(unittest.TestCase):
         self.assertIn("worker_prompt_shape", variables)
         self.assertNotIn("worker_persona_prompt", variables)
 
+    def test_decoder_depth_stripped_r3_scopes_to_new_stripped_variant(self) -> None:
+        command = build_launch_preset_command(
+            "sweep_decoder_depth_stripped_r3",
+            explicit_judge_model="openai:gpt-4o-mini",
+        )
+
+        self.assertIn("Testing/run_experiment_sweep.py", command)
+        self.assertIn("config_decoder_test_stripped.exe", command)
+        self.assertIn("--repetitions", command)
+        repetition_index = command.index("--repetitions")
+        self.assertEqual(command[repetition_index + 1], "3")
+        tasks = [
+            command[index + 1]
+            for index, token in enumerate(command)
+            if token == "--task" and index + 1 < len(command)
+        ]
+        self.assertEqual(
+            tasks,
+            [
+                "default_analysis",
+                "config_value_recovery",
+                "decode_parser_flow_recovery",
+                "parser_validation_audit",
+            ],
+        )
+
+    def test_decoder_depth_r3_combines_both_decoder_variants(self) -> None:
+        command = build_launch_preset_command(
+            "sweep_decoder_depth_r3",
+            explicit_judge_model="openai:gpt-4o-mini",
+        )
+
+        samples = [
+            command[index + 1]
+            for index, token in enumerate(command)
+            if token == "--sample" and index + 1 < len(command)
+        ]
+        tasks = [
+            command[index + 1]
+            for index, token in enumerate(command)
+            if token == "--task" and index + 1 < len(command)
+        ]
+        self.assertEqual(
+            samples,
+            [
+                "config_decoder_test_stripped.exe",
+                "config_decoder_test_upx_stripped.exe",
+            ],
+        )
+        self.assertEqual(
+            tasks,
+            [
+                "default_analysis",
+                "config_value_recovery",
+                "decode_parser_flow_recovery",
+                "parser_validation_audit",
+                "packing_decoder_triage",
+            ],
+        )
+        variables = [
+            command[index + 1]
+            for index, token in enumerate(command)
+            if token == "--variable" and index + 1 < len(command)
+        ]
+        self.assertEqual(variables, ["worker_subagents"])
+        self.assertIn("--prefer-unpacked-upx", command)
+        self.assertIn("--repetitions", command)
+        repetition_index = command.index("--repetitions")
+        self.assertEqual(command[repetition_index + 1], "3")
+
+    def test_decoder_depth_followups_r3_uses_same_scope_with_new_families(self) -> None:
+        command = build_launch_preset_command(
+            "sweep_decoder_depth_followups_r3",
+            explicit_judge_model="openai:gpt-4o-mini",
+        )
+
+        samples = [
+            command[index + 1]
+            for index, token in enumerate(command)
+            if token == "--sample" and index + 1 < len(command)
+        ]
+        tasks = [
+            command[index + 1]
+            for index, token in enumerate(command)
+            if token == "--task" and index + 1 < len(command)
+        ]
+        self.assertIn("--config", command)
+        config_index = command.index("--config")
+        self.assertEqual(
+            command[config_index + 1],
+            "Testing/config/experiment_sweeps_decoder_followups_r3.json",
+        )
+        self.assertEqual(
+            samples,
+            [
+                "config_decoder_test_stripped.exe",
+                "config_decoder_test_upx_stripped.exe",
+            ],
+        )
+        self.assertEqual(
+            tasks,
+            [
+                "default_analysis",
+                "config_value_recovery",
+                "decode_parser_flow_recovery",
+                "parser_validation_audit",
+                "packing_decoder_triage",
+            ],
+        )
+        self.assertNotIn("--variable", command)
+        self.assertIn("--prefer-unpacked-upx", command)
+        self.assertIn("--repetitions", command)
+        repetition_index = command.index("--repetitions")
+        self.assertEqual(command[repetition_index + 1], "3")
+
+    def test_sweep_launch_preset_can_forward_concurrent_repetition_override(self) -> None:
+        command = build_launch_preset_command(
+            "sweep_decoder_depth_r3",
+            explicit_judge_model="openai:gpt-4o-mini",
+            max_concurrent_repetitions=3,
+        )
+
+        self.assertIn("--max-concurrent-repetitions", command)
+        concurrency_index = command.index("--max-concurrent-repetitions")
+        self.assertEqual(command[concurrency_index + 1], "3")
+
+    def test_decoder_depth_upx_stripped_r3_enables_unpacked_preference(self) -> None:
+        command = build_launch_preset_command(
+            "sweep_decoder_depth_upx_stripped_r3",
+            explicit_judge_model="openai:gpt-4o-mini",
+        )
+
+        self.assertIn("config_decoder_test_upx_stripped.exe", command)
+        self.assertIn("--prefer-unpacked-upx", command)
+        self.assertIn("--repetitions", command)
+        repetition_index = command.index("--repetitions")
+        self.assertEqual(command[repetition_index + 1], "3")
+
+    def test_decoder_depth_upx_stripped_preset_declares_depth_scope(self) -> None:
+        preset = resolve_launch_preset("sweep_decoder_depth_upx_stripped_r3")
+
+        self.assertEqual(preset.get("repetitions"), 3)
+        self.assertTrue(bool(preset.get("prefer_upx_unpacked")))
+        self.assertEqual(
+            preset.get("tasks"),
+            [
+                "default_analysis",
+                "packing_decoder_triage",
+                "config_value_recovery",
+                "decode_parser_flow_recovery",
+                "parser_validation_audit",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

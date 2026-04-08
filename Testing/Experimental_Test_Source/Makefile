@@ -29,6 +29,7 @@ BINARIES = \
 	$(OUT_DIR)/maintenance_orchestrator_test_stripped.exe \
 	$(OUT_DIR)/callback_dispatch_test.exe \
 	$(OUT_DIR)/config_decoder_test.exe \
+	$(OUT_DIR)/config_decoder_test_stripped.exe \
 	$(OUT_DIR)/signal_router_report_test.exe \
 	$(OUT_DIR)/stack_notice_scheduler_test.exe \
 	$(OUT_DIR)/multilayer_encode_test.exe \
@@ -52,7 +53,9 @@ GCC_BINARIES = \
 	$(OUT_DIR)/branch_weave_snapshot_test_gcc.exe \
 	$(OUT_DIR)/anti_analysis_suite_test_gcc.exe
 
-UPX_OUTPUT = $(OUT_DIR)/embedded_payload_test_upx.exe
+UPX_OUTPUTS = \
+	$(OUT_DIR)/embedded_payload_test_upx.exe \
+	$(OUT_DIR)/config_decoder_test_upx_stripped.exe
 
 .PHONY: all all-gcc all-with-gcc upx upx-debug clean help
 
@@ -91,8 +94,8 @@ help:
 	@echo "  all            Build baseline binaries with $(CC)"
 	@echo "  all-gcc        Build GCC-variant binaries with $(GCC_CC)"
 	@echo "  all-with-gcc   Build both sets"
-	@echo "  upx            Build UPX-packed embedded_payload_test_upx.exe"
-	@echo "  upx-debug      Build the UPX-packed target with shell/PATH diagnostics"
+	@echo "  upx            Build UPX-packed sample variants"
+	@echo "  upx-debug      Build the UPX-packed variants with shell/PATH diagnostics"
 	@echo "  clean          Remove all compiled binaries from $(OUT_DIR)"
 	@echo ""
 	@echo "Variables:"
@@ -126,6 +129,9 @@ $(OUT_DIR)/callback_dispatch_test_gcc.exe: callback_dispatch_test.c | $(OUT_DIR)
 
 $(OUT_DIR)/config_decoder_test.exe: config_decoder_test.c | $(OUT_DIR)
 	$(CC) $(CFLAGS_COMMON) -O0 $< -o $@
+
+$(OUT_DIR)/config_decoder_test_stripped.exe: config_decoder_test.c | $(OUT_DIR)
+	$(CC) $(CFLAGS_COMMON) -O0 -s $< -o $@
 
 $(OUT_DIR)/config_decoder_test_gcc.exe: config_decoder_test.c | $(OUT_DIR)
 	$(GCC_CC) $(CFLAGS_COMMON) -O0 $< -o $@
@@ -172,12 +178,15 @@ $(OUT_DIR)/branch_weave_snapshot_test_stripped.exe: branch_weave_snapshot_test.c
 $(OUT_DIR)/branch_weave_snapshot_test_gcc.exe: branch_weave_snapshot_test.c | $(OUT_DIR)
 	$(GCC_CC) $(CFLAGS_COMMON) -O2 $< -o $@
 
-upx: $(UPX_OUTPUT)
+upx: $(UPX_OUTPUTS)
 
 upx-debug: UPX_DEBUG=1
 upx-debug: upx
 
-$(UPX_OUTPUT): $(OUT_DIR)/embedded_payload_test.exe | $(OUT_DIR)
+$(OUT_DIR)/embedded_payload_test_upx.exe: $(OUT_DIR)/embedded_payload_test.exe | $(OUT_DIR)
+	$(call pack_with_upx)
+
+$(OUT_DIR)/config_decoder_test_upx_stripped.exe: $(OUT_DIR)/config_decoder_test_stripped.exe | $(OUT_DIR)
 	$(call pack_with_upx)
 
 $(OUT_DIR)/anti_analysis_suite_test.exe: anti_analysis_suite_test.c | $(OUT_DIR)
@@ -189,6 +198,6 @@ $(OUT_DIR)/anti_analysis_suite_test_gcc.exe: anti_analysis_suite_test.c | $(OUT_
 	$(GCC_CC) $(CFLAGS_COMMON) -O2 $< -o $@
 
 clean:
-	rm -f $(BINARIES) $(GCC_BINARIES) $(UPX_OUTPUT) \
+	rm -f $(BINARIES) $(GCC_BINARIES) $(UPX_OUTPUTS) \
 		$(OUT_DIR)/string_table_test.exe \
 		$(OUT_DIR)/string_table_test_gcc.exe

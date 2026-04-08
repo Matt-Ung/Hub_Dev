@@ -36,6 +36,8 @@ SPECIAL_SAMPLE_SOURCE_MAP = {
     "resource_blob_loader_hard_stripped": "resource_blob_loader_test",
     "resource_blob_loader_hard_upx": "resource_blob_loader_test",
     "embedded_payload_test_upx": "embedded_payload_test",
+    "config_decoder_test_stripped": "config_decoder_test",
+    "config_decoder_test_upx_stripped": "config_decoder_test",
     "maintenance_orchestrator_test_stripped": "maintenance_orchestrator_test",
     "hash_dispatch_test_stripped": "hash_dispatch_test",
     "branch_weave_snapshot_test_stripped": "branch_weave_snapshot_test",

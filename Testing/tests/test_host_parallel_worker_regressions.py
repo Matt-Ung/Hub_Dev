@@ -96,6 +96,145 @@ def _import_pipeline_with_stubs():
 
 
 class HostParallelWorkerRegressionTests(unittest.TestCase):
+    def test_worker_assignment_failure_marks_transient_errors_retryable(self) -> None:
+        status = _derive_result_status(
+            {
+                "planned_work_item_status": {
+                    "1": {
+                        "status": "blocked",
+                        "slot_name": "ghidra_analyst",
+                        "error": "ReadError:",
+                    }
+                }
+            },
+            "",
+        )
+
+        self.assertEqual(status["status"], "worker_assignment_failed")
+        self.assertTrue(bool(status.get("failure_retryable")))
+        self.assertEqual(status.get("failure_category"), "transient_transport")
+        self.assertEqual(status.get("failure_stage"), "workers")
+
+    def test_stage_agent_retries_once_after_async_task_tool_misuse(self) -> None:
+        pipeline_mod = _import_pipeline_with_stubs()
+
+        call_log = []
+
+        class FakeResult:
+            output = "recovered"
+
+            def all_messages(self):
+                return []
+
+        class FakeStageAgent:
+            def run_sync(self, prompt, *, message_history=None, deps=None):
+                call_log.append(
+                    {
+                        "prompt": str(prompt),
+                        "message_history": message_history,
+                        "deps": deps,
+                    }
+                )
+                if len(call_log) == 1:
+                    raise RuntimeError("UnexpectedModelBehavior: Tool 'wait_tasks' exceeded max retries count of 1")
+                return FakeResult()
+
+        stage = types.SimpleNamespace(
+            name="preflight",
+            agent=FakeStageAgent(),
+            deps=types.SimpleNamespace(),
+        )
+        old_history = ["prior-message"]
+        state = {}
+
+        result = pipeline_mod._run_stage_agent_sync_with_guardrails(
+            stage=stage,
+            stage_prompt="Preflight prompt",
+            old_history=old_history,
+            state=state,
+        )
+
+        self.assertEqual(result.output, "recovered")
+        self.assertEqual(len(call_log), 2)
+        self.assertEqual(call_log[0]["message_history"], old_history)
+        self.assertIsNone(call_log[1]["message_history"])
+        self.assertIn("Async task-management tools", call_log[1]["prompt"])
+        self.assertIn("Stage retry triggered", state.get("status_log", ""))
+
+    def test_stage_agent_retries_transient_rate_limit_failure(self) -> None:
+        pipeline_mod = _import_pipeline_with_stubs()
+
+        call_count = 0
+        sleep_calls = []
+
+        class FakeResult:
+            output = "recovered"
+
+            def all_messages(self):
+                return []
+
+        class FakeStageAgent:
+            def run_sync(self, prompt, *, message_history=None, deps=None):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise RuntimeError("ModelHTTPError: status_code: 429, model_name: gpt-5-mini, body: {'type': 'rate_limit_error'}")
+                return FakeResult()
+
+        stage = types.SimpleNamespace(
+            name="planner",
+            agent=FakeStageAgent(),
+            deps=types.SimpleNamespace(),
+        )
+        state = {}
+
+        with patch.object(pipeline_mod.time, "sleep", side_effect=lambda seconds: sleep_calls.append(seconds)):
+            result = pipeline_mod._run_stage_agent_sync_with_guardrails(
+                stage=stage,
+                stage_prompt="Planner prompt",
+                old_history=["prior-message"],
+                state=state,
+            )
+
+        self.assertEqual(result.output, "recovered")
+        self.assertEqual(call_count, 2)
+        self.assertEqual(sleep_calls, [1.0])
+        self.assertIn("Stage transient failure: planner attempt 1/3", state.get("status_log", ""))
+
+    def test_stage_agent_does_not_retry_deterministic_invalid_request(self) -> None:
+        pipeline_mod = _import_pipeline_with_stubs()
+
+        call_count = 0
+        sleep_calls = []
+
+        class FakeStageAgent:
+            def run_sync(self, prompt, *, message_history=None, deps=None):
+                nonlocal call_count
+                call_count += 1
+                raise RuntimeError(
+                    "ModelHTTPError: status_code: 400, model_name: gpt-5-mini, body: "
+                    "{'message': \"We could not parse the JSON body of your request.\", 'type': 'invalid_request_error'}"
+                )
+
+        stage = types.SimpleNamespace(
+            name="planner",
+            agent=FakeStageAgent(),
+            deps=types.SimpleNamespace(),
+        )
+        state = {}
+
+        with patch.object(pipeline_mod.time, "sleep", side_effect=lambda seconds: sleep_calls.append(seconds)):
+            with self.assertRaises(RuntimeError):
+                pipeline_mod._run_stage_agent_sync_with_guardrails(
+                    stage=stage,
+                    stage_prompt="Planner prompt",
+                    old_history=["prior-message"],
+                    state=state,
+                )
+
+        self.assertEqual(call_count, 1)
+        self.assertEqual(sleep_calls, [])
+
     def test_result_status_is_demoted_when_worker_assignment_fails(self) -> None:
         shared = {
             "validation_history": [],
@@ -125,6 +264,30 @@ class HostParallelWorkerRegressionTests(unittest.TestCase):
         self.assertFalse(status["accepted_final_output"])
         self.assertIn("control_flow_analyst", status["failure_reason"])
         self.assertEqual(status["worker_assignment_summary"]["failed_assignments"], 1)
+
+    def test_result_status_captures_failure_category_and_stage_for_analysis_error(self) -> None:
+        shared = {
+            "validation_history": [],
+            "validation_retry_count": 0,
+            "validation_max_retries": 2,
+            "validation_last_decision": "",
+            "validation_replan_feedback": "",
+            "planned_work_item_status": {},
+            "last_pipeline_error": {
+                "stage_name": "planner",
+                "stage_kind": "planner",
+                "error_text": "ModelHTTPError: status_code: 429, model_name: gpt-5-mini",
+                "category": "rate_limit",
+                "retryable": True,
+            },
+        }
+
+        status = _derive_result_status(shared, "", error="ModelHTTPError: status_code: 429, model_name: gpt-5-mini")
+
+        self.assertEqual(status["status"], "analysis_error")
+        self.assertEqual(status["failure_category"], "rate_limit")
+        self.assertEqual(status["failure_stage"], "planner")
+        self.assertTrue(status["failure_retryable"])
 
     def test_host_worker_executor_uses_isolated_backend_and_disables_context_manager(self) -> None:
         runtime_mod = _import_runtime_with_stubs()
@@ -282,6 +445,34 @@ class HostParallelWorkerRegressionTests(unittest.TestCase):
         self.assertFalse(tool_b.is_running())
         self.assertEqual(tool_a.exit_count, 1)
         self.assertEqual(tool_b.exit_count, 1)
+        self.assertFalse(getattr(tool_a, "_runtime_helper_preentered", False))
+        self.assertFalse(getattr(tool_b, "_runtime_helper_preentered", False))
+
+    def test_shutdown_runtime_sync_skips_untracked_running_servers(self) -> None:
+        runtime_mod = _import_runtime_with_stubs()
+
+        class FailOnExitServer(runtime_mod.MCPServerStdio):
+            async def __aexit__(self, *args):
+                self.exit_count += 1
+                raise AssertionError("shutdown should not close untracked server sessions")
+
+        tool = FailOnExitServer("python", args=["a.py"], id="ghidramcp")
+        tool._running = True
+        runtime_mod._RUNTIME_SHARED_ASSETS = runtime_mod.RuntimeSharedAssets(
+            manifest_path="servers.json",
+            toolsets=[tool],
+            static_tools=[tool],
+            dynamic_tools=[],
+            skill_directories=[],
+            deep_backend=None,
+        )
+
+        with patch("builtins.print") as fake_print:
+            runtime_mod.shutdown_runtime_sync()
+
+        self.assertEqual(tool.exit_count, 0)
+        self.assertIsNone(runtime_mod._RUNTIME_SHARED_ASSETS)
+        fake_print.assert_not_called()
 
     def test_close_mcp_toolsets_async_suppresses_cancelled_error_from_server_exit(self) -> None:
         runtime_mod = _import_runtime_with_stubs()
@@ -363,6 +554,434 @@ class HostParallelWorkerRegressionTests(unittest.TestCase):
         self.assertEqual(max_active_counts.get("ghidra_analyst"), 1)
         self.assertEqual(max_active_counts.get("control_flow_analyst"), 1)
         self.assertLess(start_order.index(("3", "control_flow_analyst")), start_order.index(("2", "ghidra_analyst")))
+
+    def test_host_worker_assignment_does_not_reuse_message_history(self) -> None:
+        pipeline_mod = _import_pipeline_with_stubs()
+
+        run_calls = []
+
+        class FakeResult:
+            output = "worker ok"
+
+            def all_messages(self):
+                return ["new-history"]
+
+            @property
+            def usage(self):
+                return None
+
+        class FakeAgent:
+            async def run(self, prompt, *, message_history=None, deps=None):
+                run_calls.append(message_history)
+                return FakeResult()
+
+        def fake_build_executor(*args, **kwargs):
+            return FakeAgent(), types.SimpleNamespace(), "openai:gpt-5-mini", {}
+
+        async def fake_sleep(_seconds: float) -> None:
+            return None
+
+        assignment = {
+            "index": 1,
+            "slot_name": "ghidra_analyst",
+            "archetype_name": "ghidra_analyst",
+            "work_item": {"id": "1", "objective": "Inspect config decode path", "evidence_targets": []},
+        }
+        state = {"shared_state": {}, "allow_parent_input": False}
+
+        with patch.object(pipeline_mod, "build_host_worker_assignment_executor", side_effect=fake_build_executor), patch.object(
+            pipeline_mod,
+            "_build_host_worker_prompt",
+            return_value="worker prompt",
+        ), patch.object(
+            pipeline_mod,
+            "get_role_history",
+            side_effect=AssertionError("host worker assignments should not read prior message history"),
+        ), patch.object(
+            pipeline_mod.asyncio,
+            "sleep",
+            side_effect=fake_sleep,
+        ):
+            result = asyncio.run(
+                pipeline_mod._run_host_worker_assignment(
+                    runtime=object(),
+                    stage_name="workers",
+                    stage_kind="workers",
+                    state=state,
+                    user_text="Analyze sample",
+                    prior_stage_outputs={},
+                    assignment=assignment,
+                    stage_model="openai:gpt-5-mini",
+                )
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(run_calls, [None])
+
+    def test_host_worker_assignment_retries_transient_failures(self) -> None:
+        pipeline_mod = _import_pipeline_with_stubs()
+
+        build_count = 0
+        sleep_calls = []
+
+        class FakeResult:
+            output = "worker ok"
+
+            def all_messages(self):
+                return []
+
+            @property
+            def usage(self):
+                return None
+
+        class FakeAgent:
+            def __init__(self, fail: bool):
+                self.fail = fail
+
+            async def run(self, prompt, *, message_history=None, deps=None):
+                if self.fail:
+                    raise RuntimeError(
+                        "RemoteProtocolError: peer closed connection without sending complete message body "
+                        "(incomplete chunked read)"
+                    )
+                return FakeResult()
+
+        def fake_build_executor(*args, **kwargs):
+            nonlocal build_count
+            build_count += 1
+            return FakeAgent(fail=build_count == 1), types.SimpleNamespace(), "openai:gpt-5-mini", {}
+
+        async def fake_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        assignment = {
+            "index": 1,
+            "slot_name": "ghidra_analyst",
+            "archetype_name": "ghidra_analyst",
+            "work_item": {"id": "1", "objective": "Inspect config decode path", "evidence_targets": []},
+        }
+        state = {"shared_state": {}, "allow_parent_input": False}
+
+        with patch.object(pipeline_mod, "build_host_worker_assignment_executor", side_effect=fake_build_executor), patch.object(
+            pipeline_mod,
+            "_build_host_worker_prompt",
+            return_value="worker prompt",
+        ), patch.object(
+            pipeline_mod.asyncio,
+            "sleep",
+            side_effect=fake_sleep,
+        ):
+            result = asyncio.run(
+                pipeline_mod._run_host_worker_assignment(
+                    runtime=object(),
+                    stage_name="workers",
+                    stage_kind="workers",
+                    state=state,
+                    user_text="Analyze sample",
+                    prior_stage_outputs={},
+                    assignment=assignment,
+                    stage_model="openai:gpt-5-mini",
+                )
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(build_count, 2)
+        self.assertEqual(sleep_calls, [1.0])
+
+    def test_host_worker_assignment_does_not_retry_deterministic_invalid_request(self) -> None:
+        pipeline_mod = _import_pipeline_with_stubs()
+
+        build_count = 0
+        sleep_calls = []
+
+        class FakeAgent:
+            async def run(self, prompt, *, message_history=None, deps=None):
+                raise RuntimeError(
+                    "ModelHTTPError: status_code: 400, model_name: gpt-5-mini, body: "
+                    "{'message': \"We could not parse the JSON body of your request.\", "
+                    "'type': 'invalid_request_error'}"
+                )
+
+        def fake_build_executor(*args, **kwargs):
+            nonlocal build_count
+            build_count += 1
+            return FakeAgent(), types.SimpleNamespace(), "openai:gpt-5-mini", {}
+
+        async def fake_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        assignment = {
+            "index": 1,
+            "slot_name": "ghidra_analyst",
+            "archetype_name": "ghidra_analyst",
+            "work_item": {"id": "1", "objective": "Inspect config decode path", "evidence_targets": []},
+        }
+        state = {"shared_state": {}, "allow_parent_input": False}
+
+        with patch.object(pipeline_mod, "build_host_worker_assignment_executor", side_effect=fake_build_executor), patch.object(
+            pipeline_mod,
+            "_build_host_worker_prompt",
+            return_value="worker prompt",
+        ), patch.object(
+            pipeline_mod.asyncio,
+            "sleep",
+            side_effect=fake_sleep,
+        ):
+            result = asyncio.run(
+                pipeline_mod._run_host_worker_assignment(
+                    runtime=object(),
+                    stage_name="workers",
+                    stage_kind="workers",
+                    state=state,
+                    user_text="Analyze sample",
+                    prior_stage_outputs={},
+                    assignment=assignment,
+                    stage_model="openai:gpt-5-mini",
+                )
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(build_count, 1)
+        self.assertEqual(sleep_calls, [])
+
+    def test_worker_stage_retries_only_failed_transient_assignments(self) -> None:
+        pipeline_mod = _import_pipeline_with_stubs()
+
+        assignments = [
+            {
+                "index": 1,
+                "slot_name": "ghidra_analyst",
+                "archetype_name": "ghidra_analyst",
+                "work_item": {"id": "1"},
+            },
+            {
+                "index": 2,
+                "slot_name": "control_flow_analyst",
+                "archetype_name": "control_flow_analyst",
+                "work_item": {"id": "2"},
+            },
+        ]
+        call_batches = []
+
+        async def fake_enter(*_args, **_kwargs):
+            return ["ghidramcp"]
+
+        async def fake_close(*_args, **_kwargs):
+            return None
+
+        async def fake_run_host_parallel_assignments_async(batch, **_kwargs):
+            indices = [int(item["index"]) for item in batch]
+            call_batches.append(indices)
+            if len(call_batches) == 1:
+                return {
+                    1: {
+                        "index": 1,
+                        "work_item_id": "1",
+                        "slot_name": "ghidra_analyst",
+                        "archetype_name": "ghidra_analyst",
+                        "model": "openai:gpt-5-mini",
+                        "role_key": "worker-1",
+                        "history": [],
+                        "output_text": "",
+                        "usage": {},
+                        "duration_sec": 1.0,
+                        "model_duration_sec": 1.0,
+                        "status": "failed",
+                        "error": "ReadError:",
+                        "retryable": True,
+                        "error_category": "transient_transport",
+                    },
+                    2: {
+                        "index": 2,
+                        "work_item_id": "2",
+                        "slot_name": "control_flow_analyst",
+                        "archetype_name": "control_flow_analyst",
+                        "model": "openai:gpt-5-mini",
+                        "role_key": "worker-2",
+                        "history": [],
+                        "output_text": "ok",
+                        "usage": {},
+                        "duration_sec": 1.0,
+                        "model_duration_sec": 1.0,
+                        "status": "ok",
+                    },
+                }
+            return {
+                1: {
+                    "index": 1,
+                    "work_item_id": "1",
+                    "slot_name": "ghidra_analyst",
+                    "archetype_name": "ghidra_analyst",
+                    "model": "openai:gpt-5-mini",
+                    "role_key": "worker-1",
+                    "history": [],
+                    "output_text": "recovered",
+                    "usage": {},
+                    "duration_sec": 1.0,
+                    "model_duration_sec": 1.0,
+                    "status": "ok",
+                }
+            }
+
+        runtime = types.SimpleNamespace(static_tools=[], dynamic_tools=[])
+        stage = types.SimpleNamespace(
+            name="workers",
+            stage_kind="workers",
+            architecture=[("ghidra_analyst", 1), ("control_flow_analyst", 1)],
+            subagent_names=["ghidra_analyst", "control_flow_analyst"],
+            model="openai:gpt-5-mini",
+        )
+        state = {"shared_state": {"planned_work_items": [{"id": "1"}, {"id": "2"}]}, "allow_parent_input": False}
+
+        with patch.object(pipeline_mod, "_plan_host_worker_assignments", return_value=assignments), patch.object(
+            pipeline_mod,
+            "build_loop_local_host_worker_runtime",
+            return_value=runtime,
+        ), patch.object(
+            pipeline_mod,
+            "_enter_mcp_toolsets_async",
+            side_effect=fake_enter,
+        ), patch.object(
+            pipeline_mod,
+            "_close_mcp_toolsets_async",
+            side_effect=fake_close,
+        ), patch.object(
+            pipeline_mod,
+            "_run_host_parallel_assignments_async",
+            side_effect=fake_run_host_parallel_assignments_async,
+        ), patch.object(
+            pipeline_mod,
+            "_record_model_usage",
+            return_value=None,
+        ), patch.object(
+            pipeline_mod,
+            "append_tool_log_delta",
+            return_value=None,
+        ), patch.object(
+            pipeline_mod,
+            "update_validated_sample_path_from_messages",
+            return_value=None,
+        ), patch.object(
+            pipeline_mod,
+            "update_validated_sample_path",
+            return_value=None,
+        ):
+            output = pipeline_mod._run_host_parallel_worker_stage(
+                runtime=runtime,
+                stage=stage,
+                user_text="Analyze sample",
+                prior_stage_outputs={},
+                state=state,
+            )
+
+        self.assertEqual(call_batches, [[1, 2], [1]])
+        self.assertIn("completed_assignments: 2", output)
+        summary = state["shared_state"]["host_worker_assignment_summary"]
+        self.assertEqual(summary["failed_assignments"], 0)
+        self.assertEqual(summary["stage_retry_rounds_used"], 1)
+        self.assertEqual(summary["stage_retry_recovered_assignments"], 1)
+
+    def test_worker_stage_contains_all_failed_assignments_without_raising(self) -> None:
+        pipeline_mod = _import_pipeline_with_stubs()
+
+        assignments = [
+            {
+                "index": 1,
+                "slot_name": "ghidra_analyst",
+                "archetype_name": "ghidra_analyst",
+                "work_item": {"id": "1"},
+            },
+            {
+                "index": 2,
+                "slot_name": "control_flow_analyst",
+                "archetype_name": "control_flow_analyst",
+                "work_item": {"id": "2"},
+            },
+        ]
+
+        async def fake_enter(*_args, **_kwargs):
+            return []
+
+        async def fake_close(*_args, **_kwargs):
+            return None
+
+        async def fake_run_host_parallel_assignments_async(batch, **_kwargs):
+            return {
+                int(item["index"]): {
+                    "index": int(item["index"]),
+                    "work_item_id": str((item.get("work_item") or {}).get("id") or item["index"]),
+                    "slot_name": str(item["slot_name"]),
+                    "archetype_name": str(item["archetype_name"]),
+                    "model": "openai:gpt-5-mini",
+                    "role_key": f"worker-{item['index']}",
+                    "history": [],
+                    "output_text": "",
+                    "usage": {},
+                    "duration_sec": 1.0,
+                    "model_duration_sec": 1.0,
+                    "status": "failed",
+                    "error": "ModelHTTPError: status_code: 400 invalid_request_error",
+                    "retryable": False,
+                    "error_category": "invalid_request",
+                }
+                for item in batch
+            }
+
+        runtime = types.SimpleNamespace(static_tools=[], dynamic_tools=[])
+        stage = types.SimpleNamespace(
+            name="workers",
+            stage_kind="workers",
+            architecture=[("ghidra_analyst", 1), ("control_flow_analyst", 1)],
+            subagent_names=["ghidra_analyst", "control_flow_analyst"],
+            model="openai:gpt-5-mini",
+        )
+        state = {"shared_state": {"planned_work_items": [{"id": "1"}, {"id": "2"}]}, "allow_parent_input": False}
+
+        with patch.object(pipeline_mod, "_plan_host_worker_assignments", return_value=assignments), patch.object(
+            pipeline_mod,
+            "build_loop_local_host_worker_runtime",
+            return_value=runtime,
+        ), patch.object(
+            pipeline_mod,
+            "_enter_mcp_toolsets_async",
+            side_effect=fake_enter,
+        ), patch.object(
+            pipeline_mod,
+            "_close_mcp_toolsets_async",
+            side_effect=fake_close,
+        ), patch.object(
+            pipeline_mod,
+            "_run_host_parallel_assignments_async",
+            side_effect=fake_run_host_parallel_assignments_async,
+        ), patch.object(
+            pipeline_mod,
+            "_record_model_usage",
+            return_value=None,
+        ), patch.object(
+            pipeline_mod,
+            "append_tool_log_delta",
+            return_value=None,
+        ), patch.object(
+            pipeline_mod,
+            "update_validated_sample_path_from_messages",
+            return_value=None,
+        ), patch.object(
+            pipeline_mod,
+            "update_validated_sample_path",
+            return_value=None,
+        ):
+            output = pipeline_mod._run_host_parallel_worker_stage(
+                runtime=runtime,
+                stage=stage,
+                user_text="Analyze sample",
+                prior_stage_outputs={},
+                state=state,
+            )
+
+        self.assertIn("failed_assignments: 2", output)
+        summary = state["shared_state"]["host_worker_assignment_summary"]
+        self.assertTrue(summary["all_assignments_failed"])
+        self.assertEqual(summary["failed_assignments"], 2)
 
 
 if __name__ == "__main__":

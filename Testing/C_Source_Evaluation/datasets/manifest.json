@@ -107,7 +107,9 @@
         "T9"
       ],
       "related_binary_samples": [
-        "config_decoder_test.exe"
+        "config_decoder_test.exe",
+        "config_decoder_test_stripped.exe",
+        "config_decoder_test_upx_stripped.exe"
       ],
       "reference_status": "reviewed_concrete_anchor_v1"
     },

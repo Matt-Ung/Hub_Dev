@@ -162,16 +162,26 @@ def sample_task_key(sample_name: str, task_id: str) -> str:
     return f"{stem}::{task}"
 
 
+def normalize_sample_task_key(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or "::" not in text:
+        return text
+    sample_name, task_id = text.split("::", 1)
+    return sample_task_key(sample_name, task_id)
+
+
 def build_evaluation_tasks(
     corpus_name: str,
     sample_paths: List[Path],
     *,
     manifest: Optional[Dict[str, Any]] = None,
     selected_task_ids: Optional[Iterable[str]] = None,
+    selected_task_keys: Optional[Iterable[str]] = None,
     selected_difficulties: Optional[Iterable[str]] = None,
 ) -> List[EvaluationTask]:
     manifest_data = manifest or load_sample_manifest(corpus_name)
     selected = {str(item).strip() for item in (selected_task_ids or []) if str(item).strip()}
+    selected_keys = {normalize_sample_task_key(str(item)) for item in (selected_task_keys or []) if str(item).strip()}
     difficulty_filter = {str(item).strip().lower() for item in (selected_difficulties or []) if str(item).strip()}
     tasks: List[EvaluationTask] = []
     for sample_path in sample_paths:
@@ -181,7 +191,10 @@ def build_evaluation_tasks(
             continue
         for task_meta in resolve_sample_tasks(corpus_name, sample_path.name, manifest=manifest_data):
             task_id = str(task_meta.get("task_id") or "").strip()
+            task_key = sample_task_key(sample_path.name, task_id)
             if selected and task_id not in selected:
+                continue
+            if selected_keys and task_key not in selected_keys:
                 continue
             tasks.append(
                 EvaluationTask(

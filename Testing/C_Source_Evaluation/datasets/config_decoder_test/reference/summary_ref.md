@@ -42,3 +42,5 @@ This program decodes a single-byte XOR configuration blob with key 0x4B, parses 
 ## Related Binary Variants
 
 - `config_decoder_test.exe`
+- `config_decoder_test_stripped.exe`
+- `config_decoder_test_upx_stripped.exe`

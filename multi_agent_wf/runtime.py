@@ -527,6 +527,8 @@ def _clone_mcp_server(server: MCPServerStdio) -> MCPServerStdio:
 async def _close_mcp_toolsets_async(
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
+    *,
+    helper_only: bool = False,
 ) -> None:
     def _clear_cleanup_cancellation() -> None:
         task = asyncio.current_task()
@@ -544,6 +546,8 @@ async def _close_mcp_toolsets_async(
         if key in seen:
             continue
         seen.add(key)
+        if helper_only and not bool(getattr(server, "_runtime_helper_preentered", False)):
+            continue
         try:
             running_attr = getattr(server, "is_running", False)
             running = running_attr() if callable(running_attr) else bool(running_attr)
@@ -553,6 +557,9 @@ async def _close_mcp_toolsets_async(
             _clear_cleanup_cancellation()
         except Exception as e:
             print(f"[runtime shutdown] warning: failed to close MCP server {getattr(server, 'id', 'unknown')}: {e}")
+        finally:
+            if getattr(server, "_runtime_helper_preentered", False):
+                setattr(server, "_runtime_helper_preentered", False)
 
 
 async def _enter_mcp_toolsets_async(
@@ -568,6 +575,7 @@ async def _enter_mcp_toolsets_async(
                 continue
             seen.add(key)
             await server.__aenter__()
+            setattr(server, "_runtime_helper_preentered", True)
             entered_ids.append(str(getattr(server, "id", "") or "unknown"))
         return entered_ids
     except Exception:
@@ -1222,6 +1230,12 @@ def build_stage_prompt(
     validated_sample_sha256 = (shared.get("validated_sample_sha256") or "").strip()
     validated_sample_image_base = (shared.get("validated_sample_image_base") or "").strip()
     validated_sample_metadata_source = (shared.get("validated_sample_metadata_source") or "").strip()
+    analysis_target_kind = str(shared.get("analysis_target_kind") or "").strip()
+    analysis_target_reason = str(shared.get("analysis_target_reason") or "").strip()
+    analysis_target_original_path = str(shared.get("analysis_target_original_path") or "").strip()
+    analysis_target_original_sha256 = str(shared.get("analysis_target_original_sha256") or "").strip()
+    analysis_target_packer = str(shared.get("analysis_target_packer") or "").strip()
+    analysis_target_packed_detected = bool(shared.get("analysis_target_packed_detected"))
     auto_triage_status = str(shared.get("auto_triage_status") or "").strip()
     auto_triage_context_summary = str(shared.get("auto_triage_context_summary") or "").strip()
     auto_triage_pre_sweep_summary = str(shared.get("auto_triage_pre_sweep_summary") or "").strip()
@@ -1263,6 +1277,21 @@ def build_stage_prompt(
             )
         else:
             sections.append("- Do not mention missing internal path metadata in the final user-facing report.")
+    if analysis_target_kind and (analysis_target_kind != "original" or analysis_target_packed_detected):
+        sections.extend(
+            [
+                f"- analysis_target_kind: {analysis_target_kind}",
+                f"- analysis_target_packer: {analysis_target_packer or 'unknown'}",
+                f"- analysis_target_reason: {analysis_target_reason or 'not provided'}",
+            ]
+        )
+        if analysis_target_original_path:
+            sections.append(f"- original_sample_path: {analysis_target_original_path}")
+        if analysis_target_original_sha256:
+            sections.append(f"- original_sample_sha256: {analysis_target_original_sha256}")
+        sections.append(
+            "- Analysis-target rule: if the shared context indicates an unpacked derived sample, analyze the unpacked target as canonical for this run while preserving the original packed sample as provenance."
+        )
 
     available_static_tools = [str(x).strip() for x in (shared.get("available_static_tools") or []) if str(x).strip()]
     available_dynamic_tools = [str(x).strip() for x in (shared.get("available_dynamic_tools") or []) if str(x).strip()]
@@ -3264,7 +3293,16 @@ async def _shutdown_runtime_async() -> None:
     if shared_assets is None:
         return
 
-    await _close_mcp_toolsets_async(shared_assets.static_tools, shared_assets.dynamic_tools)
+    # Shared runtime toolsets are typically entered and exited by the deep-agent
+    # layer inside the event loop that executed the stage. Re-closing those
+    # sessions here from a fresh `asyncio.run(...)` teardown loop can trip
+    # cancel-scope ownership warnings. Only close toolsets this runtime wrapper
+    # explicitly pre-entered itself.
+    await _close_mcp_toolsets_async(
+        shared_assets.static_tools,
+        shared_assets.dynamic_tools,
+        helper_only=True,
+    )
 
     _RUNTIME_CACHE.clear()
     _RUNTIME_SHARED_ASSETS = None

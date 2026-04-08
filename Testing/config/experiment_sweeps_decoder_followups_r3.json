@@ -1,0 +1,67 @@
+{
+  "version": "binary_experiment_sweep_decoder_followups_v1",
+  "description": "Focused decoder-depth follow-up sweep. Keeps the stripped and UPX-stripped config_decoder_test scope fixed, uses three repetitions, preserves the original decoder-depth baseline so it stays comparable to the earlier sweep_decoder_depth_r3 run, and tests only the maintained worker-prompt-shape follow-ups plus one validator-backed pipeline variant.",
+  "repetitions": 3,
+  "baseline": {
+    "corpus": "experimental",
+    "pipeline": "auto_triage",
+    "architecture": "balanced",
+    "query_variant": "default",
+    "subagent_profile": "default",
+    "worker_persona_profile": "default",
+    "worker_role_prompt_mode": "default",
+    "validator_review_level": "default",
+    "tool_profile": "full",
+    "model_profile": "repo_default",
+    "force_model": "",
+    "judge_mode": "agent"
+  },
+  "model_profiles": {
+    "repo_default": {
+      "description": "Use the repo's mixed per-stage and per-role model defaults with no forced override.",
+      "force_model": ""
+    },
+    "budget": {
+      "description": "Force the cheapest cross-run model profile used in experiments. This changes model choice, not token budgets or runtime limits.",
+      "force_model": "openai:gpt-5-nano"
+    },
+    "premium": {
+      "description": "Force the stronger cross-run model profile used in experiments. This changes model choice, not token budgets or runtime limits.",
+      "force_model": "openai:gpt-5-mini"
+    }
+  },
+  "sweeps": [
+    {
+      "variable": "worker_prompt_shape",
+      "description": "Compare the maintained default worker prompts against the evidence-first overlay and the empty worker-role condition while holding the original decoder-depth baseline fixed.",
+      "variants": [
+        {
+          "name": "artifact_focused",
+          "overrides": {
+            "worker_persona_profile": "artifact_focused",
+            "worker_role_prompt_mode": "default"
+          }
+        },
+        {
+          "name": "empty",
+          "overrides": {
+            "worker_persona_profile": "default",
+            "worker_role_prompt_mode": "blank"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "pipeline_preset",
+      "description": "Test whether adding the validator-backed planner-workers pipeline helps on the decoder-depth scope while leaving the baseline itself unchanged for comparison and mergeability.",
+      "variants": [
+        {
+          "name": "validators_reporter",
+          "overrides": {
+            "pipeline": "preflight_planner_workers_validators_reporter"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -29,7 +29,7 @@ Notes:
   treat that repo interpreter as the effective runtime target for dependency
   checks and child-run launches.
 - `requirements.txt` already includes the judge and visualization deps the doctor checks for, including `pydantic`, `pydantic-ai`, `matplotlib`, and `pandas`.
-- `upx` is optional. Packed-variant targets are skipped when `UPX_BIN` is not available.
+- `upx` is optional. It is only required when you explicitly enable `--prefer-unpacked-upx`, which attempts a detect -> unpack -> derived-bundle workflow for UPX-packed samples and otherwise falls back to the original prepared bundle.
 - The maintained experiment path targets Windows-style `.exe` samples. The corpus-local `*_gcc.exe` host builds are useful for development, but they are not the canonical full-experiment target.
 
 ## 2. Build The Binaries
@@ -56,6 +56,11 @@ Prepared bundles only need regeneration when bundle inputs change, for example:
 - bundle preparer version changed
 
 Persona prompt changes do **not** invalidate bundles.
+
+If you want the harness to continue analysis on an unpacked derivative when a
+sample is recognized as UPX-packed, keep the normal bundles and add
+`--prefer-unpacked-upx` at run time. The harness will create a derived unpacked
+bundle under the original bundle directory only for the affected samples.
 
 Prepare the experimental bundles:
 
@@ -174,6 +179,49 @@ main aggregate outputs stay conservative: incomplete comparison groups are
 written separately to `partial_*.csv`, `partial_comparison.json`, and
 `outputs/partial/`.
 
+If you want to recover only the failed or unfinished sample-task cases from an
+existing run or sweep, inspect the retry plan first:
+
+```bash
+python Testing/run_recover_failed_tasks.py \
+  Testing/results/experiments/<experiment_id> \
+  --plan-only
+```
+
+Then execute it:
+
+```bash
+python Testing/run_recover_failed_tasks.py \
+  Testing/results/experiments/<experiment_id>
+```
+
+The recovery utility writes its own `recovery_attempts/<session_id>/` manifest
+and launches fresh recovery runs, so it does not overwrite the original run
+artifacts.
+
+If you want repaired graphs and comparison tables after those reruns, rebuild a
+repaired experiment directory from the completed recovery sessions:
+
+```bash
+python Testing/run_rebuild_experiment_from_recovery.py \
+  Testing/results/experiments/<experiment_id> \
+  --plan-only
+```
+
+```bash
+python Testing/run_rebuild_experiment_from_recovery.py \
+  Testing/results/experiments/<experiment_id>
+```
+
+This writes a new repaired experiment directory under
+`Testing/results/experiments/` and regenerates the same aggregate artifacts the
+results browser already knows how to inspect.
+
+Inside the results browser, the experiment-analysis section is the primary
+place to compare configurations. It aggregates repetitions into
+experiment-level tables and charts. Use the lower executable/run drill-down
+only when you need to inspect a specific run's raw outputs or failure details.
+
 ## 5. Recommended Under-Budget Study
 
 Inspect the doctor projection for the recommended comparison study:
@@ -214,6 +262,71 @@ This preset is the recommended first decision-useful study because it:
 - covers deceptive cues, packing triage, config recovery, and harder low-leakage behavior recovery
 - stays well below the repo's default experiment-cost ceiling
 - produces readable graphs and aggregate tables without launching the full 21-group sweep
+
+## 6. Focused Decoder Depth Suites
+
+If you want deeper work centered specifically on `config_decoder_test.c`, use
+the maintained decoder-depth presets. The combined preset is the default
+entry point: it runs the stripped and packed-stripped variants together,
+expands the task slate beyond a single recovery prompt, uses `3`
+repetitions, and is trimmed to stay below the current 30 USD planning
+band.
+
+Preflight the combined decoder-depth suite:
+
+```bash
+python Testing/run_launch_preset.py \
+  --preset sweep_decoder_depth_r3 \
+  --judge-model openai:gpt-4o-mini \
+  --preflight-only
+```
+
+Run it:
+
+```bash
+python Testing/run_launch_preset.py \
+  --preset sweep_decoder_depth_r3 \
+  --judge-model openai:gpt-4o-mini
+```
+
+If you want to isolate just one variant, the split presets are still available.
+
+If you want the same decoder scope but a broader set of post-broad-sweep
+follow-ups, use:
+
+```bash
+python Testing/run_launch_preset.py \
+  --preset sweep_decoder_depth_followups_r3 \
+  --judge-model openai:gpt-4o-mini \
+  --preflight-only
+
+python Testing/run_launch_preset.py \
+  --preset sweep_decoder_depth_followups_r3 \
+  --judge-model openai:gpt-4o-mini
+```
+
+This follow-up preset keeps the same decoder tasks and repetitions, keeps the
+baseline aligned with the earlier `sweep_decoder_depth_r3` run, and tests only:
+
+- `worker_prompt_shape:artifact_focused`
+- `worker_prompt_shape:empty`
+- `pipeline_preset:validators_reporter`
+
+Stripped-only:
+
+```bash
+python Testing/run_launch_preset.py \
+  --preset sweep_decoder_depth_stripped_r3 \
+  --judge-model openai:gpt-4o-mini
+```
+
+Packed-only:
+
+```bash
+python Testing/run_launch_preset.py \
+  --preset sweep_decoder_depth_upx_stripped_r3 \
+  --judge-model openai:gpt-4o-mini
+```
 
 If you want the same study shape with lower cost and faster turnaround, use the
 new one-repetition variant instead:

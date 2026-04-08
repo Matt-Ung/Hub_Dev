@@ -135,6 +135,8 @@ def _judge_reasoning_markdown(judge_result: Dict[str, Any] | None) -> str:
         return lines
 
     lines: List[str] = ["# Judge Reasoning", ""]
+    lines.append("> This section contains model-generated judge commentary. Treat the canonical metrics and raw artifacts as the source of truth.")
+    lines.append("")
     lines.append(f"- Status: `{str(judge.get('status') or '')}`")
     lines.append(f"- Pass: `{bool(judge.get('pass'))}`")
     lines.append(f"- Overall score: `{judge.get('overall_score_0_to_100')}`")

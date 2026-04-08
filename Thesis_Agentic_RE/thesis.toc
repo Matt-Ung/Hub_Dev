@@ -1,0 +1,60 @@
+\contentsline {chapter}{Acknowledgements}{iv}{chapter*.1}%
+\contentsline {chapter}{Abstract}{v}{chapter*.2}%
+\contentsline {chapter}{\numberline {1}Introduction}{1}{chapter.1}%
+\contentsline {section}{\numberline {1.1}Problem Motivation}{2}{section.1.1}%
+\contentsline {section}{\numberline {1.2}Research Questions}{2}{section.1.2}%
+\contentsline {section}{\numberline {1.3}Thesis Scope and Expected Contributions}{3}{section.1.3}%
+\contentsline {section}{\numberline {1.4}Thesis Organization}{3}{section.1.4}%
+\contentsline {chapter}{\numberline {2}Background and Problem Setting}{5}{chapter.2}%
+\contentsline {section}{\numberline {2.1}Reverse Engineering as an Evidence-Gathering Problem}{5}{section.2.1}%
+\contentsline {section}{\numberline {2.2}LLM Agents, Tool Use, and Orchestration}{6}{section.2.2}%
+\contentsline {section}{\numberline {2.3}MCP-Style Tool Integration}{6}{section.2.3}%
+\contentsline {section}{\numberline {2.4}Binary Analysis Tooling in Scope}{7}{section.2.4}%
+\contentsline {section}{\numberline {2.5}Problem Formulation for the Thesis}{8}{section.2.5}%
+\contentsline {chapter}{\numberline {3}Related Work}{9}{chapter.3}%
+\contentsline {section}{\numberline {3.1}AI-Assisted Reverse Engineering and Malware Analysis}{9}{section.3.1}%
+\contentsline {section}{\numberline {3.2}Tool-Using Agents and Multi-Agent Orchestration}{10}{section.3.2}%
+\contentsline {section}{\numberline {3.3}Program Analysis Toolchains and Human Analyst Workflows}{10}{section.3.3}%
+\contentsline {section}{\numberline {3.4}Evaluation of Security and Reverse-Engineering Systems}{11}{section.3.4}%
+\contentsline {section}{\numberline {3.5}Thesis Positioning}{11}{section.3.5}%
+\contentsline {chapter}{\numberline {4}System Overview}{13}{chapter.4}%
+\contentsline {section}{\numberline {4.1}End-to-End Workflow}{13}{section.4.1}%
+\contentsline {section}{\numberline {4.2}Planner, Worker, Validator, and Reporter Roles}{14}{section.4.2}%
+\contentsline {section}{\numberline {4.3}Configuration Surfaces}{15}{section.4.3}%
+\contentsline {section}{\numberline {4.4}Shared State and Evidence Flow}{15}{section.4.4}%
+\contentsline {section}{\numberline {4.5}Why This Architecture Fits Reverse Engineering}{16}{section.4.5}%
+\contentsline {chapter}{\numberline {5}Implementation and Tool Integration}{17}{chapter.5}%
+\contentsline {section}{\numberline {5.1}Repository Structure and Execution Path}{17}{section.5.1}%
+\contentsline {section}{\numberline {5.2}Workflow Configuration}{18}{section.5.2}%
+\contentsline {section}{\numberline {5.3}Ghidra Integration}{19}{section.5.3}%
+\contentsline {section}{\numberline {5.4}Supporting Static and Dynamic Tooling}{19}{section.5.4}%
+\contentsline {section}{\numberline {5.5}Artifacts, Bundles, and Provenance}{20}{section.5.5}%
+\contentsline {section}{\numberline {5.6}User-Facing Monitoring and Result Inspection}{21}{section.5.6}%
+\contentsline {chapter}{\numberline {6}Evaluation Methodology and Experimental Design}{22}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Evaluation Goals}{22}{section.6.1}%
+\contentsline {section}{\numberline {6.2}Benchmark Corpus and Task Model}{23}{section.6.2}%
+\contentsline {section}{\numberline {6.3}Single Runs, Sweeps, and Repetitions}{24}{section.6.3}%
+\contentsline {section}{\numberline {6.4}Baselines and Experimental Variables}{24}{section.6.4}%
+\contentsline {section}{\numberline {6.5}Judging and Scoring}{25}{section.6.5}%
+\contentsline {section}{\numberline {6.6}Statistical Treatment and Comparison Strategy}{26}{section.6.6}%
+\contentsline {chapter}{\numberline {7}Results and Analysis}{27}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Headline Comparisons}{27}{section.7.1}%
+\contentsline {section}{\numberline {7.2}Per-Family Analysis}{28}{section.7.2}%
+\contentsline {section}{\numberline {7.3}Config Decoder Depth Study}{28}{section.7.3}%
+\contentsline {section}{\numberline {7.4}Qualitative Failure Analysis}{29}{section.7.4}%
+\contentsline {section}{\numberline {7.5}Interpreting the Results}{29}{section.7.5}%
+\contentsline {chapter}{\numberline {8}Limitations and Threats to Validity}{31}{chapter.8}%
+\contentsline {section}{\numberline {8.1}Benchmark and Corpus Limitations}{31}{section.8.1}%
+\contentsline {section}{\numberline {8.2}Model, Tool, and Infrastructure Variability}{32}{section.8.2}%
+\contentsline {section}{\numberline {8.3}Judging and Measurement Limitations}{32}{section.8.3}%
+\contentsline {section}{\numberline {8.4}Scope of Automation Claims}{33}{section.8.4}%
+\contentsline {section}{\numberline {8.5}Ethical and Operational Considerations}{33}{section.8.5}%
+\contentsline {chapter}{\numberline {9}Conclusion and Future Work}{34}{chapter.9}%
+\contentsline {section}{\numberline {9.1}Conclusion}{34}{section.9.1}%
+\contentsline {section}{\numberline {9.2}Future Work}{35}{section.9.2}%
+\contentsline {chapter}{Bibliography}{36}{chapter*.3}%
+\contentsline {chapter}{Appendix \numberline {A}Supplementary Evaluation Material}{37}{appendix.A}%
+\contentsline {section}{\numberline {A.1}Sample and Task Inventory}{37}{section.A.1}%
+\contentsline {section}{\numberline {A.2}Judge and Prompt Artifacts}{37}{section.A.2}%
+\contentsline {section}{\numberline {A.3}Configuration and Experiment Provenance}{38}{section.A.3}%
+\contentsline {section}{\numberline {A.4}Additional Figures or Tables}{38}{section.A.4}%

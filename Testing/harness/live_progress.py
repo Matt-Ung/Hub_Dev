@@ -166,7 +166,7 @@ _INDEX_HTML = """<!doctype html>
     .detail-panel {
       display: flex;
       flex-direction: column;
-      min-height: 760px;
+      min-height: 0;
     }
     .queue-panel .panel-body,
     .runs-panel .panel-body,
@@ -185,8 +185,8 @@ _INDEX_HTML = """<!doctype html>
       display: flex;
       flex-direction: column;
       gap: 18px;
-      max-height: calc(100vh - 250px);
-      overflow: auto;
+      max-height: none;
+      overflow: visible;
     }
     .kicker {
       display: inline-flex;
@@ -450,6 +450,15 @@ _INDEX_HTML = """<!doctype html>
       background: var(--panel-strong);
       min-width: 0;
     }
+    .surface.collapsible {
+      overflow: hidden;
+    }
+    .surface.collapsible > details {
+      display: block;
+    }
+    .surface.collapsible > details[open] {
+      background: var(--panel-strong);
+    }
     .output-panel {
       display: flex;
       flex-direction: column;
@@ -468,6 +477,39 @@ _INDEX_HTML = """<!doctype html>
       margin-bottom: 6px;
     }
     .surface .title .sub { margin-top: 0; }
+    details > summary.title {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    details > summary.title::-webkit-details-marker {
+      display: none;
+    }
+    .collapse-copy {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    .collapse-indicator {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    details > summary.title .collapse-indicator::before {
+      content: "▸";
+      font-size: 12px;
+      transition: transform 160ms ease;
+    }
+    details[open] > summary.title .collapse-indicator::before {
+      transform: rotate(90deg);
+    }
     .output-panel .title {
       min-height: 84px;
       display: flex;
@@ -485,12 +527,13 @@ _INDEX_HTML = """<!doctype html>
       overflow: auto;
     }
     .output-panel pre {
-      min-height: 320px;
-      max-height: 620px;
-      flex: 1 1 auto;
+      min-height: 220px;
+      max-height: none;
+      flex: 0 0 auto;
     }
     .logs-panel pre {
-      max-height: 320px;
+      max-height: none;
+      min-height: 180px;
       background: #09111f;
       color: #d8e3f5;
     }
@@ -639,12 +682,17 @@ _INDEX_HTML = """<!doctype html>
             <div style="padding: 0 16px 16px;" id="task-list"></div>
           </div>
 
-          <div class="surface logs-panel">
-            <div class="title">
-              <h3>Server Status</h3>
-              <div class="sub" id="server-status-meta">Live server logs and transient status messages.</div>
-            </div>
-            <pre id="server-log"></pre>
+          <div class="surface collapsible logs-panel">
+            <details id="server-status-details">
+              <summary class="title">
+                <div class="collapse-copy">
+                  <h3>Server Status</h3>
+                  <div class="sub" id="server-status-meta">Live server logs and transient status messages.</div>
+                </div>
+                <span class="collapse-indicator">Log view</span>
+              </summary>
+              <pre id="server-log"></pre>
+            </details>
           </div>
         </div>
       </section>

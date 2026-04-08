@@ -19,10 +19,11 @@ import csv
 import json
 import sys
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, pstdev
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from .artifacts import prepare_corpus_bundles
 from .budgeting import (
@@ -252,6 +253,7 @@ def _planned_run_instance(
         "query_variant": str(run_cfg.get("query_variant") or ""),
         "validator_review_level": str(run_cfg.get("validator_review_level") or ""),
         "tool_profile": str(run_cfg.get("tool_profile") or ""),
+        "prefer_upx_unpacked": bool(run_cfg.get("prefer_upx_unpacked")),
         "worker_persona_profile": str(run_cfg.get("worker_persona_profile") or ""),
         "worker_role_prompt_mode": str(run_cfg.get("worker_role_prompt_mode") or ""),
         "subagent_profile": str(run_cfg.get("subagent_profile") or ""),
@@ -532,7 +534,9 @@ def _build_comparison_tables(
                     "judge_pass_rate": None,
                     "scored_result_rate": None,
                     "produced_result_rate": None,
+                    "synthetic_judge_rate": None,
                     "validator_blocked_rate": None,
+                    "worker_assignment_failed_rate": None,
                     "analysis_failure_rate": None,
                     "judge_error_rate": None,
                     "mean_relative_cost_index": None,
@@ -586,7 +590,9 @@ def _build_comparison_tables(
             "judge_pass_rate": aggregate.get("judge_pass_rate"),
             "scored_result_rate": aggregate.get("scored_result_rate"),
             "produced_result_rate": aggregate.get("produced_result_rate"),
+            "synthetic_judge_rate": aggregate.get("synthetic_judge_rate"),
             "validator_blocked_rate": aggregate.get("validator_blocked_rate"),
+            "worker_assignment_failed_rate": aggregate.get("worker_assignment_failed_rate"),
             "analysis_failure_rate": aggregate.get("analysis_failure_rate"),
             "judge_error_rate": aggregate.get("judge_error_rate"),
             "mean_relative_cost_index": aggregate.get("mean_relative_cost_index"),
@@ -903,6 +909,8 @@ def _build_experiment_report(
     lines.append(f"- Run count: `{len(variant_rows)}`")
     if coverage_note:
         lines.append(f"- Coverage note: {coverage_note}")
+    lines.append("- Interpretation note: these tables are descriptive experiment outputs, not automatically causal conclusions.")
+    lines.append("- Statistical note: task-level and difficulty-level significance outputs are exploratory and are not multiple-comparison corrected.")
     lines.append("")
 
     baseline_row = next((row for row in variant_rows if row.get("is_baseline")), None)
@@ -915,12 +923,6 @@ def _build_experiment_report(
         lines.append("## Coverage")
         lines.append("")
         lines.append(f"- {coverage_note}")
-        lines.append("")
-        lines.append(f"- Mean score: `{baseline_row.get('overall_score_mean')}`")
-        lines.append(f"- Task success rate: `{baseline_row.get('task_success_rate')}`")
-        lines.append(f"- Produced result rate: `{baseline_row.get('produced_result_rate')}`")
-        lines.append(f"- Validator blocked rate: `{baseline_row.get('validator_blocked_rate')}`")
-        lines.append(f"- Mean relative cost index: `{baseline_row.get('mean_relative_cost_index')}`")
         lines.append("")
 
     if non_baseline:
@@ -951,16 +953,16 @@ def _build_experiment_report(
         lines.append("## Highlights")
         lines.append("")
         lines.append(
-            f"- Best overall variant: `{best_overall.get('display_label')}` "
-            f"(mean score `{best_overall.get('overall_score_mean')}`, delta `{best_overall.get('score_delta')}`)"
+            f"- Highest observed mean score among complete variants: `{best_overall.get('display_label')}` "
+            f"(mean score `{best_overall.get('overall_score_mean')}`, delta vs comparison baseline `{best_overall.get('score_delta')}`)"
         )
         if cheapest_good:
             lines.append(
-                f"- Cheapest near-baseline-or-better variant: `{cheapest_good.get('display_label')}` "
+                f"- Lowest observed mean cost among variants within 5% of the baseline mean score: `{cheapest_good.get('display_label')}` "
                 f"(cost `{cheapest_good.get('mean_relative_cost_index')}`, score `{cheapest_good.get('overall_score_mean')}`)"
             )
         if strongest_variable:
-            lines.append(f"- Most influential variable by mean absolute score delta: `{strongest_variable}`")
+            lines.append(f"- Largest mean absolute score shift by variable family: `{strongest_variable}`")
         most_blocked = max(highlight_pool, key=lambda row: float(row.get("validator_blocked_rate") or 0.0)) if highlight_pool else None
         if most_blocked and float(most_blocked.get("validator_blocked_rate") or 0.0) > 0.0:
             lines.append(
@@ -971,21 +973,24 @@ def _build_experiment_report(
 
         lines.append("## Variant Summary")
         lines.append("")
-        lines.append("| Variant | Variable | Comparison Baseline | Replicates | Mean Score | Score Delta | Success Rate | Scored Rate | Produced Result Rate | Validator Blocked Rate | Judge Error Rate | Cost Index |")
-        lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("| Variant | Variable | Comparison Baseline | Replicates | Coverage | Mean Score | Score Delta | Success Rate | Scored Rate | Produced Result Rate | Synthetic Judge Rate | Validator Blocked Rate | Worker Failure Rate | Judge Error Rate | Cost Index |")
+        lines.append("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for row in variant_rows:
             lines.append(
-                "| {label} | {variable} | {baseline} | {replicates} | {score} | {delta} | {success} | {scored} | {produced} | {blocked} | {judge_error} | {cost} |".format(
+                "| {label} | {variable} | {baseline} | {replicates} | {coverage} | {score} | {delta} | {success} | {scored} | {produced} | {synthetic} | {blocked} | {worker_failed} | {judge_error} | {cost} |".format(
                     label=row.get("display_label", ""),
                     variable=row.get("changed_variable", "baseline") or "baseline",
                     baseline=row.get("comparison_baseline_label", "baseline") or "baseline",
                     replicates=f"{row.get('completed_repetitions', 0)}/{row.get('planned_repetitions', 0)}",
+                    coverage=row.get("coverage_status", ""),
                     score=row.get("overall_score_mean", ""),
                     delta=row.get("score_delta", ""),
                     success=row.get("task_success_rate", ""),
                     scored=row.get("scored_result_rate", ""),
                     produced=row.get("produced_result_rate", ""),
+                    synthetic=row.get("synthetic_judge_rate", ""),
                     blocked=row.get("validator_blocked_rate", ""),
+                    worker_failed=row.get("worker_assignment_failed_rate", ""),
                     judge_error=row.get("judge_error_rate", ""),
                     cost=row.get("mean_relative_cost_index", ""),
                 )
@@ -1018,569 +1023,38 @@ def _build_experiment_report(
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _value_series(entries: List[Dict[str, Any]], path: str) -> List[float]:
-    parts = path.split(".")
-    values: List[float] = []
-    for entry in entries:
-        value: Any = entry
-        for part in parts:
-            if not isinstance(value, dict):
-                value = None
-                break
-            value = value.get(part)
-        try:
-            if value is not None:
-                values.append(float(value))
-        except Exception:
-            continue
-    return values
-
-
-def run_experiment_sweep(argv: List[str] | None = None) -> None:
+def materialize_experiment_outputs(
+    *,
+    experiment_root: Path,
+    experiment_manifest: Dict[str, Any],
+    run_entries: List[Dict[str, Any]],
+    skip_visuals: bool = False,
+) -> Dict[str, Any]:
     """
-    Function: run_experiment_sweep
+    Function: materialize_experiment_outputs
     Inputs:
-      - argv: optional explicit argument list. When omitted, arguments are read
-        from the process command line.
+      - experiment_root: experiment directory that should receive aggregate
+        comparison outputs.
+      - experiment_manifest: canonical sweep manifest describing planned runs
+        and scope filters.
+      - run_entries: run catalog rows with attached manifests and aggregates.
+      - skip_visuals: when True, skip PNG chart generation.
     Description:
-      Execute the maintained experiment-sweep workflow: plan the baseline-first
-      run matrix, perform preflight, launch child evaluations, and aggregate the
-      experiment-level outputs.
+      Rebuild the experiment-level CSV summaries, drill-down layouts, timing
+      tables, significance reports, and visualization artifacts from an
+      existing set of child-run results.
     Outputs:
-      Returns nothing. Exits with an error when the experiment cannot be run or
-      when required child runs fail.
+      Returns a compact payload describing coverage and written output scope.
     Side Effects:
-      May build binaries, prepare bundles, launch many child processes, start
-      the live-view server, and write experiment artifacts under results/.
+      Overwrites experiment-level summary files under `experiment_root`.
     """
-    parser = argparse.ArgumentParser(description="Run a baseline + one-variable-at-a-time experiment sweep across the binary analysis corpus.")
-    parser.add_argument("--config", default=str(CONFIG_ROOT / "experiment_sweeps.json"))
-    parser.add_argument("--corpus", choices=["prototype", "experimental"], default="")
-    parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict to")
-    parser.add_argument("--task", action="append", default=[], help="Optional task id(s) to restrict to when sample manifests define multiple evaluation tasks")
-    parser.add_argument("--difficulty-filter", action="append", default=[], help="Optional difficulty label(s) to restrict to, e.g. --difficulty-filter medium --difficulty-filter hard")
-    parser.add_argument("--variable", action="append", default=[], help="Optional variable name(s) to restrict the sweep to")
-    parser.add_argument("--label", default="", help="Optional short label for this experiment sweep")
-    parser.add_argument("--meta", action="append", default=[], help="Extra experiment metadata in key=value form")
-    parser.add_argument("--skip-build", action="store_true", help="Reuse existing built binaries")
-    parser.add_argument("--clean-build", action="store_true", help="Run make clean before rebuilding")
-    parser.add_argument("--skip-prepare", action="store_true", help="Reuse existing prepared bundles")
-    parser.add_argument("--skip-cli-tools", action="store_true", help="Skip optional CLI tools during bundle preparation")
-    parser.add_argument("--keep-project", action="store_true", help="Preserve temporary Ghidra projects during headless export")
-    parser.add_argument("--ghidra-install-dir", default="", help="Optional GHIDRA_INSTALL_DIR override")
-    parser.add_argument("--ghidra-headless", default="", help="Optional analyzeHeadless override")
-    parser.add_argument("--judge-model", default="", help="Optional judge model override")
-    parser.add_argument("--enable-budget-guardrails", action="store_true", help="Enable child-run and experiment budget guardrails. When omitted, all budget ceilings are disabled even if config defaults or preset values exist.")
-    parser.add_argument("--max-run-input-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative input tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
-    parser.add_argument("--max-run-output-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative output tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
-    parser.add_argument("--max-run-total-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative total tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
-    parser.add_argument("--max-run-relative-cost-index", type=float, default=None, help="Abort a child run after the current task if relative cost exceeds this ceiling. Only active with --enable-budget-guardrails.")
-    parser.add_argument("--max-run-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for child-run estimated USD cost. Only active with --enable-budget-guardrails.")
-    parser.add_argument("--hard-max-run-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for child-run estimated USD cost. Only active with --enable-budget-guardrails.")
-    parser.add_argument("--max-experiment-relative-cost-index", type=float, default=None, help="Abort the sweep when cumulative relative cost exceeds this ceiling. Only active with --enable-budget-guardrails.")
-    parser.add_argument("--max-experiment-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for projected or cumulative experiment estimated USD cost. Only active with --enable-budget-guardrails.")
-    parser.add_argument("--hard-max-experiment-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for projected or cumulative experiment estimated USD cost. Only active with --enable-budget-guardrails.")
-    parser.add_argument("--timeout-sec", type=int, default=0, help="Optional subprocess timeout in seconds for child runs; 0 disables it")
-    parser.add_argument("--repetitions", type=int, default=0, help="Optional repetition-count override; 0 uses the config default")
-    parser.add_argument("--skip-visuals", action="store_true", help="Skip PNG chart generation")
-    parser.add_argument("--quiet-child-output", action="store_true", help="Do not stream child run status/output while the sweep is running")
-    parser.add_argument("--live-view", action="store_true", help="Start a lightweight local progress monitor that polls the sweep artifacts while runs are executing")
-    parser.add_argument("--plan-only", action="store_true", help="Write the run plan but do not execute it")
-    parser.add_argument("--preflight-only", action="store_true", help="Validate rubric/config/build/bundle readiness and exit before launching child runs")
-    parser.add_argument("--resume", default="", help="Resume a previously started sweep by experiment directory path or experiment id. Skips already-completed runs.")
-    args = parser.parse_args(argv)
-
-    config = _load_experiment_config(Path(args.config))
-    baseline_cfg, planned_runs, config_repetitions = _build_run_plan(config, variable_filters=args.variable, corpus_override=args.corpus)
-    repetitions = max(1, int(args.repetitions or config_repetitions))
-    corpus_name = str(baseline_cfg.get("corpus") or "experimental").strip()
-    corpus = get_corpus_config(corpus_name)
-    manifest = load_sample_manifest(corpus_name)
-    budget_config = resolve_budget_config(
-        enable_budget_guardrails=bool(args.enable_budget_guardrails),
-        max_run_input_tokens=args.max_run_input_tokens,
-        max_run_output_tokens=args.max_run_output_tokens,
-        max_run_total_tokens=args.max_run_total_tokens,
-        max_run_relative_cost_index=args.max_run_relative_cost_index,
-        max_run_estimated_cost_usd=args.max_run_estimated_cost_usd,
-        hard_max_run_estimated_cost_usd=args.hard_max_run_estimated_cost_usd,
-        max_experiment_relative_cost_index=args.max_experiment_relative_cost_index,
-        max_experiment_estimated_cost_usd=args.max_experiment_estimated_cost_usd,
-        hard_max_experiment_estimated_cost_usd=args.hard_max_experiment_estimated_cost_usd,
-    )
-
-    # --resume: reuse an existing experiment directory instead of creating a new one
-    resume_path = str(args.resume or "").strip()
-    prior_run_entries: List[Dict[str, Any]] = []
-    if resume_path:
-        resume_dir = Path(resume_path)
-        if not resume_dir.is_dir():
-            # Treat as experiment_id under RESULTS_ROOT/experiments
-            resume_dir = RESULTS_ROOT / "experiments" / resume_path
-        if not resume_dir.is_dir():
-            raise SystemExit(f"--resume target not found: {resume_path}")
-        catalog_path = resume_dir / "run_catalog.json"
-        if catalog_path.exists():
-            prior_catalog = read_json(catalog_path)
-            prior_run_entries = [
-                entry for entry in (prior_catalog.get("runs") or [])
-                if entry.get("ok") and isinstance(entry.get("aggregate"), dict)
-            ]
-        experiment_root = resume_dir
-    else:
-        experiment_root = ensure_dir(RESULTS_ROOT / "experiments" / build_run_id("sweep", corpus_name, args.label))
-
-    experiment_id = experiment_root.name
+    experiment_root = experiment_root.resolve()
     outputs_root = ensure_dir(experiment_root / "outputs")
-    live_view_dir = ensure_dir(experiment_root / "live_view")
-    live_logs_dir = ensure_dir(live_view_dir / "logs")
-    live_view_server = None
-    live_view_thread = None
-    live_view_url = ""
-
-    selected_samples_for_manifest = list(args.sample) or list(manifest.get("sample_order") or [])
-    experiment_manifest = {
-        "experiment_id": experiment_id,
-        "config_path": str(Path(args.config).resolve()),
-        "corpus": corpus_name,
-        "selected_samples": selected_samples_for_manifest,
-        "selected_tasks": list(args.task),
-        "selected_difficulties": list(args.difficulty_filter),
-        "repetitions": repetitions,
-        "enable_budget_guardrails": bool(args.enable_budget_guardrails),
-        "budget_config": budget_config,
-        "meta": _parse_metadata(args.meta),
-        "baseline_variant_id": "baseline",
-        "planned_runs": planned_runs,
-    }
-    write_json(experiment_root / "experiment_manifest.json", experiment_manifest)
-
-    planned_instances: List[Dict[str, Any]] = []
-    for run_cfg in planned_runs:
-        for repetition_index in range(1, repetitions + 1):
-            planned_instances.append(
-                _planned_run_instance(
-                    experiment_id=experiment_id,
-                    corpus_name=corpus_name,
-                    run_cfg=run_cfg,
-                    repetition_index=repetition_index,
-                    planned_repetitions=repetitions,
-                    live_logs_dir=live_logs_dir if args.live_view else None,
-                )
-            )
-
-    prior_entry_map: Dict[str, Dict[str, Any]] = {
-        _run_instance_key(entry): entry for entry in prior_run_entries if isinstance(entry, dict)
-    }
-    run_entries: List[Dict[str, Any]] = []
-    for planned_entry in planned_instances:
-        existing = prior_entry_map.get(_run_instance_key(planned_entry))
-        if existing:
-            merged = dict(planned_entry)
-            merged.update(existing)
-            if merged.get("ok") is True and isinstance(merged.get("aggregate"), dict):
-                merged["status"] = "completed"
-            elif merged.get("status") not in {"pending", "running", "completed", "failed", "skipped"}:
-                merged["status"] = "pending"
-            run_entries.append(merged)
-        else:
-            run_entries.append(planned_entry)
-    _write_run_catalog(experiment_root, run_entries)
-    run_entry_index: Dict[str, int] = {
-        _run_instance_key(entry): index for index, entry in enumerate(run_entries)
-    }
-
-    if args.live_view:
-        live_view_server, live_view_thread, live_view_url = start_live_view_server(experiment_root)
-        print(f"[live-view] monitor available at {live_view_url}", file=sys.stderr, flush=True)
-        experiment_manifest["live_view_url"] = live_view_url
-        write_json(experiment_root / "experiment_manifest.json", experiment_manifest)
-
-    if args.plan_only:
-        print(json.dumps({"experiment_id": experiment_id, "experiment_root": str(experiment_root), "planned_runs": len(planned_runs), "repetitions": repetitions}, indent=2))
-        return
-
-    sample_paths = list_sample_binaries(
-        corpus_name,
-        selected=args.sample,
-        difficulty_filters=args.difficulty_filter,
-        manifest=manifest,
-    )
-    build_record: Dict[str, Any] = {"skipped": True}
-    if not args.skip_build:
-        build_record = build_corpus(
-            corpus_name,
-            clean_first=args.clean_build,
-            include_gcc=True,
-            timeout_sec=args.timeout_sec,
-        )
-        sample_paths = list_sample_binaries(
-            corpus_name,
-            selected=args.sample,
-            difficulty_filters=args.difficulty_filter,
-            manifest=manifest,
-        )
-    if not sample_paths:
-        raise SystemExit(f"No built sample binaries found for corpus={corpus_name} under {corpus.build_root}")
-    evaluation_tasks = build_evaluation_tasks(
-        corpus_name,
-        sample_paths,
-        manifest=manifest,
-        selected_task_ids=args.task,
-        selected_difficulties=args.difficulty_filter,
-    )
-    if not evaluation_tasks:
-        raise SystemExit(f"No evaluation tasks resolved for corpus={corpus_name}; check the manifest task definitions.")
-
-    bundle_root = ensure_dir(BUNDLE_ROOT / corpus_name)
-    prepare_record: Dict[str, Any] = {"skipped": True}
-    if not args.skip_prepare:
-        prepare_record = prepare_corpus_bundles(
-            corpus_name,
-            sample_paths,
-            manifest.get("samples") or {},
-            output_root=bundle_root,
-            timeout_sec=args.timeout_sec,
-            ghidra_install_dir=args.ghidra_install_dir,
-            ghidra_headless=args.ghidra_headless,
-            skip_cli_tools=args.skip_cli_tools,
-            keep_project=args.keep_project,
-        )
-
-    experiment_manifest["selected_samples"] = [path.name for path in sample_paths]
-    experiment_manifest["selected_task_keys"] = [f"{task.sample_name}::{task.task_id}" for task in evaluation_tasks]
-    write_json(experiment_root / "experiment_manifest.json", experiment_manifest)
-    write_json(experiment_root / "build_record.json", build_record)
-    write_json(experiment_root / "prepare_record.json", prepare_record)
-    python_exec = repo_python_executable()
-
-    preflight_variants: List[Dict[str, Any]] = []
-    for run_cfg in planned_runs:
-        preflight_variants.append(
-            {
-                "variant_id": str(run_cfg.get("variant_id") or ""),
-                "changed_variable": str(run_cfg.get("changed_variable") or ""),
-                "pipeline": str(run_cfg.get("pipeline") or corpus.default_pipeline),
-                "architecture": str(run_cfg.get("architecture") or corpus.default_architecture),
-                "validator_review_level": str(run_cfg.get("validator_review_level") or "default"),
-                "query_variant": str(run_cfg.get("query_variant") or "default"),
-                "worker_role_prompt_mode": str(run_cfg.get("worker_role_prompt_mode") or "default"),
-                "checks": validate_run_configuration(
-                    corpus_name=corpus_name,
-                    sample_paths=sample_paths,
-                    manifest=manifest,
-                    selected_samples=args.sample,
-                    selected_task_ids=args.task,
-                    selected_difficulties=args.difficulty_filter,
-                    pipeline=str(run_cfg.get("pipeline") or corpus.default_pipeline),
-                    architecture=str(run_cfg.get("architecture") or corpus.default_architecture),
-                    query_variant=str(run_cfg.get("query_variant") or "default"),
-                    worker_persona_profile=str(run_cfg.get("worker_persona_profile") or "default"),
-                    worker_role_prompt_mode=str(run_cfg.get("worker_role_prompt_mode") or "default"),
-                    validator_review_level=str(run_cfg.get("validator_review_level") or "default"),
-                    tool_profile=str(run_cfg.get("tool_profile") or "full"),
-                    judge_mode=str(run_cfg.get("judge_mode") or "agent"),
-                    explicit_judge_model=str(args.judge_model or "").strip(),
-                    forced_model=str(run_cfg.get("force_model") or "").strip(),
-                    python_executable=python_exec,
-                    bundle_root=bundle_root,
-                    require_ready_bundles=bool(args.skip_prepare or prepare_record),
-                ),
-            }
-        )
-    preflight_errors = [
-        f"{entry['variant_id']}: {message}"
-        for entry in preflight_variants
-        for message in (entry.get("checks") or {}).get("errors") or []
-    ]
-    preflight_warnings = [
-        f"{entry['variant_id']}: {message}"
-        for entry in preflight_variants
-        for message in (entry.get("checks") or {}).get("warnings") or []
-    ]
-    preflight_report = {
-        "ok": not preflight_errors,
-        "errors": list(dict.fromkeys(preflight_errors)),
-        "warnings": list(dict.fromkeys(preflight_warnings)),
-        "variants": preflight_variants,
-    }
-    if not args.skip_build and not bool(build_record.get("ok")):
-        preflight_report.setdefault("warnings", []).append(
-            "Build step reported failure, but usable binaries for the selected scope were still found. "
-            "This run can continue with existing artifacts, but it is not a clean-rebuild validation. "
-            "See build_record.json for the failing make step."
-        )
-    if not args.skip_prepare and not bool(prepare_record.get("ready_for_analysis", True)):
-        preflight_report.setdefault("warnings", []).append(
-            "Bundle preparation reported issues, but existing bundles were still inspected for readiness. "
-            "See prepare_record.json for the regeneration details."
-        )
-    if not args.skip_visuals:
-        missing_visual_modules: List[str] = []
-        for module_name in ("matplotlib", "pandas"):
-            if not _module_available_in_python(python_exec, module_name):
-                missing_visual_modules.append(module_name)
-        if missing_visual_modules:
-            preflight_report["ok"] = False
-            preflight_report.setdefault("errors", []).append(
-                "Visualization outputs require the following modules in the sweep interpreter: "
-                + ", ".join(missing_visual_modules)
-                + ". Install them or rerun with --skip-visuals."
-            )
-    write_json(experiment_root / "preflight.json", preflight_report)
-
-    # Build a set of (variant_id, replicate_index) pairs already completed in
-    # a prior sweep run so that --resume can skip them.
-    _completed_keys: set[tuple[str, int]] = set()
-    for prior_entry in prior_run_entries:
-        _completed_keys.add((
-            str(prior_entry.get("variant_id") or ""),
-            int(prior_entry.get("replicate_index") or 0),
-        ))
-
-    # Upfront cost projection so the researcher can see the planned spend
-    # before committing to real API calls.
-    total_planned_runs = len(planned_runs) * repetitions
-    skipped_runs = len(_completed_keys)
-    remaining_runs = total_planned_runs - skipped_runs
-    task_count = len(evaluation_tasks)
-    agent_judge_calls = remaining_runs * task_count
-    projected_budget = project_experiment_budget(
-        child_runs=remaining_runs,
-        tasks_per_child_run=task_count,
-        config=budget_config,
-    )
-    projected_budget_status = evaluate_projected_experiment_budget(projected_budget, budget_config)
-    cost_projection = {
-        "total_planned_child_runs": total_planned_runs,
-        "already_completed_runs": skipped_runs,
-        "remaining_child_runs": remaining_runs,
-        "tasks_per_child_run": task_count,
-        "estimated_agent_plus_judge_api_calls": agent_judge_calls,
-        "budget_projection": projected_budget,
-        "budget_projection_status": projected_budget_status,
-        "note": "Each sample-task run includes one analysis call path plus one judge call path. Projected cost values are coarse preflight heuristics, not billing-authoritative estimates.",
-    }
-    write_json(experiment_root / "cost_projection.json", cost_projection)
-
-    import sys as _sys
-    print(
-        f"\n--- Cost Projection ---\n"
-        f"  Planned child runs:        {total_planned_runs}\n"
-        f"  Already completed (resume): {skipped_runs}\n"
-        f"  Remaining child runs:       {remaining_runs}\n"
-        f"  Tasks per child run:        {task_count}\n"
-        f"  Total agent+judge API calls: {agent_judge_calls}\n"
-        f"  ---\n",
-        file=_sys.stderr,
-    )
-
-    if projected_budget_status.get("warnings"):
-        preflight_report.setdefault("warnings", []).extend(
-            [f"budget_projection: {item}" for item in (projected_budget_status.get("warnings") or [])]
-        )
-        write_json(experiment_root / "preflight.json", preflight_report)
-
-    if not projected_budget_status.get("ok"):
-        preflight_report["ok"] = False
-        preflight_report.setdefault("errors", []).extend(
-            [f"budget_projection: {item}" for item in (projected_budget_status.get("exceeded") or [])]
-        )
-        write_json(experiment_root / "preflight.json", preflight_report)
-
-    if args.preflight_only:
-        print(json.dumps({"experiment_id": experiment_id, "experiment_root": str(experiment_root), "preflight_ok": bool(preflight_report.get("ok")), "cost_projection": cost_projection}, indent=2))
-        if not preflight_report.get("ok"):
-            raise SystemExit("Preflight validation failed; see preflight.json for details.")
-        return
-    if not preflight_report.get("ok"):
-        raise SystemExit("Preflight validation failed; see preflight.json for details before launching paid runs.")
-
-    experiment_budget_status: Dict[str, Any] = {
-        "scope": "experiment",
-        "ok": True,
-        "exceeded": [],
-        "warnings": [],
-        "observed": {},
-        "limits": budget_config,
-        "aborted_early": False,
-    }
-    for run_cfg in planned_runs:
-        variant_id = str(run_cfg.get("variant_id") or "variant")
-        variant_name = str(run_cfg.get("variant_name") or variant_id)
-        comparison_baseline_id = str(run_cfg.get("comparison_baseline_id") or "").strip()
-        comparison_baseline_label = str(run_cfg.get("comparison_baseline_label") or "").strip()
-        for repetition_index in range(repetitions):
-            planned_key = f"{variant_id}::r{repetition_index + 1}"
-            catalog_entry = run_entries[run_entry_index[planned_key]]
-            if (variant_id, repetition_index + 1) in _completed_keys:
-                continue
-            label = f"{experiment_id}-{variant_id}-r{repetition_index + 1}"
-            cmd = [
-                python_exec,
-                "Testing/run_evaluation.py",
-                "--corpus",
-                corpus_name,
-                "--skip-build",
-                "--skip-prepare",
-                "--pipeline",
-                str(run_cfg.get("pipeline") or corpus.default_pipeline),
-                "--architecture",
-                str(run_cfg.get("architecture") or corpus.default_architecture),
-                "--query-variant",
-                str(run_cfg.get("query_variant") or "default"),
-                "--subagent-profile",
-                str(run_cfg.get("subagent_profile") or "default"),
-                "--worker-persona-profile",
-                str(run_cfg.get("worker_persona_profile") or "default"),
-                "--worker-role-prompt-mode",
-                str(run_cfg.get("worker_role_prompt_mode") or "default"),
-                "--validator-review-level",
-                str(run_cfg.get("validator_review_level") or "default"),
-                "--tool-profile",
-                str(run_cfg.get("tool_profile") or "full"),
-                "--model-profile",
-                str(run_cfg.get("model_profile") or ""),
-                "--label",
-                label,
-                "--run-id",
-                str(catalog_entry.get("run_id") or ""),
-                "--experiment-id",
-                experiment_id,
-                "--variant-name",
-                variant_name,
-                "--changed-variable",
-                str(run_cfg.get("changed_variable") or ""),
-                "--comparison-baseline-id",
-                comparison_baseline_id,
-                "--comparison-baseline-label",
-                comparison_baseline_label,
-                "--replicate-index",
-                str(repetition_index + 1),
-                "--replicate-count",
-                str(repetitions),
-                "--judge-mode",
-                str(run_cfg.get("judge_mode") or "agent"),
-            ]
-            if int(args.timeout_sec) > 0:
-                cmd.extend(["--timeout-sec", str(int(args.timeout_sec))])
-            if args.judge_model:
-                cmd.extend(["--judge-model", args.judge_model])
-            if args.enable_budget_guardrails:
-                cmd.append("--enable-budget-guardrails")
-            force_model = str(run_cfg.get("force_model") or "").strip()
-            if force_model:
-                cmd.extend(["--force-model", force_model])
-            for sample in args.sample:
-                cmd.extend(["--sample", sample])
-            for task_id in args.task:
-                cmd.extend(["--task", task_id])
-            for difficulty in args.difficulty_filter:
-                cmd.extend(["--difficulty-filter", difficulty])
-            if args.enable_budget_guardrails:
-                if args.max_run_input_tokens is not None:
-                    cmd.extend(["--max-run-input-tokens", str(args.max_run_input_tokens)])
-                if args.max_run_output_tokens is not None:
-                    cmd.extend(["--max-run-output-tokens", str(args.max_run_output_tokens)])
-                if args.max_run_total_tokens is not None:
-                    cmd.extend(["--max-run-total-tokens", str(args.max_run_total_tokens)])
-                if args.max_run_relative_cost_index is not None:
-                    cmd.extend(["--max-run-relative-cost-index", str(args.max_run_relative_cost_index)])
-                if args.max_run_estimated_cost_usd is not None:
-                    cmd.extend(["--max-run-estimated-cost-usd", str(args.max_run_estimated_cost_usd)])
-                if args.hard_max_run_estimated_cost_usd is not None:
-                    cmd.extend(["--hard-max-run-estimated-cost-usd", str(args.hard_max_run_estimated_cost_usd)])
-            cmd.extend(["--meta", f"model_profile={str(run_cfg.get('model_profile') or '')}"])
-            cmd.extend(["--meta", f"experiment_variant_id={variant_id}"])
-
-            child_timeout = int(args.timeout_sec) * max(1, len(evaluation_tasks)) if int(args.timeout_sec) > 0 else None
-            display_label = "baseline" if bool(run_cfg.get("is_baseline")) else (
-                f"{str(run_cfg.get('changed_variable') or '')}:baseline" if bool(run_cfg.get("is_family_baseline"))
-                else f"{str(run_cfg.get('changed_variable') or '')}:{variant_name}"
-            )
-            timeout_label = f"{child_timeout}s" if child_timeout is not None else "disabled"
-            print(
-                f"[sweep] starting {display_label} replicate {repetition_index + 1}/{repetitions} "
-                f"(timeout={timeout_label})",
-                file=sys.stderr,
-                flush=True,
-            )
-            catalog_entry.update(
-                {
-                    "status": "running",
-                    "ok": None,
-                    "command": cmd,
-                    "started_at_epoch": time.time(),
-                    "finished_at_epoch": None,
-                }
-            )
-            _write_run_catalog(experiment_root, run_entries)
-            completed = run_command(
-                cmd,
-                cwd=REPO_ROOT,
-                timeout_sec=child_timeout,
-                stream_output=not args.quiet_child_output,
-                stream_prefix=f"[{display_label}] ",
-                stream_heartbeat_sec=30,
-                stream_capture_path=Path(str(catalog_entry.get("log_path") or "")).expanduser()
-                if str(catalog_entry.get("log_path") or "").strip()
-                else None,
-            )
-            entry = catalog_entry
-            entry.update(
-                {
-                    "ok": bool(completed.get("ok")),
-                    "status": "completed" if bool(completed.get("ok")) else "failed",
-                    "stdout": str(completed.get("stdout") or ""),
-                    "stderr": str(completed.get("stderr") or ""),
-                    "returncode": completed.get("returncode"),
-                    "error": str(completed.get("error") or "").strip(),
-                    "finished_at_epoch": time.time(),
-                }
-            )
-            if completed.get("ok"):
-                try:
-                    payload = _parse_completion_payload(entry["stdout"])
-                    run_dir = Path(str(payload.get("run_dir") or "")).resolve()
-                    aggregate = read_json(run_dir / "aggregate.json")
-                    run_manifest = read_json(run_dir / "run_manifest.json")
-                    entry.update(
-                        {
-                            "run_id": str(payload.get("run_id") or ""),
-                            "run_dir": str(run_dir),
-                            "aggregate": aggregate,
-                            "run_manifest": run_manifest,
-                        }
-                    )
-                except Exception as exc:
-                    entry["ok"] = False
-                    entry["status"] = "failed"
-                    entry["error"] = f"{type(exc).__name__}: {exc}"
-            print(
-                f"[sweep] finished {entry['display_label']} replicate {repetition_index + 1}/{repetitions} "
-                f"ok={entry.get('ok')}",
-                file=sys.stderr,
-                flush=True,
-            )
-            _write_run_catalog(experiment_root, run_entries)
-            if entry.get("ok") and isinstance(entry.get("aggregate"), dict):
-                successful_records: List[Dict[str, Any]] = []
-                for existing in run_entries:
-                    aggregate = existing.get("aggregate") if isinstance(existing.get("aggregate"), dict) else {}
-                    successful_records.extend(list(aggregate.get("records") or []))
-                experiment_budget_summary = summarize_record_budget(successful_records)
-                experiment_budget_status = evaluate_budget_status(experiment_budget_summary, budget_config, scope="experiment")
-                experiment_budget_status["aborted_early"] = False
-                write_json(experiment_root / "budget_status.json", experiment_budget_status)
-                if not experiment_budget_status.get("ok") and bool(budget_config.get("abort_experiment_on_budget_exceeded", True)):
-                    experiment_budget_status["aborted_early"] = True
-                    write_json(experiment_root / "budget_status.json", experiment_budget_status)
-                    break
-        if experiment_budget_status.get("aborted_early"):
-            break
+    experiment_id = str(experiment_manifest.get("experiment_id") or experiment_root.name)
+    planned_runs = list(experiment_manifest.get("planned_runs") or [])
+    repetitions = int(experiment_manifest.get("repetitions") or 1)
 
     _write_run_catalog(experiment_root, run_entries)
-    write_json(experiment_root / "budget_status.json", experiment_budget_status)
 
     grouped_all_runs: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for entry in run_entries:
@@ -1826,7 +1300,7 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
 
     significance_payload = dict(significance_result.get("payload") or {})
 
-    if not args.skip_visuals:
+    if not skip_visuals:
         generate_experiment_visuals(
             outputs_root,
             variant_rows=variant_rows,
@@ -1882,6 +1356,708 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
             title="Partial Coverage Report",
             coverage_note="These rows include incomplete or interrupted comparison groups and are excluded from the main aggregate outputs.",
         )
+
+    return {
+        "experiment_id": experiment_id,
+        "run_count": len(run_entries),
+        "successful_run_count": len(successful_runs),
+        "complete_variant_ids": sorted(complete_variant_ids),
+        "partial_variant_ids": sorted(partial_variant_ids),
+    }
+
+
+def _value_series(entries: List[Dict[str, Any]], path: str) -> List[float]:
+    parts = path.split(".")
+    values: List[float] = []
+    for entry in entries:
+        value: Any = entry
+        for part in parts:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(part)
+        try:
+            if value is not None:
+                values.append(float(value))
+        except Exception:
+            continue
+    return values
+
+
+def _invoke_child_run_spec(
+    spec: Dict[str, Any],
+    *,
+    runner: Callable[..., Dict[str, Any]] = run_command,
+) -> Dict[str, Any]:
+    stream_capture_path = spec.get("stream_capture_path")
+    capture_path = (
+        Path(str(stream_capture_path)).expanduser()
+        if str(stream_capture_path or "").strip()
+        else None
+    )
+    cwd_value = spec.get("cwd")
+    cwd = Path(str(cwd_value)).expanduser() if cwd_value else None
+    return runner(
+        list(spec.get("cmd") or []),
+        cwd=cwd,
+        timeout_sec=spec.get("timeout_sec"),
+        stream_output=bool(spec.get("stream_output")),
+        stream_prefix=str(spec.get("stream_prefix") or ""),
+        stream_heartbeat_sec=int(spec.get("stream_heartbeat_sec") or 30),
+        stream_capture_path=capture_path,
+    )
+
+
+def _execute_child_run_specs(
+    child_specs: List[Dict[str, Any]],
+    *,
+    max_concurrent: int,
+    runner: Callable[..., Dict[str, Any]] = run_command,
+    on_launch: Callable[[Dict[str, Any]], None] | None = None,
+    on_complete: Callable[[Dict[str, Any], Dict[str, Any]], bool | None] | None = None,
+) -> None:
+    concurrency = max(1, int(max_concurrent or 1))
+    allow_new_launches = True
+
+    if concurrency <= 1:
+        for spec in child_specs:
+            if on_launch is not None:
+                on_launch(spec)
+            completed = _invoke_child_run_spec(spec, runner=runner)
+            if on_complete is not None and on_complete(spec, completed) is False:
+                break
+        return
+
+    future_to_spec: Dict[Any, Dict[str, Any]] = {}
+    next_index = 0
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sweep-child") as executor:
+        while next_index < len(child_specs) or future_to_spec:
+            while allow_new_launches and next_index < len(child_specs) and len(future_to_spec) < concurrency:
+                spec = child_specs[next_index]
+                next_index += 1
+                if on_launch is not None:
+                    on_launch(spec)
+                future = executor.submit(_invoke_child_run_spec, spec, runner=runner)
+                future_to_spec[future] = spec
+
+            if not future_to_spec:
+                break
+
+            completed_futures, _ = wait(list(future_to_spec.keys()), return_when=FIRST_COMPLETED)
+            for future in completed_futures:
+                spec = future_to_spec.pop(future)
+                try:
+                    completed = future.result()
+                except Exception as exc:
+                    completed = {
+                        "ok": False,
+                        "returncode": None,
+                        "command": list(spec.get("cmd") or []),
+                        "stdout": "",
+                        "stderr": "",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                if on_complete is not None and on_complete(spec, completed) is False:
+                    allow_new_launches = False
+
+
+def run_experiment_sweep(argv: List[str] | None = None) -> None:
+    """
+    Function: run_experiment_sweep
+    Inputs:
+      - argv: optional explicit argument list. When omitted, arguments are read
+        from the process command line.
+    Description:
+      Execute the maintained experiment-sweep workflow: plan the baseline-first
+      run matrix, perform preflight, launch child evaluations, and aggregate the
+      experiment-level outputs.
+    Outputs:
+      Returns nothing. Exits with an error when the experiment cannot be run or
+      when required child runs fail.
+    Side Effects:
+      May build binaries, prepare bundles, launch many child processes, start
+      the live-view server, and write experiment artifacts under results/.
+    """
+    parser = argparse.ArgumentParser(description="Run a baseline + one-variable-at-a-time experiment sweep across the binary analysis corpus.")
+    parser.add_argument("--config", default=str(CONFIG_ROOT / "experiment_sweeps.json"))
+    parser.add_argument("--corpus", choices=["prototype", "experimental"], default="")
+    parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict to")
+    parser.add_argument("--task", action="append", default=[], help="Optional task id(s) to restrict to when sample manifests define multiple evaluation tasks")
+    parser.add_argument("--difficulty-filter", action="append", default=[], help="Optional difficulty label(s) to restrict to, e.g. --difficulty-filter medium --difficulty-filter hard")
+    parser.add_argument("--variable", action="append", default=[], help="Optional variable name(s) to restrict the sweep to")
+    parser.add_argument("--label", default="", help="Optional short label for this experiment sweep")
+    parser.add_argument("--meta", action="append", default=[], help="Extra experiment metadata in key=value form")
+    parser.add_argument("--skip-build", action="store_true", help="Reuse existing built binaries")
+    parser.add_argument("--clean-build", action="store_true", help="Run make clean before rebuilding")
+    parser.add_argument("--skip-prepare", action="store_true", help="Reuse existing prepared bundles")
+    parser.add_argument("--skip-cli-tools", action="store_true", help="Skip optional CLI tools during bundle preparation")
+    parser.add_argument("--keep-project", action="store_true", help="Preserve temporary Ghidra projects during headless export")
+    parser.add_argument("--ghidra-install-dir", default="", help="Optional GHIDRA_INSTALL_DIR override")
+    parser.add_argument("--ghidra-headless", default="", help="Optional analyzeHeadless override")
+    parser.add_argument("--prefer-unpacked-upx", action="store_true", help="When a sample is recognized as UPX-packed, build a derived unpacked bundle and continue downstream analysis against it. Falls back to the original bundle if unpacking fails.")
+    parser.add_argument("--task-failure-retries", type=int, default=0, help="Retry retryable sample-task failures this many times after the first attempt inside each child run.")
+    parser.add_argument("--judge-model", default="", help="Optional judge model override")
+    parser.add_argument("--enable-budget-guardrails", action="store_true", help="Enable child-run and experiment budget guardrails. When omitted, all budget ceilings are disabled even if config defaults or preset values exist.")
+    parser.add_argument("--max-run-input-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative input tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-output-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative output tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-total-tokens", type=int, default=None, help="Abort a child run after the current task if cumulative total tokens exceed this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-relative-cost-index", type=float, default=None, help="Abort a child run after the current task if relative cost exceeds this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-run-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for child-run estimated USD cost. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--hard-max-run-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for child-run estimated USD cost. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-experiment-relative-cost-index", type=float, default=None, help="Abort the sweep when cumulative relative cost exceeds this ceiling. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--max-experiment-estimated-cost-usd", type=float, default=None, help="Advisory warning threshold for projected or cumulative experiment estimated USD cost. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--hard-max-experiment-estimated-cost-usd", type=float, default=None, help="Optional explicit hard-stop ceiling for projected or cumulative experiment estimated USD cost. Only active with --enable-budget-guardrails.")
+    parser.add_argument("--timeout-sec", type=int, default=0, help="Optional subprocess timeout in seconds for child runs; 0 disables it")
+    parser.add_argument("--repetitions", type=int, default=0, help="Optional repetition-count override; 0 uses the config default")
+    parser.add_argument("--max-concurrent-repetitions", type=int, default=1, help="Maximum number of child repetitions for the same planned configuration to execute at once. Default is 1 (sequential).")
+    parser.add_argument("--skip-visuals", action="store_true", help="Skip PNG chart generation")
+    parser.add_argument("--quiet-child-output", action="store_true", help="Do not stream child run status/output while the sweep is running")
+    parser.add_argument("--live-view", action="store_true", help="Start a lightweight local progress monitor that polls the sweep artifacts while runs are executing")
+    parser.add_argument("--plan-only", action="store_true", help="Write the run plan but do not execute it")
+    parser.add_argument("--preflight-only", action="store_true", help="Validate rubric/config/build/bundle readiness and exit before launching child runs")
+    parser.add_argument("--resume", default="", help="Resume a previously started sweep by experiment directory path or experiment id. Skips already-completed runs.")
+    args = parser.parse_args(argv)
+
+    config = _load_experiment_config(Path(args.config))
+    baseline_cfg, planned_runs, config_repetitions = _build_run_plan(config, variable_filters=args.variable, corpus_override=args.corpus)
+    repetitions = max(1, int(args.repetitions or config_repetitions))
+    corpus_name = str(baseline_cfg.get("corpus") or "experimental").strip()
+    corpus = get_corpus_config(corpus_name)
+    manifest = load_sample_manifest(corpus_name)
+    budget_config = resolve_budget_config(
+        enable_budget_guardrails=bool(args.enable_budget_guardrails),
+        max_run_input_tokens=args.max_run_input_tokens,
+        max_run_output_tokens=args.max_run_output_tokens,
+        max_run_total_tokens=args.max_run_total_tokens,
+        max_run_relative_cost_index=args.max_run_relative_cost_index,
+        max_run_estimated_cost_usd=args.max_run_estimated_cost_usd,
+        hard_max_run_estimated_cost_usd=args.hard_max_run_estimated_cost_usd,
+        max_experiment_relative_cost_index=args.max_experiment_relative_cost_index,
+        max_experiment_estimated_cost_usd=args.max_experiment_estimated_cost_usd,
+        hard_max_experiment_estimated_cost_usd=args.hard_max_experiment_estimated_cost_usd,
+    )
+
+    # --resume: reuse an existing experiment directory instead of creating a new one
+    resume_path = str(args.resume or "").strip()
+    prior_run_entries: List[Dict[str, Any]] = []
+    if resume_path:
+        resume_dir = Path(resume_path)
+        if not resume_dir.is_dir():
+            # Treat as experiment_id under RESULTS_ROOT/experiments
+            resume_dir = RESULTS_ROOT / "experiments" / resume_path
+        if not resume_dir.is_dir():
+            raise SystemExit(f"--resume target not found: {resume_path}")
+        catalog_path = resume_dir / "run_catalog.json"
+        if catalog_path.exists():
+            prior_catalog = read_json(catalog_path)
+            prior_run_entries = [
+                entry for entry in (prior_catalog.get("runs") or [])
+                if entry.get("ok") and isinstance(entry.get("aggregate"), dict)
+            ]
+        experiment_root = resume_dir
+    else:
+        experiment_root = ensure_dir(RESULTS_ROOT / "experiments" / build_run_id("sweep", corpus_name, args.label))
+
+    experiment_id = experiment_root.name
+    outputs_root = ensure_dir(experiment_root / "outputs")
+    live_view_dir = ensure_dir(experiment_root / "live_view")
+    live_logs_dir = ensure_dir(live_view_dir / "logs")
+    live_view_server = None
+    live_view_thread = None
+    live_view_url = ""
+
+    selected_samples_for_manifest = list(args.sample) or list(manifest.get("sample_order") or [])
+    manifest_planned_runs = [
+        dict(run_cfg, prefer_upx_unpacked=True) if args.prefer_unpacked_upx else dict(run_cfg)
+        for run_cfg in planned_runs
+    ]
+    experiment_manifest = {
+        "experiment_id": experiment_id,
+        "config_path": str(Path(args.config).resolve()),
+        "corpus": corpus_name,
+        "selected_samples": selected_samples_for_manifest,
+        "selected_tasks": list(args.task),
+        "selected_difficulties": list(args.difficulty_filter),
+        "repetitions": repetitions,
+        "max_concurrent_repetitions": max(1, int(args.max_concurrent_repetitions or 1)),
+        "enable_budget_guardrails": bool(args.enable_budget_guardrails),
+        "prefer_upx_unpacked": bool(args.prefer_unpacked_upx),
+        "budget_config": budget_config,
+        "meta": _parse_metadata(args.meta),
+        "baseline_variant_id": "baseline",
+        "planned_runs": manifest_planned_runs,
+    }
+    write_json(experiment_root / "experiment_manifest.json", experiment_manifest)
+
+    planned_instances: List[Dict[str, Any]] = []
+    for run_cfg in planned_runs:
+        effective_run_cfg = dict(run_cfg)
+        if args.prefer_unpacked_upx:
+            effective_run_cfg["prefer_upx_unpacked"] = True
+        for repetition_index in range(1, repetitions + 1):
+            planned_instances.append(
+                _planned_run_instance(
+                    experiment_id=experiment_id,
+                    corpus_name=corpus_name,
+                    run_cfg=effective_run_cfg,
+                    repetition_index=repetition_index,
+                    planned_repetitions=repetitions,
+                    live_logs_dir=live_logs_dir if args.live_view else None,
+                )
+            )
+
+    prior_entry_map: Dict[str, Dict[str, Any]] = {
+        _run_instance_key(entry): entry for entry in prior_run_entries if isinstance(entry, dict)
+    }
+    run_entries: List[Dict[str, Any]] = []
+    for planned_entry in planned_instances:
+        existing = prior_entry_map.get(_run_instance_key(planned_entry))
+        if existing:
+            merged = dict(planned_entry)
+            merged.update(existing)
+            if merged.get("ok") is True and isinstance(merged.get("aggregate"), dict):
+                merged["status"] = "completed"
+            elif merged.get("status") not in {"pending", "running", "completed", "failed", "skipped"}:
+                merged["status"] = "pending"
+            run_entries.append(merged)
+        else:
+            run_entries.append(planned_entry)
+    _write_run_catalog(experiment_root, run_entries)
+    run_entry_index: Dict[str, int] = {
+        _run_instance_key(entry): index for index, entry in enumerate(run_entries)
+    }
+
+    if args.live_view:
+        live_view_server, live_view_thread, live_view_url = start_live_view_server(experiment_root)
+        print(f"[live-view] monitor available at {live_view_url}", file=sys.stderr, flush=True)
+        experiment_manifest["live_view_url"] = live_view_url
+        write_json(experiment_root / "experiment_manifest.json", experiment_manifest)
+
+    if args.plan_only:
+        print(json.dumps({"experiment_id": experiment_id, "experiment_root": str(experiment_root), "planned_runs": len(planned_runs), "repetitions": repetitions}, indent=2))
+        return
+
+    sample_paths = list_sample_binaries(
+        corpus_name,
+        selected=args.sample,
+        difficulty_filters=args.difficulty_filter,
+        manifest=manifest,
+    )
+    build_record: Dict[str, Any] = {"skipped": True}
+    if not args.skip_build:
+        build_record = build_corpus(
+            corpus_name,
+            clean_first=args.clean_build,
+            include_gcc=True,
+            timeout_sec=args.timeout_sec,
+        )
+        sample_paths = list_sample_binaries(
+            corpus_name,
+            selected=args.sample,
+            difficulty_filters=args.difficulty_filter,
+            manifest=manifest,
+        )
+    if not sample_paths:
+        raise SystemExit(f"No built sample binaries found for corpus={corpus_name} under {corpus.build_root}")
+    evaluation_tasks = build_evaluation_tasks(
+        corpus_name,
+        sample_paths,
+        manifest=manifest,
+        selected_task_ids=args.task,
+        selected_difficulties=args.difficulty_filter,
+    )
+    if not evaluation_tasks:
+        raise SystemExit(f"No evaluation tasks resolved for corpus={corpus_name}; check the manifest task definitions.")
+
+    bundle_root = ensure_dir(BUNDLE_ROOT / corpus_name)
+    prepare_record: Dict[str, Any] = {"skipped": True}
+    if not args.skip_prepare:
+        prepare_record = prepare_corpus_bundles(
+            corpus_name,
+            sample_paths,
+            manifest.get("samples") or {},
+            output_root=bundle_root,
+            timeout_sec=args.timeout_sec,
+            ghidra_install_dir=args.ghidra_install_dir,
+            ghidra_headless=args.ghidra_headless,
+            skip_cli_tools=args.skip_cli_tools,
+            keep_project=args.keep_project,
+        )
+
+    experiment_manifest["selected_samples"] = [path.name for path in sample_paths]
+    experiment_manifest["selected_task_keys"] = [f"{task.sample_name}::{task.task_id}" for task in evaluation_tasks]
+    write_json(experiment_root / "experiment_manifest.json", experiment_manifest)
+    write_json(experiment_root / "build_record.json", build_record)
+    write_json(experiment_root / "prepare_record.json", prepare_record)
+    python_exec = repo_python_executable()
+
+    preflight_variants: List[Dict[str, Any]] = []
+    for run_cfg in planned_runs:
+        preflight_variants.append(
+            {
+                "variant_id": str(run_cfg.get("variant_id") or ""),
+                "changed_variable": str(run_cfg.get("changed_variable") or ""),
+                "pipeline": str(run_cfg.get("pipeline") or corpus.default_pipeline),
+                "architecture": str(run_cfg.get("architecture") or corpus.default_architecture),
+                "validator_review_level": str(run_cfg.get("validator_review_level") or "default"),
+                "query_variant": str(run_cfg.get("query_variant") or "default"),
+                "worker_role_prompt_mode": str(run_cfg.get("worker_role_prompt_mode") or "default"),
+                "prefer_upx_unpacked": bool(args.prefer_unpacked_upx or run_cfg.get("prefer_upx_unpacked")),
+                "checks": validate_run_configuration(
+                    corpus_name=corpus_name,
+                    sample_paths=sample_paths,
+                    manifest=manifest,
+                    selected_samples=args.sample,
+                    selected_task_ids=args.task,
+                    selected_difficulties=args.difficulty_filter,
+                    pipeline=str(run_cfg.get("pipeline") or corpus.default_pipeline),
+                    architecture=str(run_cfg.get("architecture") or corpus.default_architecture),
+                    query_variant=str(run_cfg.get("query_variant") or "default"),
+                    worker_persona_profile=str(run_cfg.get("worker_persona_profile") or "default"),
+                    worker_role_prompt_mode=str(run_cfg.get("worker_role_prompt_mode") or "default"),
+                    validator_review_level=str(run_cfg.get("validator_review_level") or "default"),
+                    tool_profile=str(run_cfg.get("tool_profile") or "full"),
+                    prefer_upx_unpacked=bool(args.prefer_unpacked_upx or run_cfg.get("prefer_upx_unpacked")),
+                    ghidra_install_dir=str(args.ghidra_install_dir or ""),
+                    ghidra_headless=str(args.ghidra_headless or ""),
+                    judge_mode=str(run_cfg.get("judge_mode") or "agent"),
+                    explicit_judge_model=str(args.judge_model or "").strip(),
+                    forced_model=str(run_cfg.get("force_model") or "").strip(),
+                    python_executable=python_exec,
+                    bundle_root=bundle_root,
+                    require_ready_bundles=bool(args.skip_prepare or prepare_record),
+                ),
+            }
+        )
+    preflight_errors = [
+        f"{entry['variant_id']}: {message}"
+        for entry in preflight_variants
+        for message in (entry.get("checks") or {}).get("errors") or []
+    ]
+    preflight_warnings = [
+        f"{entry['variant_id']}: {message}"
+        for entry in preflight_variants
+        for message in (entry.get("checks") or {}).get("warnings") or []
+    ]
+    preflight_report = {
+        "ok": not preflight_errors,
+        "errors": list(dict.fromkeys(preflight_errors)),
+        "warnings": list(dict.fromkeys(preflight_warnings)),
+        "variants": preflight_variants,
+    }
+    if not args.skip_build and not bool(build_record.get("ok")):
+        preflight_report.setdefault("warnings", []).append(
+            "Build step reported failure, but usable binaries for the selected scope were still found. "
+            "This run can continue with existing artifacts, but it is not a clean-rebuild validation. "
+            "See build_record.json for the failing make step."
+        )
+    if not args.skip_prepare and not bool(prepare_record.get("ready_for_analysis", True)):
+        preflight_report.setdefault("warnings", []).append(
+            "Bundle preparation reported issues, but existing bundles were still inspected for readiness. "
+            "See prepare_record.json for the regeneration details."
+        )
+    if not args.skip_visuals:
+        missing_visual_modules: List[str] = []
+        for module_name in ("matplotlib", "pandas"):
+            if not _module_available_in_python(python_exec, module_name):
+                missing_visual_modules.append(module_name)
+        if missing_visual_modules:
+            preflight_report["ok"] = False
+            preflight_report.setdefault("errors", []).append(
+                "Visualization outputs require the following modules in the sweep interpreter: "
+                + ", ".join(missing_visual_modules)
+                + ". Install them or rerun with --skip-visuals."
+            )
+    write_json(experiment_root / "preflight.json", preflight_report)
+
+    # Build a set of (variant_id, replicate_index) pairs already completed in
+    # a prior sweep run so that --resume can skip them.
+    _completed_keys: set[tuple[str, int]] = set()
+    for prior_entry in prior_run_entries:
+        _completed_keys.add((
+            str(prior_entry.get("variant_id") or ""),
+            int(prior_entry.get("replicate_index") or 0),
+        ))
+
+    # Upfront cost projection so the researcher can see the planned spend
+    # before committing to real API calls.
+    total_planned_runs = len(planned_runs) * repetitions
+    skipped_runs = len(_completed_keys)
+    remaining_runs = total_planned_runs - skipped_runs
+    task_count = len(evaluation_tasks)
+    agent_judge_calls = remaining_runs * task_count
+    projected_budget = project_experiment_budget(
+        child_runs=remaining_runs,
+        tasks_per_child_run=task_count,
+        config=budget_config,
+    )
+    projected_budget_status = evaluate_projected_experiment_budget(projected_budget, budget_config)
+    cost_projection = {
+        "total_planned_child_runs": total_planned_runs,
+        "already_completed_runs": skipped_runs,
+        "remaining_child_runs": remaining_runs,
+        "tasks_per_child_run": task_count,
+        "estimated_agent_plus_judge_api_calls": agent_judge_calls,
+        "budget_projection": projected_budget,
+        "budget_projection_status": projected_budget_status,
+        "note": "Each sample-task run includes one analysis call path plus one judge call path. Projected cost values are coarse preflight heuristics, not billing-authoritative estimates.",
+    }
+    write_json(experiment_root / "cost_projection.json", cost_projection)
+
+    import sys as _sys
+    print(
+        f"\n--- Cost Projection ---\n"
+        f"  Planned child runs:        {total_planned_runs}\n"
+        f"  Already completed (resume): {skipped_runs}\n"
+        f"  Remaining child runs:       {remaining_runs}\n"
+        f"  Tasks per child run:        {task_count}\n"
+        f"  Total agent+judge API calls: {agent_judge_calls}\n"
+        f"  ---\n",
+        file=_sys.stderr,
+    )
+
+    if projected_budget_status.get("warnings"):
+        preflight_report.setdefault("warnings", []).extend(
+            [f"budget_projection: {item}" for item in (projected_budget_status.get("warnings") or [])]
+        )
+        write_json(experiment_root / "preflight.json", preflight_report)
+
+    if not projected_budget_status.get("ok"):
+        preflight_report["ok"] = False
+        preflight_report.setdefault("errors", []).extend(
+            [f"budget_projection: {item}" for item in (projected_budget_status.get("exceeded") or [])]
+        )
+        write_json(experiment_root / "preflight.json", preflight_report)
+
+    if args.preflight_only:
+        print(json.dumps({"experiment_id": experiment_id, "experiment_root": str(experiment_root), "preflight_ok": bool(preflight_report.get("ok")), "cost_projection": cost_projection}, indent=2))
+        if not preflight_report.get("ok"):
+            raise SystemExit("Preflight validation failed; see preflight.json for details.")
+        return
+    if not preflight_report.get("ok"):
+        raise SystemExit("Preflight validation failed; see preflight.json for details before launching paid runs.")
+
+    experiment_budget_status: Dict[str, Any] = {
+        "scope": "experiment",
+        "ok": True,
+        "exceeded": [],
+        "warnings": [],
+        "observed": {},
+        "limits": budget_config,
+        "aborted_early": False,
+    }
+    max_concurrent_repetitions = max(1, int(args.max_concurrent_repetitions or 1))
+    for run_cfg in planned_runs:
+        variant_id = str(run_cfg.get("variant_id") or "variant")
+        variant_name = str(run_cfg.get("variant_name") or variant_id)
+        comparison_baseline_id = str(run_cfg.get("comparison_baseline_id") or "").strip()
+        comparison_baseline_label = str(run_cfg.get("comparison_baseline_label") or "").strip()
+        child_specs: List[Dict[str, Any]] = []
+        for repetition_index in range(repetitions):
+            planned_key = f"{variant_id}::r{repetition_index + 1}"
+            catalog_entry = run_entries[run_entry_index[planned_key]]
+            if (variant_id, repetition_index + 1) in _completed_keys:
+                continue
+            label = f"{experiment_id}-{variant_id}-r{repetition_index + 1}"
+            cmd = [
+                python_exec,
+                "Testing/run_evaluation.py",
+                "--corpus",
+                corpus_name,
+                "--skip-build",
+                "--skip-prepare",
+                "--pipeline",
+                str(run_cfg.get("pipeline") or corpus.default_pipeline),
+                "--architecture",
+                str(run_cfg.get("architecture") or corpus.default_architecture),
+                "--query-variant",
+                str(run_cfg.get("query_variant") or "default"),
+                "--subagent-profile",
+                str(run_cfg.get("subagent_profile") or "default"),
+                "--worker-persona-profile",
+                str(run_cfg.get("worker_persona_profile") or "default"),
+                "--worker-role-prompt-mode",
+                str(run_cfg.get("worker_role_prompt_mode") or "default"),
+                "--validator-review-level",
+                str(run_cfg.get("validator_review_level") or "default"),
+                "--tool-profile",
+                str(run_cfg.get("tool_profile") or "full"),
+                "--model-profile",
+                str(run_cfg.get("model_profile") or ""),
+                "--label",
+                label,
+                "--run-id",
+                str(catalog_entry.get("run_id") or ""),
+                "--experiment-id",
+                experiment_id,
+                "--variant-name",
+                variant_name,
+                "--changed-variable",
+                str(run_cfg.get("changed_variable") or ""),
+                "--comparison-baseline-id",
+                comparison_baseline_id,
+                "--comparison-baseline-label",
+                comparison_baseline_label,
+                "--replicate-index",
+                str(repetition_index + 1),
+                "--replicate-count",
+                str(repetitions),
+                "--judge-mode",
+                str(run_cfg.get("judge_mode") or "agent"),
+            ]
+            if bool(args.prefer_unpacked_upx or run_cfg.get("prefer_upx_unpacked")):
+                cmd.append("--prefer-unpacked-upx")
+            if int(args.task_failure_retries or 0) > 0:
+                cmd.extend(["--task-failure-retries", str(int(args.task_failure_retries))])
+            if int(args.timeout_sec) > 0:
+                cmd.extend(["--timeout-sec", str(int(args.timeout_sec))])
+            if str(args.ghidra_install_dir or "").strip():
+                cmd.extend(["--ghidra-install-dir", str(args.ghidra_install_dir).strip()])
+            if str(args.ghidra_headless or "").strip():
+                cmd.extend(["--ghidra-headless", str(args.ghidra_headless).strip()])
+            if args.judge_model:
+                cmd.extend(["--judge-model", args.judge_model])
+            if args.enable_budget_guardrails:
+                cmd.append("--enable-budget-guardrails")
+            force_model = str(run_cfg.get("force_model") or "").strip()
+            if force_model:
+                cmd.extend(["--force-model", force_model])
+            for sample in args.sample:
+                cmd.extend(["--sample", sample])
+            for task_id in args.task:
+                cmd.extend(["--task", task_id])
+            for difficulty in args.difficulty_filter:
+                cmd.extend(["--difficulty-filter", difficulty])
+            if args.enable_budget_guardrails:
+                if args.max_run_input_tokens is not None:
+                    cmd.extend(["--max-run-input-tokens", str(args.max_run_input_tokens)])
+                if args.max_run_output_tokens is not None:
+                    cmd.extend(["--max-run-output-tokens", str(args.max_run_output_tokens)])
+                if args.max_run_total_tokens is not None:
+                    cmd.extend(["--max-run-total-tokens", str(args.max_run_total_tokens)])
+                if args.max_run_relative_cost_index is not None:
+                    cmd.extend(["--max-run-relative-cost-index", str(args.max_run_relative_cost_index)])
+                if args.max_run_estimated_cost_usd is not None:
+                    cmd.extend(["--max-run-estimated-cost-usd", str(args.max_run_estimated_cost_usd)])
+                if args.hard_max_run_estimated_cost_usd is not None:
+                    cmd.extend(["--hard-max-run-estimated-cost-usd", str(args.hard_max_run_estimated_cost_usd)])
+            cmd.extend(["--meta", f"model_profile={str(run_cfg.get('model_profile') or '')}"])
+            cmd.extend(["--meta", f"experiment_variant_id={variant_id}"])
+
+            child_timeout = int(args.timeout_sec) * max(1, len(evaluation_tasks)) if int(args.timeout_sec) > 0 else None
+            display_label = "baseline" if bool(run_cfg.get("is_baseline")) else (
+                f"{str(run_cfg.get('changed_variable') or '')}:baseline" if bool(run_cfg.get("is_family_baseline"))
+                else f"{str(run_cfg.get('changed_variable') or '')}:{variant_name}"
+            )
+            child_specs.append(
+                {
+                    "catalog_entry": catalog_entry,
+                    "display_label": display_label,
+                    "repetition_index": repetition_index + 1,
+                    "cmd": cmd,
+                    "cwd": REPO_ROOT,
+                    "timeout_sec": child_timeout,
+                    "stream_output": not args.quiet_child_output,
+                    "stream_prefix": f"[{display_label} r{repetition_index + 1}/{repetitions}] ",
+                    "stream_heartbeat_sec": 30,
+                    "stream_capture_path": str(catalog_entry.get("log_path") or "").strip(),
+                }
+            )
+        if not child_specs:
+            continue
+
+        def _on_launch(spec: Dict[str, Any]) -> None:
+            entry = spec["catalog_entry"]
+            timeout_value = spec.get("timeout_sec")
+            timeout_label = f"{timeout_value}s" if timeout_value is not None else "disabled"
+            print(
+                f"[sweep] starting {spec['display_label']} replicate {spec['repetition_index']}/{repetitions} "
+                f"(timeout={timeout_label})",
+                file=sys.stderr,
+                flush=True,
+            )
+            entry.update(
+                {
+                    "status": "running",
+                    "ok": None,
+                    "command": list(spec.get("cmd") or []),
+                    "started_at_epoch": time.time(),
+                    "finished_at_epoch": None,
+                }
+            )
+            _write_run_catalog(experiment_root, run_entries)
+
+        def _on_complete(spec: Dict[str, Any], completed: Dict[str, Any]) -> bool:
+            nonlocal experiment_budget_status
+            entry = spec["catalog_entry"]
+            entry.update(
+                {
+                    "ok": bool(completed.get("ok")),
+                    "status": "completed" if bool(completed.get("ok")) else "failed",
+                    "stdout": str(completed.get("stdout") or ""),
+                    "stderr": str(completed.get("stderr") or ""),
+                    "returncode": completed.get("returncode"),
+                    "error": str(completed.get("error") or "").strip(),
+                    "finished_at_epoch": time.time(),
+                }
+            )
+            if completed.get("ok"):
+                try:
+                    payload = _parse_completion_payload(entry["stdout"])
+                    run_dir = Path(str(payload.get("run_dir") or "")).resolve()
+                    aggregate = read_json(run_dir / "aggregate.json")
+                    run_manifest = read_json(run_dir / "run_manifest.json")
+                    entry.update(
+                        {
+                            "run_id": str(payload.get("run_id") or ""),
+                            "run_dir": str(run_dir),
+                            "aggregate": aggregate,
+                            "run_manifest": run_manifest,
+                        }
+                    )
+                except Exception as exc:
+                    entry["ok"] = False
+                    entry["status"] = "failed"
+                    entry["error"] = f"{type(exc).__name__}: {exc}"
+            print(
+                f"[sweep] finished {entry['display_label']} replicate {spec['repetition_index']}/{repetitions} "
+                f"ok={entry.get('ok')}",
+                file=sys.stderr,
+                flush=True,
+            )
+            _write_run_catalog(experiment_root, run_entries)
+            if entry.get("ok") and isinstance(entry.get("aggregate"), dict):
+                successful_records: List[Dict[str, Any]] = []
+                for existing in run_entries:
+                    aggregate = existing.get("aggregate") if isinstance(existing.get("aggregate"), dict) else {}
+                    successful_records.extend(list(aggregate.get("records") or []))
+                experiment_budget_summary = summarize_record_budget(successful_records)
+                experiment_budget_status = evaluate_budget_status(experiment_budget_summary, budget_config, scope="experiment")
+                experiment_budget_status["aborted_early"] = False
+                write_json(experiment_root / "budget_status.json", experiment_budget_status)
+                if not experiment_budget_status.get("ok") and bool(budget_config.get("abort_experiment_on_budget_exceeded", True)):
+                    experiment_budget_status["aborted_early"] = True
+                    write_json(experiment_root / "budget_status.json", experiment_budget_status)
+                    return False
+            return True
+
+        _execute_child_run_specs(
+            child_specs,
+            max_concurrent=max_concurrent_repetitions,
+            on_launch=_on_launch,
+            on_complete=_on_complete,
+        )
+        if experiment_budget_status.get("aborted_early"):
+            break
+
+    _write_run_catalog(experiment_root, run_entries)
+    write_json(experiment_root / "budget_status.json", experiment_budget_status)
+    materialize_experiment_outputs(
+        experiment_root=experiment_root,
+        experiment_manifest=experiment_manifest,
+        run_entries=run_entries,
+        skip_visuals=bool(args.skip_visuals),
+    )
 
     print(
         json.dumps(

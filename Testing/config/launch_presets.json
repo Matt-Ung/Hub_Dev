@@ -114,6 +114,22 @@
       "runner": "sweep",
       "corpus": "experimental",
       "config": "Testing/config/experiment_sweeps_broad_coverage_r1.json",
+      "samples": [
+        "maintenance_orchestrator_test.exe",
+        "maintenance_orchestrator_test_stripped.exe",
+        "callback_dispatch_test.exe",
+        "config_decoder_test.exe",
+        "signal_router_report_test.exe",
+        "stack_notice_scheduler_test.exe",
+        "multilayer_encode_test.exe",
+        "hash_dispatch_test.exe",
+        "hash_dispatch_test_stripped.exe",
+        "embedded_payload_test.exe",
+        "embedded_payload_test_upx.exe",
+        "branch_weave_snapshot_test.exe",
+        "branch_weave_snapshot_test_stripped.exe",
+        "anti_analysis_suite_test.exe"
+      ],
       "difficulty_filters": [
         "medium",
         "hard"
@@ -310,6 +326,100 @@
         "worker_prompt_shape"
       ],
       "repetitions": 1,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "sweep_decoder_depth_stripped_r3": {
+      "description": "Depth-focused study centered on config_decoder_test_stripped.exe. Uses four decoder-specific tasks across tool-availability, architecture, and worker-breadth variants with three repetitions.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test_stripped.exe"
+      ],
+      "tasks": [
+        "default_analysis",
+        "config_value_recovery",
+        "decode_parser_flow_recovery",
+        "parser_validation_audit"
+      ],
+      "variables": [
+        "tool_availability",
+        "architecture_preset",
+        "worker_subagents"
+      ],
+      "repetitions": 3,
+      "label": "decoder-depth-stripped-r3",
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "sweep_decoder_depth_r3": {
+      "description": "Combined under-30USD depth-focused study centered on the config_decoder_test stripped family. Runs the stripped and packed-stripped decoder variants together, keeps the full decoder task slate, enables UPX unpack continuation when relevant, and uses the single worker-subagent comparison family across three repetitions.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test_stripped.exe",
+        "config_decoder_test_upx_stripped.exe"
+      ],
+      "tasks": [
+        "default_analysis",
+        "config_value_recovery",
+        "decode_parser_flow_recovery",
+        "parser_validation_audit",
+        "packing_decoder_triage"
+      ],
+      "variables": [
+        "worker_subagents"
+      ],
+      "repetitions": 3,
+      "label": "decoder-depth-r3",
+      "prefer_upx_unpacked": true,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "sweep_decoder_depth_followups_r3": {
+      "description": "Follow-up three-repetition decoder-depth study over the same stripped and packed-stripped config_decoder_test scope, but reduced to worker prompt shape plus one validator-backed pipeline follow-up while preserving the original decoder-depth baseline. This intentionally leaves out query_verbosity and the already-run worker_subagents comparison.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "config": "Testing/config/experiment_sweeps_decoder_followups_r3.json",
+      "samples": [
+        "config_decoder_test_stripped.exe",
+        "config_decoder_test_upx_stripped.exe"
+      ],
+      "tasks": [
+        "default_analysis",
+        "config_value_recovery",
+        "decode_parser_flow_recovery",
+        "parser_validation_audit",
+        "packing_decoder_triage"
+      ],
+      "repetitions": 3,
+      "label": "decoder-depth-followups-r3",
+      "prefer_upx_unpacked": true,
+      "skip_visuals": false,
+      "recommended_judge_model": "openai:gpt-4o-mini"
+    },
+    "sweep_decoder_depth_upx_stripped_r3": {
+      "description": "Depth-focused UPX study centered on config_decoder_test_upx_stripped.exe. Uses five decoder-and-packing tasks across tool-availability, architecture, and worker-breadth variants with three repetitions.",
+      "runner": "sweep",
+      "corpus": "experimental",
+      "samples": [
+        "config_decoder_test_upx_stripped.exe"
+      ],
+      "tasks": [
+        "default_analysis",
+        "packing_decoder_triage",
+        "config_value_recovery",
+        "decode_parser_flow_recovery",
+        "parser_validation_audit"
+      ],
+      "variables": [
+        "tool_availability",
+        "architecture_preset",
+        "worker_subagents"
+      ],
+      "repetitions": 3,
+      "label": "decoder-depth-upx-stripped-r3",
+      "prefer_upx_unpacked": true,
       "skip_visuals": false,
       "recommended_judge_model": "openai:gpt-4o-mini"
     },
