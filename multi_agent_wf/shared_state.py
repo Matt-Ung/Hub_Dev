@@ -57,7 +57,7 @@ _PARENT_INPUT_LOCK = Lock()
 _PARENT_INPUT_REQUESTS: Dict[str, Dict[str, Any]] = {}
 _SERVER_RUN_TOOL_LOG_LOCK = Lock()
 _SERVER_RUN_TOOL_LOG_DIR: Optional[Path] = None
-_SERVER_RUN_TOOL_LOG_STAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+_SERVER_RUN_TOOL_LOG_STAMP = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{os.getpid()}_{uuid4().hex[:6]}"
 _SERVER_RUN_TOOL_LOG_ANNOUNCED = False
 
 # ----------------------------
@@ -103,6 +103,7 @@ def _tool_call_entry(
         "tool_name": tool_name,
         "tool_call_id": tool_call_id,
         "args": _normalize_tool_args(args),
+        "event_at": datetime.now().isoformat(timespec="seconds"),
     }
     if source:
         entry["source"] = source
@@ -124,6 +125,7 @@ def _tool_result_entry(
         "tool_name": tool_name,
         "tool_call_id": tool_call_id,
         "content": _coerce_tool_return_text(content),
+        "event_at": datetime.now().isoformat(timespec="seconds"),
     }
     if source:
         entry["source"] = source
@@ -893,6 +895,25 @@ def apply_automation_payload_to_state(state: Dict[str, Any], payload: Dict[str, 
         shared["validated_sample_image_base"] = candidate_image_base
         shared["validated_sample_metadata_source"] = "automation_payload"
 
+    analysis_target = payload.get("analysis_target") if isinstance(payload.get("analysis_target"), dict) else {}
+    original_sample = payload.get("original_sample") if isinstance(payload.get("original_sample"), dict) else {}
+    shared["analysis_target_kind"] = str(analysis_target.get("kind") or "original").strip()
+    shared["analysis_target_reason"] = str(analysis_target.get("selection_reason") or "").strip()
+    shared["analysis_target_path"] = str(
+        analysis_target.get("effective_executable_path")
+        or candidate_path
+        or ""
+    ).strip()
+    shared["analysis_target_original_path"] = _validate_existing_sample_path(str(original_sample.get("path") or "")) or str(
+        original_sample.get("path") or ""
+    ).strip()
+    shared["analysis_target_original_md5"] = _normalize_digest(str(original_sample.get("md5") or ""), 32)
+    shared["analysis_target_original_sha256"] = _normalize_digest(str(original_sample.get("sha256") or ""), 64)
+    shared["analysis_target_packed_detected"] = bool(analysis_target.get("packed_detected"))
+    shared["analysis_target_packer"] = str(analysis_target.get("packer") or "").strip()
+    shared["upx_detection"] = _json_safe(payload.get("upx_detection") or {})
+    shared["upx_unpack"] = _json_safe(payload.get("upx_unpack") or {})
+
     shared["automation_bootstrap_metadata"] = {
         "program_name": str(
             payload.get("program_name") or _payload_nested_value(payload, "program_info", "program", "name") or ""
@@ -1081,6 +1102,16 @@ def _new_shared_state() -> Dict[str, Any]:
         "validated_sample_sha256": "",
         "validated_sample_image_base": "",
         "validated_sample_metadata_source": "",
+        "analysis_target_kind": "",
+        "analysis_target_reason": "",
+        "analysis_target_path": "",
+        "analysis_target_original_path": "",
+        "analysis_target_original_md5": "",
+        "analysis_target_original_sha256": "",
+        "analysis_target_packed_detected": False,
+        "analysis_target_packer": "",
+        "upx_detection": {},
+        "upx_unpack": {},
         "planned_work_items": [],
         "planned_work_item_status": {},
         "planned_work_items_parse_error": "",

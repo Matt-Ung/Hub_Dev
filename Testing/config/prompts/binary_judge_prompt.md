@@ -11,6 +11,7 @@ Return only a structured scorecard using the provided output schema.
 - Do not invent credit. If the output failed, is truncated, or is mostly empty, assign low scores that reflect what was actually produced.
 - Perfect scores should be rare. Do not award maximum scores across the board unless the report is both technically complete and tightly scoped to the exact question asked.
 - Use the sample metadata, task metadata, bundle context, and the provided reference expectations (`expected_evidence`, `acceptance_targets`, primary techniques, target tools) as the reference baseline for what the report should have found.
+- When an `evaluator_reference` block is present, treat it as the strongest evaluator-side grounding source. Use its `must_hit_anchors`, `supported_behavior_claims`, `limitations_to_respect`, `do_not_overclaim`, and `grounding_examples` fields to calibrate both coverage credit and false-claim penalties.
 - Treat proposed names (rename suggestions, inferred function names) as unverified unless they are explicitly stated as confirmed in the ground truth. Do not award evidence credit for proposed names presented as fact.
 - Where uncertainty exists in your judgment, apply the stricter interpretation consistently across all dimensions.
 
@@ -99,6 +100,10 @@ The report does not address the primary techniques. It describes entirely wrong 
 **Score 5 — No meaningful errors**
 No unsupported or incorrect claims are identifiable. Where the agent was uncertain, it flagged uncertainty explicitly ("likely but not confirmed", "consistent with X but not conclusively verified"). No artifacts are named that do not exist in the binary. No capabilities are confidently attributed without traceable justification.
 
+Claims that contradict `limitations_to_respect` or `do_not_overclaim` in the
+`evaluator_reference` block are not eligible for a 5, even when the rest of
+the report is strong.
+
 **Score 4 — One minor error**
 One minor inaccuracy or one weakly-supported claim is present. The error is peripheral — it does not touch a primary technique and does not mislead a reader about the sample's core behavior. A careful analyst would flag it but it would not cause downstream harm.
 
@@ -171,6 +176,9 @@ The report is substantially padded. PE startup routines, generic malware-behavio
 - Judge the answer against the specific task prompt in `task_metadata.query`, not just against the sample in the abstract.
 - If a report is technically good but does not answer the requested task, score `task_alignment` down.
 - Treat `acceptance_targets` as concrete findings that should normally appear when the task is completed well.
+- Treat `must_hit_anchors` and `minimum_report_sections` in `evaluator_reference`
+  as sample-specific expectations that should normally appear in strong
+  submissions for the default final-round task.
 - If the report spends meaningful space on unrequested follow-up advice, code templates, next-step suggestions, or general reverse-engineering guidance after the core answer is already delivered, it is not eligible for `task_alignment=5`.
 - If that extra material occupies notable space, it is also not eligible for `report_conciseness=3`, even when the technical answer itself is correct.
 

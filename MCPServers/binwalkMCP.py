@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from artifact_paths import get_agent_artifact_dir
+from artifact_paths import describe_tool_output_root, get_tool_output_root
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +33,6 @@ IS_WINDOWS = sys.platform.startswith("win")
 _DRIVE_RE = re.compile(r"^/([A-Za-z]):/")
 _MNT_RE = re.compile(r"^/mnt/([A-Za-z])/(.*)")
 
-DEFAULT_OUTPUT_DIR = Path(
-    os.environ.get(
-        "BINWALK_OUTPUT_DIR",
-        str((get_agent_artifact_dir("reports") / "binwalk").resolve()),
-    )
-)
 mcp = FastMCP(
     "binwalk_mcp",
     instructions="MCP server that exposes structured binwalk scanning and extraction tools.",
@@ -85,9 +79,15 @@ def ensure_existing_path(path: str) -> str:
 
 
 def ensure_directory(path: str | Path) -> str:
+    root = get_tool_output_root("binwalk")
     candidate = Path(normalize_user_path(str(path)))
     if not candidate.is_absolute():
-        candidate = candidate.resolve()
+        candidate = root / candidate
+    candidate = candidate.resolve(strict=False)
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"binwalk output must stay under {root}; got {candidate}") from exc
     candidate.mkdir(parents=True, exist_ok=True)
     return str(candidate)
 
@@ -172,7 +172,7 @@ def binwalkScan(
             return {"ok": False, "error": "binwalk not found on PATH"}
 
         resolved_file = ensure_existing_path(file_path)
-        output_root = Path(ensure_directory(DEFAULT_OUTPUT_DIR))
+        output_root = Path(ensure_directory(get_tool_output_root("binwalk")))
         scan_work_dir = output_root / f"scan_{_safe_component(Path(resolved_file).stem, 'sample')}_{uuid.uuid4().hex[:8]}"
         scan_work_dir = Path(ensure_directory(scan_work_dir))
         extraction_dir = output_root / f"extract_{uuid.uuid4().hex[:8]}"
@@ -223,8 +223,9 @@ def binwalkScan(
     except FileNotFoundError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
+        logger.warning("binwalkScan rejected request or failed to scan: %s", e)
         logger.exception("binwalkScan failed")
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "allowed_output_root": describe_tool_output_root('binwalk')}
 
 
 @mcp.tool()
@@ -246,7 +247,11 @@ def listBinwalkExtraction(extraction_path: str, max_files: int = 200) -> dict[st
 @mcp.tool()
 def binwalkHelp(timeout_sec: int = 5) -> str:
     """Return `binwalk --help` output."""
-    return run_help_command("binwalk", timeout_sec=timeout_sec)
+    return (
+        run_help_command("binwalk", timeout_sec=timeout_sec)
+        + "\n\n"
+        + f"Allowed binwalk output root: {describe_tool_output_root('binwalk')}"
+    )
 
 
 def main() -> None:

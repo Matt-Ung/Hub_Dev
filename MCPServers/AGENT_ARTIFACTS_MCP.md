@@ -41,6 +41,13 @@ AGENT_GHIDRA_ARTIFACT_DIR=
 
 If a per-type override is blank, the server falls back to `AGENT_ARTIFACT_DIR/<type>`.
 
+Security note:
+
+- `AGENT_ARTIFACT_DIR` defines the only allowed artifact root.
+- Per-type overrides are allowed only if they still resolve under that root.
+- Relative escapes such as `../..` and absolute paths outside the root are rejected server-side.
+- The server will not silently fall back to the Desktop, Home directory, or current working directory.
+
 ## Tools
 
 - `agentArtifactPaths()`
@@ -88,3 +95,4 @@ writeJavaArtifact(
 - Filenames are sanitized and must be simple file names, not arbitrary paths.
 - Optional `subdir` lets you group artifacts by sample or workflow, such as `labos/` or `rswe/task2/`.
 - Directories are created automatically.
+- The server enforces the artifact root in code; prompts or client conventions are not trusted as the security boundary.

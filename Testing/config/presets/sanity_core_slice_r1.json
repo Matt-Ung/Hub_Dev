@@ -1,0 +1,90 @@
+{
+  "schema_version": "launch_preset_v3",
+  "name": "sanity_core_slice_r1",
+  "description": "Smallest maintained sweep that still produces useful comparison graphs. Uses four focused samples and only the tool-availability and architecture comparison families.",
+  "runner": "sweep",
+  "corpus": "experimental",
+  "samples": [
+    "config_decoder_test.exe",
+    "stack_notice_scheduler_test.exe",
+    "embedded_payload_test_upx.exe",
+    "branch_weave_snapshot_test.exe"
+  ],
+  "tasks": [
+    "config_value_recovery",
+    "decoy_string_audit",
+    "packing_tool_triage",
+    "program_decode_recovery"
+  ],
+  "repetitions": 1,
+  "label": "sanity-core",
+  "max_run_estimated_cost_usd": 1.5,
+  "max_experiment_estimated_cost_usd": 6.0,
+  "skip_visuals": false,
+  "recommended_judge_model": "openai:gpt-4o-mini",
+  "baseline": {
+    "corpus": "experimental",
+    "pipeline": "auto_triage",
+    "architecture": "balanced",
+    "response_scope_variant": "default",
+    "analysis_hint_variant": "default",
+    "subagent_profile": "default",
+    "worker_persona_profile": "default",
+    "worker_role_prompt_mode": "default",
+    "validator_review_level": "default",
+    "tool_profile": "full",
+    "model_profile": "repo_default",
+    "force_model": "",
+    "judge_mode": "agent"
+  },
+  "model_profiles": {
+    "repo_default": {
+      "description": "Use the repo defaults with no forced override.",
+      "force_model": ""
+    }
+  },
+  "sweeps": [
+    {
+      "variable": "tool_availability",
+      "description": "Disable selected MCP tool families while keeping the baseline pipeline, architecture, and prompt shape fixed.",
+      "variants": [
+        {
+          "name": "core_static",
+          "overrides": {
+            "tool_profile": "core_static"
+          }
+        },
+        {
+          "name": "ghidra_only",
+          "overrides": {
+            "tool_profile": "ghidra_only"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "architecture_preset",
+      "description": "Swap only the worker architecture preset while keeping the baseline pipeline and query shape fixed.",
+      "variants": [
+        {
+          "name": "minimal",
+          "overrides": {
+            "architecture": "minimal"
+          }
+        },
+        {
+          "name": "ghidra_focused",
+          "overrides": {
+            "architecture": "ghidra_focused"
+          }
+        },
+        {
+          "name": "model_augmented",
+          "overrides": {
+            "architecture": "model_augmented"
+          }
+        }
+      ]
+    }
+  ]
+}

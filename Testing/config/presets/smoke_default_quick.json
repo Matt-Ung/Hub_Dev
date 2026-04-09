@@ -1,0 +1,16 @@
+{
+  "schema_version": "launch_preset_v3",
+  "name": "smoke_default_quick",
+  "description": "Fastest maintained end-to-end sanity check. Runs one default-analysis task against the simplest experimental sample.",
+  "runner": "single_run",
+  "corpus": "experimental",
+  "samples": [
+    "basic_loops_test.exe"
+  ],
+  "tasks": [
+    "default_analysis"
+  ],
+  "response_scope_variant": "default",
+  "analysis_hint_variant": "default",
+  "recommended_judge_model": "openai:gpt-4o-mini"
+}

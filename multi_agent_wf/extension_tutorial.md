@@ -48,7 +48,7 @@ The current responsibilities are:
 | Architecture presets | [workflow_config/architecture_presets.json](workflow_config/architecture_presets.json), [workflow_config_loader.py](workflow_config_loader.py), [frontend.py](frontend.py), [runtime.py](runtime.py) | Preset names auto-appear in the architecture dropdown. |
 | New roles/archetypes | [workflow_config/agent_archetype_specs.json](workflow_config/agent_archetype_specs.json), [workflow_config/agent_archetype_prompts.json](workflow_config/agent_archetype_prompts.json), [workflow_config/base_prompts.json](workflow_config/base_prompts.json), [runtime.py](runtime.py) | Required when a new architecture references a role that does not already exist. |
 | New dashboard knobs | [config.py](config.py), [frontend.py](frontend.py), usually [runtime.py](runtime.py) or [pipeline.py](pipeline.py) | Needed only for brand new controls, not for new preset names. |
-| Testing | [../Testing/config/experiment_sweeps.json](../Testing/config/experiment_sweeps.json), [../Testing/harness/runner.py](../Testing/harness/runner.py), [../Testing/harness/experiment_sweep.py](../Testing/harness/experiment_sweep.py), [../Testing/config/launch_presets.json](../Testing/config/launch_presets.json) | Only needed if the new workflow option should be benchmarked or launched via a named preset. |
+| Testing | [../Testing/config/experiment_sweeps.json](../Testing/config/experiment_sweeps.json), [../Testing/config/presets/](../Testing/config/presets/), [../Testing/harness/runner.py](../Testing/harness/runner.py), [../Testing/harness/experiment_sweep.py](../Testing/harness/experiment_sweep.py) | Only needed if the new workflow option should be benchmarked or launched via a named preset. |
 
 ### Tutorial 0.3: Key Rule
 
@@ -832,7 +832,7 @@ if review_depth_profile == "deep":
 The benchmark mechanics are already documented in:
 
 - [../Testing/README.md](../Testing/README.md)
-- [../Testing/TESTING_PLAN.md](../Testing/TESTING_PLAN.md)
+- [../Testing/docs/evaluation_design.md](../Testing/docs/evaluation_design.md)
 - [../Testing/config/README.md](../Testing/config/README.md)
 
 Tutorial 5 only covers the workflow-specific wiring points.
@@ -879,7 +879,7 @@ Use:
 ### Tutorial 5.2: Add an Operational Launch Preset
 
 File:
-[../Testing/config/launch_presets.json](../Testing/config/launch_presets.json)
+[../Testing/config/presets/EXAMPLE.json](../Testing/config/presets/README.md)
 
 Role:
 named operational entry points, not scientific sweep definitions
@@ -889,43 +889,60 @@ conditional
 
 Expected schema:
 
-- top-level `presets` object
+- one JSON object per preset file
 - each preset supports:
+  - `name`
   - `description`
   - `runner`
   - `corpus`
   - optional `samples`
   - optional `tasks`
-  - optional `variables`
   - optional `difficulty_filters`
   - optional `repetitions`
   - optional `skip_visuals`
   - optional `recommended_judge_model`
+- sweep presets should also include:
+  - `baseline`
+  - `sweeps`
 
-Tutorial 5.2 example JSON block:
+Tutorial 5.2 example JSON file:
 
 ```json
 {
-  "presets": {
-    "EXAMPLE": {
-      "description": "EXAMPLE",
-      "runner": "EXAMPLE",
-      "corpus": "EXAMPLE",
-      "samples": ["EXAMPLE"],
-      "tasks": ["EXAMPLE"],
-      "variables": ["EXAMPLE"],
-      "repetitions": 1,
-      "skip_visuals": true,
-      "recommended_judge_model": "EXAMPLE"
-    }
-  }
+  "name": "EXAMPLE",
+  "description": "EXAMPLE",
+  "runner": "sweep",
+  "corpus": "experimental",
+  "samples": ["EXAMPLE"],
+  "tasks": ["EXAMPLE"],
+  "repetitions": 1,
+  "skip_visuals": true,
+  "recommended_judge_model": "openai:gpt-4o-mini",
+  "baseline": {
+    "corpus": "experimental",
+    "pipeline": "auto_triage",
+    "architecture": "balanced",
+    "response_scope_variant": "default",
+    "analysis_hint_variant": "default",
+    "subagent_profile": "default",
+    "worker_persona_profile": "default",
+    "worker_role_prompt_mode": "default",
+    "validator_review_level": "default",
+    "tool_profile": "full",
+    "model_profile": "repo_default",
+    "force_model": "",
+    "judge_mode": "agent"
+  },
+  "sweeps": []
 }
 ```
 
 How the example maps to the real file:
 
 - [../Testing/harness/launch_presets.py](../Testing/harness/launch_presets.py)
-  builds a command line from exactly these keys
+  builds a command line from these keys
+- for sweep presets, the preset file itself is also passed to
+  `run_experiment_sweep.py --config`
 
 ### Tutorial 5.3: Add a New Run-Level Workflow Knob to the Harness
 
@@ -1002,7 +1019,7 @@ What to add:
 ### Tutorial 5.4: Add a New Benchmark Task or Sample Entry
 
 File:
-[../Testing/Experimental_Test_Source/sample_manifest.json](../Testing/Experimental_Test_Source/sample_manifest.json)
+[../Testing/sources/experimental/sample_manifest.json](../Testing/sources/experimental/sample_manifest.json)
 
 Role:
 source of truth for experimental executable tasks
@@ -1062,7 +1079,7 @@ Tutorial 5.4 example JSON block:
 
 For full benchmark-shape guidance, also read:
 
-- [../Testing/Experimental_Test_Source/README.md](../Testing/Experimental_Test_Source/README.md)
+- [../Testing/sources/experimental/README.md](../Testing/sources/experimental/README.md)
 
 ## Tutorial 6: Validation Checklist
 
@@ -1080,8 +1097,8 @@ python3 -m multi_agent_wf.main
 Run these when the extension should be benchmarked:
 
 ```bash
-python3 Testing/run_experiment_sweep.py --plan-only
-python3 Testing/run_evaluation.py --corpus experimental --preflight-only
+python3 Testing/scripts/run_experiment_sweep.py --plan-only
+python3 Testing/scripts/run_evaluation.py --corpus experimental --preflight-only
 ```
 
 ### Tutorial 6.3: Sync Checklist
@@ -1108,4 +1125,4 @@ Before you consider the extension done:
 - Setup path: [../SETUP_GUIDE.md](../SETUP_GUIDE.md)
 - Testing suite overview: [../Testing/README.md](../Testing/README.md)
 - Testing config guide: [../Testing/config/README.md](../Testing/config/README.md)
-- Testing plan: [../Testing/TESTING_PLAN.md](../Testing/TESTING_PLAN.md)
+- Testing plan: [../Testing/docs/evaluation_design.md](../Testing/docs/evaluation_design.md)

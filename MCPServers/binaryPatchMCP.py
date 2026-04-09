@@ -19,6 +19,12 @@ from typing import Any, Iterable
 
 from fastmcp import FastMCP
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from artifact_paths import describe_tool_output_root, resolve_tool_output_path  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -91,9 +97,7 @@ def ensure_existing_path(path: str) -> str:
 
 
 def ensure_output_path(path: str) -> str:
-    candidate = Path(normalize_user_path(path))
-    if not candidate.is_absolute():
-        candidate = candidate.resolve()
+    candidate = resolve_tool_output_path("binary_patch", normalize_user_path(path))
     candidate.parent.mkdir(parents=True, exist_ok=True)
     return str(candidate)
 
@@ -371,6 +375,7 @@ def _result_common(binary: Any, input_path: Path, output_path: Path, file_offset
 @mcp.tool()
 def binaryPatchHelp() -> dict[str, Any]:
     """Describe supported patch operations and dependency status."""
+    output_root = describe_tool_output_root("binary_patch")
     return {
         "ok": True,
         "dependencies": {
@@ -385,8 +390,10 @@ def binaryPatchHelp() -> dict[str, Any]:
             "binaryPatchBytes",
             "binaryPatchAssemble",
         ],
+        "output_root": output_root,
         "notes": [
-            "Writes patched copies to an explicit output path; it does not modify the input file in place unless you intentionally reuse the same path with force=true.",
+            "Writes patched copies to an explicit output path under the server-controlled binary_patch output root.",
+            "Output paths outside the allowed root are rejected server-side.",
             "Use address_kind=file_offset for the most deterministic behavior.",
             "Use address_kind=rva or va when you want format-aware address translation through LIEF.",
             "Prefer this tool when you need an emitted patched binary; prefer Ghidra for reverse engineering, naming, comments, and type recovery.",
@@ -444,10 +451,16 @@ def binaryPatchBytes(
         result = _result_common(binary, input_path, output, file_offset, va, patch_bytes, original)
         result["address_kind"] = address_kind
         result["address"] = str(address)
+        result["allowed_output_root"] = describe_tool_output_root("binary_patch")
         return result
     except Exception as exc:
+        logger.warning("binaryPatchBytes rejected request or failed to patch: %s", exc)
         logger.exception("binaryPatchBytes failed")
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "allowed_output_root": describe_tool_output_root("binary_patch"),
+        }
 
 
 @mcp.tool()
@@ -496,10 +509,16 @@ def binaryPatchAssemble(
         result["architecture"] = architecture
         result["assembly"] = str(assembly)
         result["pad_mode"] = pad_mode
+        result["allowed_output_root"] = describe_tool_output_root("binary_patch")
         return result
     except Exception as exc:
+        logger.warning("binaryPatchAssemble rejected request or failed to patch: %s", exc)
         logger.exception("binaryPatchAssemble failed")
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "allowed_output_root": describe_tool_output_root("binary_patch"),
+        }
 
 
 def main() -> None:

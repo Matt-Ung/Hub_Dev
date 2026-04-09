@@ -9,6 +9,7 @@
       "description": "Keep the core static-analysis lane (Ghidra, strings, FLOSS, capa) but disable specialty enrichers such as hashdb, binwalk, UPX, YARA, model gateway, patching, and artifact writers.",
       "disabled_servers": [
         "hashdbmcp",
+        "ssdeepmcp",
         "binwalkmcp",
         "upxmcp",
         "yaramcp",
@@ -27,6 +28,7 @@
         "flareflossmcp",
         "CapaMCP",
         "hashdbmcp",
+        "ssdeepmcp",
         "binwalkmcp",
         "upxmcp",
         "yaramcp",

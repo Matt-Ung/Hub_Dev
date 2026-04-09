@@ -21,11 +21,13 @@ import importlib.util
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from .artifacts import inspect_corpus_bundles, load_tool_profiles
+from .analysis_hint_variants import load_analysis_hint_variants
+from .artifacts import inspect_corpus_bundles, load_tool_profiles, resolve_analyze_headless, _resolve_java_home
 from .judge import Agent, PYDANTIC_AVAILABLE
 from .paths import CONFIG_ROOT, PROMPTS_ROOT, REPO_ROOT, read_json
-from .query_variants import load_query_variants
-from .samples import build_evaluation_tasks
+from .response_scope_variants import load_response_scope_variants
+from .samples import build_evaluation_tasks, normalize_sample_task_key, sample_task_key
+from .subprocess_utils import tool_available
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -216,7 +218,35 @@ def _module_available_in_python(python_executable: str, module_name: str) -> boo
     except Exception:
         return False
 
-
+"""
+Function: validate_run_configuration
+Inputs:
+  - corpus_name: logical corpus identifier for the requested run.
+  - sample_paths: built sample binaries currently available on disk.
+  - manifest: parsed sample manifest for the corpus.
+  - selected_samples / selected_task_ids / selected_task_keys /
+    selected_difficulties: optional CLI filters that narrow the intended
+    evaluation scope.
+  - pipeline / architecture / response_scope_variant /
+    analysis_hint_variant / worker_persona_profile /
+    worker_role_prompt_mode / validator_review_level / tool_profile /
+    prefer_upx_unpacked:
+    requested runtime knobs to verify.
+  - judge_mode / explicit_judge_model / forced_model / python_executable:
+    judge and environment settings that affect launch viability.
+  - bundle_root: optional bundle directory tree to inspect.
+  - require_ready_bundles: whether missing or stale bundles should be
+    treated as hard errors instead of informational warnings.
+Description:
+  Perform the shared readiness checks used before real evaluation work
+  starts. This includes config validation, task resolution, judge
+  prerequisites, and optional bundle-readiness inspection.
+Outputs:
+  Returns a structured result containing `ok`, `errors`, `warnings`,
+  resolved task scope, and optional bundle-readiness details.
+Side Effects:
+  Reads config files from disk and may inspect bundle directories.
+"""
 def validate_run_configuration(
     *,
     corpus_name: str,
@@ -224,47 +254,26 @@ def validate_run_configuration(
     manifest: Dict[str, Any],
     selected_samples: Iterable[str],
     selected_task_ids: Iterable[str],
+    selected_task_keys: Iterable[str] = (),
     selected_difficulties: Iterable[str],
     pipeline: str,
     architecture: str,
-    query_variant: str,
+    response_scope_variant: str,
+    analysis_hint_variant: str,
     worker_persona_profile: str,
     worker_role_prompt_mode: str,
     validator_review_level: str,
     tool_profile: str,
-    judge_mode: str,
+    judge_mode: str = "agent",
+    prefer_upx_unpacked: bool = False,
+    ghidra_install_dir: str = "",
+    ghidra_headless: str = "",
     explicit_judge_model: str = "",
     forced_model: str = "",
     python_executable: str = "",
     bundle_root: Optional[Path] = None,
     require_ready_bundles: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Function: validate_run_configuration
-    Inputs:
-      - corpus_name: logical corpus identifier for the requested run.
-      - sample_paths: built sample binaries currently available on disk.
-      - manifest: parsed sample manifest for the corpus.
-      - selected_samples / selected_task_ids / selected_difficulties: optional
-        CLI filters that narrow the intended evaluation scope.
-      - pipeline / architecture / query_variant / worker_persona_profile /
-        worker_role_prompt_mode / validator_review_level / tool_profile:
-        requested runtime knobs to verify.
-      - judge_mode / explicit_judge_model / forced_model / python_executable:
-        judge and environment settings that affect launch viability.
-      - bundle_root: optional bundle directory tree to inspect.
-      - require_ready_bundles: whether missing or stale bundles should be
-        treated as hard errors instead of informational warnings.
-    Description:
-      Perform the shared readiness checks used before real evaluation work
-      starts. This includes config validation, task resolution, judge
-      prerequisites, and optional bundle-readiness inspection.
-    Outputs:
-      Returns a structured result containing `ok`, `errors`, `warnings`,
-      resolved task scope, and optional bundle-readiness details.
-    Side Effects:
-      Reads config files from disk and may inspect bundle directories.
-    """
     errors: List[str] = []
     warnings: List[str] = []
 
@@ -277,13 +286,23 @@ def validate_run_configuration(
     errors.extend(prompt_check.get("errors") or [])
     warnings.extend(prompt_check.get("warnings") or [])
 
-    variants = load_query_variants()
-    selected_query_variant = str(query_variant or "default").strip() or "default"
-    if "default" not in variants:
-        errors.append("query_variants.json must define a `default` variant.")
-    if selected_query_variant not in variants:
+    response_scope_variants = load_response_scope_variants()
+    selected_response_scope_variant = str(response_scope_variant or "default").strip() or "default"
+    if "default" not in response_scope_variants:
+        errors.append("response_scope_variants.json must define a `default` variant.")
+    if selected_response_scope_variant not in response_scope_variants:
         errors.append(
-            f"Unknown query variant {selected_query_variant!r}. Available: {', '.join(sorted(variants))}"
+            "Unknown response_scope_variant "
+            f"{selected_response_scope_variant!r}. Available: {', '.join(sorted(response_scope_variants))}"
+        )
+    analysis_hint_variants = load_analysis_hint_variants()
+    selected_analysis_hint_variant = str(analysis_hint_variant or "default").strip() or "default"
+    if "default" not in analysis_hint_variants:
+        errors.append("analysis_hint_variants.json must define a `default` variant.")
+    if selected_analysis_hint_variant not in analysis_hint_variants:
+        errors.append(
+            "Unknown analysis_hint_variant "
+            f"{selected_analysis_hint_variant!r}. Available: {', '.join(sorted(analysis_hint_variants))}"
         )
 
     persona_profiles_raw = read_json(REPO_ROOT / "multi_agent_wf" / "workflow_config" / "worker_persona_profiles.json")
@@ -340,6 +359,15 @@ def validate_run_configuration(
             f"Unknown tool_profile {requested_tool_profile!r}. "
             f"Available: {', '.join(sorted(available_tool_profiles))}"
         )
+    if prefer_upx_unpacked:
+        if not tool_available("upx"):
+            warnings.append(
+                "prefer_upx_unpacked is enabled, but `upx` is not available on PATH. Packed samples will fall back to the original prepared bundle."
+            )
+        if resolve_analyze_headless(ghidra_install_dir, ghidra_headless) is None:
+            warnings.append(
+                "prefer_upx_unpacked is enabled, but analyzeHeadless was not resolved from GHIDRA_HEADLESS/GHIDRA_INSTALL_DIR/PATH. Packed samples will fall back to the original prepared bundle."
+            )
 
     if pipeline not in DEEP_AGENT_PIPELINE_PRESETS:
         errors.append(
@@ -379,21 +407,29 @@ def validate_run_configuration(
             )
 
     task_ids = [str(item).strip() for item in selected_task_ids if str(item).strip()]
+    task_keys = [normalize_sample_task_key(str(item)) for item in selected_task_keys if str(item).strip()]
     resolved_tasks = build_evaluation_tasks(
         corpus_name,
         sample_paths,
         manifest=manifest,
         selected_task_ids=task_ids,
+        selected_task_keys=task_keys,
         selected_difficulties=selected_difficulties,
     )
     if not resolved_tasks:
         errors.append("No evaluation tasks resolved for the selected sample/task scope.")
     else:
         seen_task_ids = {task.task_id for task in resolved_tasks}
+        seen_task_keys = {sample_task_key(task.sample_name, task.task_id) for task in resolved_tasks}
         missing_tasks = [task_id for task_id in task_ids if task_id not in seen_task_ids]
         if missing_tasks:
             errors.append(
                 "Requested task id(s) were not found in the selected sample set: " + ", ".join(sorted(missing_tasks))
+            )
+        missing_task_keys = [task_key for task_key in task_keys if task_key not in seen_task_keys]
+        if missing_task_keys:
+            errors.append(
+                "Requested sample_task_key(s) were not found in the selected sample set: " + ", ".join(sorted(missing_task_keys))
             )
         for task in resolved_tasks:
             if not task.expected_evidence:
@@ -439,15 +475,25 @@ def validate_run_configuration(
             "judge_mode is disabled; runs will not produce rubric scores or valid baseline-vs-variant score comparisons."
         )
 
+    resolved_analyze_headless = resolve_analyze_headless(ghidra_install_dir, ghidra_headless)
     bundle_readiness: Dict[str, Any] | None = None
+    if resolved_analyze_headless is not None and not _resolve_java_home():
+        warnings.append(
+            "GHIDRA_JAVA_HOME/JAVA_HOME is not set and no auto-detected JDK was found. "
+            "Headless Ghidra export may fail non-interactively while preparing bundles."
+        )
     if require_ready_bundles and bundle_root is not None:
         bundle_readiness = inspect_corpus_bundles(corpus_name, sample_paths, output_root=bundle_root)
         if not bool(bundle_readiness.get("ready_for_analysis")):
-            missing_items = [
-                f"{item.get('sample')}: {', '.join(item.get('missing_required') or [])}"
-                for item in (bundle_readiness.get("results") or [])
-                if item.get("missing_required")
-            ]
+            missing_items = []
+            for item in (bundle_readiness.get("results") or []):
+                if not item.get("missing_required"):
+                    continue
+                ghidra_error = str(item.get("ghidra_error") or "").strip()
+                detail = f" (ghidra: {ghidra_error})" if ghidra_error else ""
+                missing_items.append(
+                    f"{item.get('sample')}: {', '.join(item.get('missing_required') or [])}{detail}"
+                )
             errors.append(
                 "Prepared bundles are missing required files: " + "; ".join(missing_items)
             )

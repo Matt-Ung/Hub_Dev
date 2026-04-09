@@ -1,3 +1,17 @@
+"""
+File: building.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Build maintained test corpora through their corpus-local Makefiles.
+
+Summary:
+  This module is the harness-side build adapter for the prototype,
+  experimental, and final-round corpora. It chooses the right make targets,
+  sets output roots, and records structured build results for later preflight
+  and run manifests.
+"""
+
 from __future__ import annotations
 
 import os
@@ -5,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .paths import ensure_dir
-from .samples import CorpusConfig, get_corpus_config
+from .samples import get_corpus_config
 from .subprocess_utils import run_command
 
 
@@ -72,7 +86,7 @@ def build_corpus(
         }
         records.append(upx_record)
 
-    outputs = sorted(path.name for path in config.build_root.glob("*.exe") if path.is_file())
+    outputs = sorted(path.name for path in config.binary_root.glob("*.exe") if path.is_file())
     required_records = [record for record in records if record.get("step") not in {"clean", "upx"}]
     optional_failures = [
         {

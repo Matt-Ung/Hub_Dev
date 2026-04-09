@@ -1,0 +1,82 @@
+\chapter{Background and Problem Setting}
+\label{sec:background}
+
+\section{Reverse Engineering as an Evidence-Gathering Problem}
+
+Reverse engineering is not a single question answered by a single tool. Analysts move among disassembly, decompilation, string inspection, structural triage, pattern matching, and selective execution in order to construct an evidence-backed explanation of program behavior. This makes the domain a strong candidate for studying tool-orchestrated agents.
+
+\begin{itemize}
+\item Reverse engineering tasks often require both broad survey steps and narrow recovery steps.
+\item Malware-oriented questions raise the additional need for analyst caution, provenance tracking, and explicit uncertainty handling.
+\item The quality of an answer depends not only on the final narrative but also on whether the system gathered the right supporting artifacts.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Define the task categories used in this thesis, such as default analysis, configuration recovery, behavior recovery, packing triage, and anti-analysis investigation.}
+\item \TODO{State what counts as acceptable evidence for binary understanding claims in this thesis.}
+\end{itemize}
+
+\section{LLM Agents, Tool Use, and Orchestration}
+
+The system studied here is explicitly modular. Rather than expecting one model invocation to reason, search, inspect artifacts, and self-critique all at once, the workflow decomposes the task into stages with different responsibilities. This chapter should explain why that decomposition is appropriate for reverse engineering.
+
+\begin{itemize}
+\item Planner stages decompose the query and allocate work.
+\item Worker stages gather concrete evidence through tool use.
+\item Validator stages review coverage, evidence quality, and missing artifacts.
+\item Reporter stages synthesize the final answer for the run artifact.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Explain the intuition behind planner-worker-validator-reporter style decomposition.}
+\item \TODO{Clarify how this differs from chain-of-thought prompting or single-agent tool use.}
+\item \TODO{Discuss why explicit stage contracts matter when tools can produce noisy or partial evidence.}
+\end{itemize}
+
+\section{MCP-Style Tool Integration}
+
+The repository uses MCP-style servers to expose tool capabilities to the runtime. This matters because the thesis argument is partly about interface design: how tool affordances are surfaced to agents, how outputs are normalized, and how evidence is routed back into shared state.
+
+\begin{itemize}
+\item Core static lane: Ghidra, strings, FLOSS, capability analysis, hash lookups, YARA, binwalk, and related enrichers.
+\item Optional dynamic or execution-oriented lane: VM and sandbox-style tooling, packet or process observation, and task-specific execution probes.
+\item Artifact management layer: bundles, manifests, run records, judge outputs, and experiment aggregates.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Document how MCP servers are loaded and partitioned into static versus dynamic tool groups.}
+\item \TODO{Explain the tradeoff between uniform tool access and tool-specific prompting or guardrails.}
+\item \TODO{Add a diagram showing how tool requests and results move through shared state.}
+\end{itemize}
+
+\section{Binary Analysis Tooling in Scope}
+
+This thesis should also introduce the technical role of each major tool class so later architecture chapters can assume that context.
+
+\begin{itemize}
+\item Ghidra provides decompilation, disassembly, symbol context, and structural inspection.
+\item String and FLOSS-style tooling surface literal and decoded text evidence.
+\item Capability and signature tools provide fast high-level hints that can be corroborated later.
+\item Dynamic or VM-backed tooling is reserved for cases where static evidence is insufficient or ambiguous.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Explain why Ghidra is the primary structural analysis backend in this system.}
+\item \TODO{Clarify which tasks can be completed from static evidence alone and which ones benefit from dynamic execution.}
+\item \TODO{Describe how UPX, packing, and unpacking are treated as preprocessing versus analysis-time decisions.}
+\end{itemize}
+
+\section{Problem Formulation for the Thesis}
+
+At a high level, each experiment asks whether a workflow configuration can answer a binary-analysis task better than a baseline. In the maintained harness, the atomic evaluation unit is a sample-task pair. That framing should become the formal problem statement for the evaluation chapter.
+
+\begin{itemize}
+\item Inputs: binary sample, task prompt, tool availability, workflow configuration, and model configuration.
+\item Outputs: final analysis report, intermediate evidence artifacts, judge score, and run metadata.
+\item Comparison axis: score deltas, task success rates, error rates, and qualitative failure analysis across matched tasks.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Convert this into a concise formal problem statement that the rest of the thesis can reference.}
+\item \TODO{State what a ``weaker baseline'' means in the context of this system and why that baseline is fair.}
+\end{itemize}

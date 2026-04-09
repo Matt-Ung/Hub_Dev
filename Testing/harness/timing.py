@@ -1,3 +1,16 @@
+"""
+File: timing.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Aggregate timing data from run and experiment records into reporting tables.
+
+Summary:
+  This module summarizes analysis, judging, and wall-clock durations across
+  runs, tasks, and higher-level experiment groupings so timing tradeoffs stay
+  visible alongside quality metrics.
+"""
+
 from __future__ import annotations
 
 import csv

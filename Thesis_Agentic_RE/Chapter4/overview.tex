@@ -1,0 +1,85 @@
+\chapter{System Overview}
+\label{sec:overview}
+
+This chapter should give the reader a coherent picture of the system before the implementation details appear. The emphasis should be on workflow, component roles, and evidence flow rather than low-level code.
+
+\section{End-to-End Workflow}
+
+At a high level, a run begins with a user query or evaluation task, resolves a workflow configuration, provisions tool access, and then executes a staged agent pipeline. The main system flow in this repository follows the path \texttt{main.py $\rightarrow$ config.py $\rightarrow$ frontend.py $\rightarrow$ runtime.py $\rightarrow$ pipeline.py}. The thesis should describe that flow conceptually rather than line by line.
+
+\begin{itemize}
+\item Query or task selection.
+\item Pipeline and architecture selection.
+\item Tool partitioning and runtime assembly.
+\item Planner, worker, validator, and reporter stage execution.
+\item Artifact capture, judging, and experiment aggregation.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Add a figure for the run dataflow from input query to final report and judge artifact.}
+\item \TODO{Explain which parts of the workflow are static configuration choices and which parts are dynamic at run time.}
+\end{itemize}
+
+\section{Planner, Worker, Validator, and Reporter Roles}
+
+The workflow supports multiple stage kinds, but the core thesis story should focus on the planner-worker-validator-reporter topology.
+
+\begin{itemize}
+\item Planners decide how to decompose the task and which evidence should be gathered.
+\item Workers perform focused analysis passes, often with specialized tool access or role prompts.
+\item Validators review coverage, evidence quality, and missing artifacts before final reporting.
+\item Reporters convert intermediate evidence into the final narrative artifact used by the harness and judge.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Describe the contract for each stage and the failure modes it is meant to catch.}
+\item \TODO{Explain why validators are treated as a first-class component rather than a final self-check by the reporter.}
+\item \TODO{Clarify how architecture presets change the available worker topology.}
+\end{itemize}
+
+\section{Configuration Surfaces}
+
+The maintained system exposes several configuration families that are important to the evaluation story:
+
+\begin{itemize}
+\item response-scope variants
+\item analysis-hint variants (pilot-only, not used in the maintained final sweep)
+\item worker subagent profiles
+\item worker prompt shape and role-prompt mode
+\item tool profiles
+\item architecture presets
+\item pipeline presets
+\item validator topology and validator review level
+\end{itemize}
+
+These are not merely engineering options. They are the intervention points used by the evaluation harness to compare baseline and variant behavior.
+
+\begin{itemize}
+\item \TODO{Add a table mapping each configuration family to the aspect of behavior it is intended to test.}
+\item \TODO{Explain which options alter reasoning behavior, which alter available evidence, and which alter review strictness.}
+\end{itemize}
+
+\section{Shared State and Evidence Flow}
+
+The system keeps shared run state so later stages can inspect earlier findings, tool outputs, and failure metadata. This matters because reverse engineering benefits from explicit provenance. The thesis should explain what information is stored, how it is surfaced to later stages, and how that affects final reporting and judging.
+
+\begin{itemize}
+\item Intermediate tool outputs and structured findings.
+\item Stage status logs and work-item tracking.
+\item Final analysis report and supporting artifacts.
+\item Run metadata used by the evaluation harness, including bundle provenance and comparison context.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Describe how shared state prevents evidence loss between planning, execution, validation, and reporting.}
+\item \TODO{Explain how the live monitor and result browser reflect this shared-state model.}
+\end{itemize}
+
+\section{Why This Architecture Fits Reverse Engineering}
+
+The value proposition of the architecture should be made explicit: binary analysis benefits from staged specialization because the evidence sources are heterogeneous, and high-confidence answers require both discovery and critique. A monolithic prompt can mention these needs, but it cannot enforce them structurally. This chapter should set up that argument so the evaluation chapter can test it.
+
+\begin{itemize}
+\item \TODO{State the design principles that guided the architecture, such as modularity, traceability, evidence-first reasoning, and controllable ablations.}
+\item \TODO{Add a short example walkthrough of one analysis task moving through planner, workers, validator, and reporter.}
+\end{itemize}

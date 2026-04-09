@@ -1,0 +1,80 @@
+\documentclass[MS]{inithesis}
+%\documentclass[economy,twoside,bind]{inithesis}
+
+\usepackage{amsmath, amssymb, amsfonts, amsthm}
+\usepackage{graphicx}
+\usepackage{color}
+\usepackage{bm}
+\usepackage{mathabx}
+\usepackage{multirow}
+\usepackage{setspace}
+\usepackage{pdfpages}
+\usepackage{tocloft}
+\addtolength\cftfignumwidth{2.7em}%
+\addtolength\cfttabnumwidth{2.7em}%
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{result}[theorem]{Result}
+
+\newcommand{\TODO}[1]{\textbf{TODO:} #1}
+
+\graphicspath{{./Pictures/}}
+
+\author{Matthew Ung}
+\title{Tool-Orchestrated Agentic Reverse Engineering and Malware Analysis}
+\department{Information Networking Institute}
+\program{Information Security}
+\previousdegreelist{TODO: add prior degree information}
+\fulldate{April, 2026}
+\degreeyear{2026}
+\copyrighttext{All Rights Reserved}
+
+\usepackage[pdftex, pdfusetitle, plainpages=false,
+            bookmarks, bookmarksnumbered,
+            colorlinks, linkcolor=black, citecolor=black,
+            filecolor=black, urlcolor=black]
+           {hyperref}
+
+\begin{document}
+
+\includepdf[pages={1}]{signature.pdf}
+
+\maketitle
+
+\include{./Acknowledgements/acknowledgements}
+\include{./Abstract/abstract}
+
+\tableofcontents
+\newpage
+% Enable these once the draft contains formal tables and figures.
+%\listoftables
+%\addcontentsline{toc}{chapter}{List of Tables}%
+%\newpage
+%\listoffigures
+%\addcontentsline{toc}{chapter}{List of Figures}%
+%\newpage
+%\include{./Symbols/listofsymbols}
+
+\include{./Chapter1/introduction}
+\include{./Chapter2/background}
+\include{./Chapter3/related}
+\include{./Chapter4/overview}
+\include{./Chapter5/implementation}
+\include{./Chapter6/evaluation}
+\include{./Chapter7/results}
+\include{./Chapter8/limitations}
+\include{./Chapter9/conclusion}
+
+\cleardoublepage
+\normalbaselines
+\chapter*{Bibliography}
+\addcontentsline{toc}{chapter}{Bibliography}
+\TODO{Add curated related-work, tooling, and methodology citations here once the literature review chapter is fully drafted. Re-enable BibTeX after real citations are inserted into the document.}
+
+\appendix
+\include{./Appendix/appendix1}
+
+\end{document}

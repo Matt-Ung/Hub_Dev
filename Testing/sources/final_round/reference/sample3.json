@@ -1,0 +1,229 @@
+{
+  "sample_index": 3,
+  "final_filename": "sample3.exe",
+  "original_source_name": "TrickBot",
+  "family_label": "TrickBot simulation",
+  "platform": "windows",
+  "architecture": "x86_64",
+  "build_mode": "release",
+  "stripped": true,
+  "packed": true,
+  "source_files": [
+    "TrickBot/trick_main.cpp",
+    "TrickBot/trick_antidebug.cpp",
+    "TrickBot/trick_config.h"
+  ],
+  "artifact": {
+    "final_path": "output/sample3.exe",
+    "release_path": "release/trickbot_release.exe",
+    "stripped_path": "stripped/trickbot_release.exe",
+    "exists": null,
+    "sha256": null,
+    "size_bytes": null
+  },
+  "intended_simulation": "Modular banking-trojan-style loader with layered anti-analysis, registry persistence, encrypted C2 seeds, HTTPS module retrieval, and web-inject-oriented post-exploitation hooks.",
+  "major_observable_capabilities": [
+    "Timing-based debugger detection, hardware-breakpoint checks, WMI-based VM detection, NTDLL .text integrity checking, and TLS-callback anti-debug logic.",
+    "In-memory PE-header corruption intended to complicate dumping.",
+    "Registry Run-key persistence using value name WindowsDefender.",
+    "Encrypted C2 server list bytes in config.h decoded before network use.",
+    "HTTPS POST check-in to /ga/ on port 447.",
+    "Downloaded module handling that distinguishes module IDs such as systeminfo and webinjects.",
+    "Built-in module-descriptor dispatch with DJB2-hashed names and XML-style per-module configuration parsing.",
+    "Web-inject setup that writes browser-facing configuration into an Internet Explorer registry location."
+  ],
+  "important_limitations": [
+    "The code simulates module retrieval and does not implement a full reflective DLL loader or real TrickBot cryptography.",
+    "GetAntiDebugScript() is present as a reference artifact, but it is not invoked by the main execution path in trick_main.cpp.",
+    "TLS callback registration behavior depends on the Windows toolchain / linker honoring the callback section directives."
+  ],
+  "static_strings_expected": [
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    "WindowsDefender",
+    "/ga/",
+    "ROOT\\CIMV2",
+    "SELECT * FROM Win32_ComputerSystem WHERE Model LIKE '%VMware%' OR Model LIKE '%VirtualBox%'",
+    "*.bankofamerica.com/*",
+    "*.wellsfargo.com/*",
+    "*.chase.com/*",
+    "*.citi.com/*",
+    "Software\\Microsoft\\Internet Explorer\\International",
+    "AcceptLanguage",
+    "InjectTarget",
+    "NetworkExfilUrl"
+  ],
+  "encoded_or_config_artifacts": [
+    "ENC_C2_SERVERS byte array in TrickBot/trick_config.h.",
+    "TrickModule enum with module IDs for system info, inject DLL, web injects, network DLL, and bcrypt support.",
+    "Bank-target URL patterns stored in INJECT_TARGETS."
+  ],
+  "resources_or_embedded_data": [
+    "No external module blobs or resource files are checked in with this simulation."
+  ],
+  "imports_and_runtime_clues": [
+    "Native Win32 C++ sample using WinHTTP, WMI COM interfaces, registry APIs, and low-level thread context / PE structures.",
+    "No browser hooking implementation is shipped; only the structure and target patterns are present."
+  ],
+  "relationship_reference": {
+    "related_files": [
+      "TrickBot/trick_main.cpp",
+      "TrickBot/trick_antidebug.cpp",
+      "TrickBot/trick_config.h"
+    ],
+    "config_files": [
+      "TrickBot/trick_config.h"
+    ],
+    "dropped_or_generated_artifacts": [
+      "Registry Run value WindowsDefender referencing the current executable.",
+      "Internet Explorer AcceptLanguage registry value under the International key."
+    ],
+    "loader_payload_helper_relationships": [
+      "trick_main.cpp handles persistence, C2 traffic, XML-backed module dispatch, and browser-facing staging.",
+      "trick_antidebug.cpp contains debugger, VM, NTDLL hook-detection, PE corruption, and TLS callback routines.",
+      "trick_config.h stores encrypted server bytes and web-inject target patterns."
+    ]
+  },
+  "reporting_reference": {
+    "executive_summary_points": [
+      "The sample foregrounds anti-analysis before registry persistence or module retrieval.",
+      "Persistence is set through a Run value named WindowsDefender.",
+      "HTTPS C2 traffic is modeled through a /ga/ POST path and encrypted-seed server list.",
+      "Web-inject-style post-exploitation is represented by bank target patterns and browser-related registry changes."
+    ],
+    "expected_functionality_sections": [
+      "anti-analysis and anti-debugging",
+      "persistence",
+      "C2 and module retrieval",
+      "web-inject / browser-manipulation intent",
+      "module architecture"
+    ],
+    "detection_opportunities": [
+      "Registry Run value WindowsDefender in the current-user hive.",
+      "Fixed /ga/ C2 path and port-447 HTTPS usage.",
+      "WMI query strings for VMware / VirtualBox model checks.",
+      "Bank-target wildcard strings that resemble web-inject target lists."
+    ]
+  },
+  "optional_detection_reference": {
+    "candidate_yara_features": [
+      "WindowsDefender",
+      "/ga/",
+      "*.bankofamerica.com/*",
+      "*.wellsfargo.com/*",
+      "*.chase.com/*",
+      "*.citi.com/*"
+    ],
+    "candidate_sigma_behaviors": [
+      "Registry Run-key creation with value name WindowsDefender.",
+      "HTTPS connections to high ports such as 447 with a fixed /ga/ path.",
+      "Registry modification of Internet Explorer International\\AcceptLanguage."
+    ]
+  },
+  "judge_reference": {
+    "must_hit_anchors": [
+      "Anti-analysis anchored to DetectNtdllHooks(), WMI VM detection, timing or hardware-breakpoint checks, or the TLS callback path.",
+      "Run-key persistence using Software\\Microsoft\\Windows\\CurrentVersion\\Run with value name WindowsDefender.",
+      "Encrypted C2 seed recovery tied to the HTTPS /ga/ POST path on port 447.",
+      "Browser-facing staging anchored to InstallWebInjects(), bank-target patterns, or the Internet Explorer AcceptLanguage registry modification."
+    ],
+    "high_confidence_artifacts": [
+      "WindowsDefender Run-key value.",
+      "/ga/ HTTP path and port 447.",
+      "SELECT * FROM Win32_ComputerSystem WHERE Model LIKE '%VMware%' OR Model LIKE '%VirtualBox%'.",
+      "*.bankofamerica.com/* and related bank-target patterns.",
+      "AcceptLanguage registry value."
+    ],
+    "supported_behavior_claims": [
+      "Anti-analysis gates execution before persistence or module retrieval.",
+      "In-memory PE-header corruption is used as an anti-dumping complication.",
+      "Registry persistence is implemented.",
+      "HTTPS C2 plus modular follow-on behavior is staged.",
+      "Web-inject intent is represented through target lists and browser-facing registry writes."
+    ],
+    "minimum_report_sections": [
+      "anti-analysis",
+      "persistence",
+      "C2 and encrypted config",
+      "module architecture",
+      "browser-targeting intent"
+    ],
+    "limitations_to_respect": [
+      "The code simulates module retrieval and does not implement a full reflective DLL loader or real TrickBot cryptography.",
+      "GetAntiDebugScript() is present as a reference artifact but is not invoked by the main execution path in trick_main.cpp.",
+      "TLS callback registration behavior depends on the Windows toolchain and linker honoring the callback section directives."
+    ],
+    "do_not_overclaim": [
+      "Do not claim live browser hooking or a fully operational webinject stack when only structural target patterns and registry staging are present.",
+      "Do not claim GetAntiDebugScript() executes in the main path unless independently grounded elsewhere.",
+      "Do not overstate the network protocol beyond the encrypted server seeds and fixed /ga/ beacon path."
+    ],
+    "common_failure_modes": [
+      "Missing the anti-analysis layer and reporting only persistence plus networking.",
+      "Treating the banking or browser-manipulation logic as fully realized rather than staged.",
+      "Ignoring the toolchain-dependent nature of the TLS callback path."
+    ]
+  },
+  "grounding": [
+    {
+      "file": "TrickBot/trick_main.cpp",
+      "symbol": "WinMain",
+      "supports": [
+        "anti-analysis gating",
+        "Run-key persistence",
+        "module loop"
+      ]
+    },
+    {
+      "file": "TrickBot/trick_main.cpp",
+      "symbol": "TrickbotC2Checkin",
+      "supports": [
+        "HTTPS POST /ga/",
+        "module-response handling"
+      ]
+    },
+    {
+      "file": "TrickBot/trick_main.cpp",
+      "symbol": "DispatchConfiguredModules",
+      "supports": [
+        "DJB2 module hashing",
+        "XML-style config parsing",
+        "module staging"
+      ]
+    },
+    {
+      "file": "TrickBot/trick_main.cpp",
+      "symbol": "InstallWebInjects",
+      "supports": [
+        "browser-facing registry manipulation"
+      ]
+    },
+    {
+      "file": "TrickBot/trick_antidebug.cpp",
+      "symbol": "IsVirtualMachine",
+      "supports": [
+        "WMI-based VM check"
+      ]
+    },
+    {
+      "file": "TrickBot/trick_antidebug.cpp",
+      "symbol": "DetectNtdllHooks",
+      "supports": [
+        "NTDLL hook / section-hash detection"
+      ]
+    },
+    {
+      "file": "TrickBot/trick_antidebug.cpp",
+      "symbol": "TlsCallback",
+      "supports": [
+        "TLS anti-debug path"
+      ]
+    },
+    {
+      "file": "TrickBot/trick_antidebug.cpp",
+      "symbol": "CorruptPEHeader",
+      "supports": [
+        "in-memory PE corruption"
+      ]
+    }
+  ]
+}

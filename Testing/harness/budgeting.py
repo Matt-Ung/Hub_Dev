@@ -1,3 +1,17 @@
+"""
+File: budgeting.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Resolve budget guardrails and evaluate projected run or experiment cost
+  against them.
+
+Summary:
+  This module turns declarative budget config into normalized launch-time
+  ceilings, combines them with usage snapshots or heuristic projections, and
+  reports whether a run or experiment remains within the configured bounds.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List

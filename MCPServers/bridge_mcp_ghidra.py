@@ -12,7 +12,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from fastmcp import FastMCP
@@ -21,6 +21,7 @@ import artifactGhidraMCP as artifact_mcp
 DEFAULT_GHIDRA_SERVER = "http://127.0.0.1:8080/"
 DEFAULT_FALLBACK_MODE = "live_only"
 FALLBACK_MODES = {"live_only", "artifact_if_unavailable", "artifact_only"}
+LOCAL_GHIDRA_HOSTS = {"127.0.0.1", "localhost", "::1"}
 UNAVAILABLE_MARKERS = (
     "request failed:",
     "no program loaded",
@@ -35,6 +36,8 @@ mcp = FastMCP("ghidra-mcp")
 ghidra_server_url = DEFAULT_GHIDRA_SERVER
 ghidra_fallback_mode = str(os.environ.get("GHIDRA_MCP_FALLBACK_MODE") or DEFAULT_FALLBACK_MODE).strip().lower()
 ghidra_artifact_bundle_dir = str(os.environ.get("GHIDRA_ARTIFACT_BUNDLE_DIR") or "").strip()
+ghidra_allow_mutations = str(os.environ.get("GHIDRA_MCP_ALLOW_MUTATIONS") or "").strip().lower() in {"1", "true", "yes", "on"}
+ghidra_allow_remote_server = str(os.environ.get("GHIDRA_MCP_ALLOW_REMOTE_SERVER") or "").strip().lower() in {"1", "true", "yes", "on"}
 _artifact_bundle_loaded = False
 _FUNCTION_SELECTOR_WITH_ADDRESS_RE = re.compile(
     r"^\s*(?P<name>.+?)\s*@\s*(?P<address>(?:0x)?[0-9A-Fa-f]+)\s*$"
@@ -45,6 +48,20 @@ def _normalize_fallback_mode(raw_mode: str) -> str:
     candidate = str(raw_mode or DEFAULT_FALLBACK_MODE).strip().lower()
     if candidate not in FALLBACK_MODES:
         return DEFAULT_FALLBACK_MODE
+    return candidate
+
+
+def _validated_ghidra_server_url(raw_url: str) -> str:
+    candidate = str(raw_url or DEFAULT_GHIDRA_SERVER).strip() or DEFAULT_GHIDRA_SERVER
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"invalid Ghidra server URL: {candidate!r}")
+    hostname = (parsed.hostname or "").strip().lower()
+    if not ghidra_allow_remote_server and hostname not in LOCAL_GHIDRA_HOSTS:
+        raise ValueError(
+            "remote Ghidra server URLs are disabled by default; "
+            "set GHIDRA_MCP_ALLOW_REMOTE_SERVER=1 or pass --allow-remote-server to opt in"
+        )
     return candidate
 
 
@@ -107,6 +124,12 @@ def _read_only_mutation_error(tool_name: str) -> str:
 
 
 def _call_mutating_with_fallback(tool_name: str, live_callable, *artifact_args, **artifact_kwargs):
+    if not ghidra_allow_mutations:
+        logger.warning("Blocked mutating Ghidra tool %s because GHIDRA_MCP_ALLOW_MUTATIONS is not enabled", tool_name)
+        return (
+            f"Error: {tool_name} is disabled by default. "
+            "Enable GHIDRA_MCP_ALLOW_MUTATIONS=1 or pass --allow-mutations when launching the server."
+        )
     if ghidra_fallback_mode == "artifact_only":
         return _read_only_mutation_error(tool_name)
 
@@ -133,7 +156,10 @@ def safe_get(endpoint: str, params: dict = None) -> list:
     if params is None:
         params = {}
 
-    url = urljoin(ghidra_server_url, endpoint)
+    try:
+        url = urljoin(_validated_ghidra_server_url(ghidra_server_url), endpoint)
+    except Exception as e:
+        return [f"Error: {e}"]
 
     try:
         response = requests.get(url, params=params, timeout=5)
@@ -147,7 +173,7 @@ def safe_get(endpoint: str, params: dict = None) -> list:
 
 def safe_post(endpoint: str, data: dict | str) -> str:
     try:
-        url = urljoin(ghidra_server_url, endpoint)
+        url = urljoin(_validated_ghidra_server_url(ghidra_server_url), endpoint)
         if isinstance(data, dict):
             response = requests.post(url, data=data, timeout=5)
         else:
@@ -525,6 +551,10 @@ def main():
     parser.add_argument("--fallback-mode", type=str, default=os.environ.get("GHIDRA_MCP_FALLBACK_MODE", DEFAULT_FALLBACK_MODE),
                         choices=sorted(FALLBACK_MODES),
                         help="Fallback behavior: live_only, artifact_if_unavailable, or artifact_only")
+    parser.add_argument("--allow-mutations", action="store_true",
+                        help="Enable state-altering rename/comment/type mutation tools against live Ghidra.")
+    parser.add_argument("--allow-remote-server", action="store_true",
+                        help="Allow a non-localhost Ghidra server URL.")
     parser.add_argument("--mcp-host", type=str, default="127.0.0.1",
                         help="Host to run MCP server on (only used for sse), default: 127.0.0.1")
     parser.add_argument("--mcp-port", type=int,
@@ -534,9 +564,11 @@ def main():
     args = parser.parse_args()
     
     # Use the global variable to ensure it's properly updated
-    global ghidra_server_url, ghidra_artifact_bundle_dir, ghidra_fallback_mode
+    global ghidra_server_url, ghidra_artifact_bundle_dir, ghidra_fallback_mode, ghidra_allow_mutations, ghidra_allow_remote_server
+    ghidra_allow_mutations = bool(args.allow_mutations or ghidra_allow_mutations)
+    ghidra_allow_remote_server = bool(args.allow_remote_server or ghidra_allow_remote_server)
     if args.ghidra_server:
-        ghidra_server_url = args.ghidra_server
+        ghidra_server_url = _validated_ghidra_server_url(args.ghidra_server)
     ghidra_artifact_bundle_dir = str(args.artifact_bundle_dir or "").strip()
     ghidra_fallback_mode = _normalize_fallback_mode(args.fallback_mode)
 
@@ -544,6 +576,7 @@ def main():
         logger.info("Artifact fallback enabled in %s mode with bundle dir %s", ghidra_fallback_mode, ghidra_artifact_bundle_dir)
     elif ghidra_fallback_mode == "artifact_only":
         logger.warning("artifact_only mode selected but no artifact bundle directory is configured")
+    logger.info("Ghidra mutation tools enabled: %s", ghidra_allow_mutations)
 
     if args.transport == "sse":
         try:

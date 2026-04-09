@@ -25,9 +25,16 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict
 
-from .artifacts import build_artifact_servers_manifest, inspect_bundle_dir, parse_tool_log_sections, summarize_tool_usage
+from .artifacts import (
+    build_artifact_servers_manifest,
+    inspect_bundle_dir,
+    parse_tool_log_sections,
+    resolve_analysis_bundle,
+    summarize_tool_usage,
+)
 from .costing import estimate_event_costs
 from .paths import REPO_ROOT, read_json, write_json
+from .tool_redundancy import normalize_tool_call_entries, summarize_tool_call_redundancy
 
 
 @contextlib.contextmanager
@@ -219,6 +226,84 @@ def _worker_assignment_summary(shared: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _classify_failure_reason(error: str, shared: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    shared = shared or {}
+    pipeline_error = shared.get("last_pipeline_error") if isinstance(shared.get("last_pipeline_error"), dict) else {}
+    text = str(error or pipeline_error.get("error_text") or "").strip()
+    lowered = text.lower()
+
+    category = "unknown"
+    retryable = False
+    source = "analysis"
+
+    if "bundle is missing required files" in lowered:
+        category = "bundle_missing_required"
+        source = "bundle"
+    elif "failed to resolve the effective analysis bundle" in lowered:
+        category = "analysis_bundle_resolution_failed"
+        source = "bundle"
+    elif "wait_tasks" in lowered and "exceeded max retries count" in lowered:
+        category = "async_task_tool_misuse"
+        source = "pipeline"
+    elif "pipeline canceled by user" in lowered or "cancelled by user" in lowered or "canceled by user" in lowered:
+        category = "cancelled"
+        source = "pipeline"
+    elif "usagelimitexceeded" in lowered or "request_limit of 50" in lowered:
+        category = "usage_limit_exceeded"
+        source = "pipeline"
+    elif "context_length_exceeded" in lowered or "input tokens exceed the configured limit" in lowered:
+        category = "context_length_exceeded"
+        source = "pipeline"
+    elif "invalid_request_error" in lowered or "status_code: 400" in lowered:
+        source = "pipeline"
+        if "could not parse the json body" in lowered:
+            category = "invalid_request_payload"
+        else:
+            category = "invalid_request"
+    elif any(marker in lowered for marker in ("429", "rate limit", "too many requests", "ratelimit")):
+        category = "rate_limit"
+        retryable = True
+        source = "pipeline"
+    elif any(marker in lowered for marker in ("connecttimeout", "readtimeout", "timed out", "timeout")):
+        category = "timeout"
+        retryable = True
+        source = "pipeline"
+    elif any(
+        marker in lowered
+        for marker in (
+            "remoteprotocolerror",
+            "readerror",
+            "peer closed connection",
+            "incomplete chunked read",
+            "server disconnected",
+            "connection reset",
+            "connection aborted",
+            "apiconnectionerror",
+            "service unavailable",
+            "bad gateway",
+            "internalservererror",
+            "status_code: 500",
+            "status_code: 502",
+            "status_code: 503",
+            "status_code: 504",
+        )
+    ):
+        category = "transient_transport"
+        retryable = True
+        source = "pipeline"
+
+    stage_name = str(pipeline_error.get("stage_name") or "").strip()
+    if stage_name:
+        source = "pipeline"
+
+    return {
+        "failure_category": category,
+        "failure_retryable": retryable,
+        "failure_source": source,
+        "failure_stage": stage_name,
+    }
+
+
 def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: str = "") -> Dict[str, Any]:
     """
     Function: _derive_result_status
@@ -238,6 +323,7 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
     worker_summary = _worker_assignment_summary(shared)
     report_text = str(final_report or "").strip()
     if error:
+        failure_details = _classify_failure_reason(error, shared)
         return {
             "status": "analysis_error",
             "produced_result": False,
@@ -245,6 +331,7 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
             "failure_reason": error,
             "validation": validation,
             "worker_assignment_summary": worker_summary,
+            **failure_details,
         }
     if int(worker_summary.get("failed_assignments") or 0) > 0:
         failed_items = list(worker_summary.get("failed_items") or [])
@@ -255,6 +342,16 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
             )
             for item in failed_items
         ) or "One or more host-parallel worker assignments failed."
+        failure_details = _classify_failure_reason(
+            failure_reason,
+            {
+                "last_pipeline_error": {
+                    "stage_name": "workers",
+                    "error_text": failure_reason,
+                }
+            },
+        )
+        failure_category = str(failure_details.get("failure_category") or "").strip() or "worker_assignment_failed"
         return {
             "status": "worker_assignment_failed",
             "produced_result": False,
@@ -262,6 +359,10 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
             "failure_reason": failure_reason,
             "validation": validation,
             "worker_assignment_summary": worker_summary,
+            "failure_category": failure_category,
+            "failure_retryable": bool(failure_details.get("failure_retryable")),
+            "failure_source": str(failure_details.get("failure_source") or "worker_assignments"),
+            "failure_stage": str(failure_details.get("failure_stage") or "workers"),
         }
     if validation["blocked"]:
         latest = validation.get("latest") or {}
@@ -282,6 +383,10 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
                 "planner_fixes": list(latest.get("planner_fixes") or []) if isinstance(latest, dict) else [],
                 "out_of_scope_work_items": list(latest.get("out_of_scope_work_items") or []) if isinstance(latest, dict) else [],
             },
+            "failure_category": "validator_blocked",
+            "failure_retryable": False,
+            "failure_source": "validator",
+            "failure_stage": "",
         }
     if report_text:
         return {
@@ -291,6 +396,10 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
             "failure_reason": "",
             "validation": validation,
             "worker_assignment_summary": worker_summary,
+            "failure_category": "",
+            "failure_retryable": False,
+            "failure_source": "",
+            "failure_stage": "",
         }
     return {
         "status": "no_result",
@@ -299,9 +408,36 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
         "failure_reason": "Pipeline completed without a non-empty final report.",
         "validation": validation,
         "worker_assignment_summary": worker_summary,
+        "failure_category": "no_result",
+        "failure_retryable": False,
+        "failure_source": "pipeline",
+        "failure_stage": "",
     }
 
-
+"""
+Function: run_agent_case
+Inputs:
+  - bundle_dir: prepared bundle directory for one sample binary.
+  - query: evaluation-task prompt to send into the runtime.
+  - pipeline: pipeline preset name for the agent runtime.
+  - architecture: worker architecture preset name for the runtime.
+  - validator_review_level: validator strictness label for validated pipelines.
+  - tool_profile: named tool-availability profile already reflected in the
+    artifact MCP manifest.
+  - output_json: optional path where the canonical agent result should be
+    written.
+Description:
+  Run one artifact-backed analysis case against the multi-agent workflow
+  runtime, capture the resulting report, tool usage, validation history,
+  and failure state, and normalize the result for judging/reporting.
+Outputs:
+  Returns the canonical `agent_result.json` dictionary for this sample-task
+  case. When `output_json` is provided, the same payload is written to disk.
+Side Effects:
+  Sets `MCP_SERVER_MANIFEST_PATH` for the duration of the run, imports the
+  runtime modules lazily, may execute the full analysis pipeline, and may
+  write the result artifact.
+"""
 def run_agent_case(
     bundle_dir: Path,
     *,
@@ -310,32 +446,14 @@ def run_agent_case(
     architecture: str,
     validator_review_level: str = "default",
     tool_profile: str = "full",
+    prefer_upx_unpacked: bool = False,
+    timeout_sec: int | None = None,
+    ghidra_install_dir: str = "",
+    ghidra_headless: str = "",
+    skip_cli_tools: bool = False,
+    keep_project: bool = False,
     output_json: Path | None = None,
 ) -> Dict[str, Any]:
-    """
-    Function: run_agent_case
-    Inputs:
-      - bundle_dir: prepared bundle directory for one sample binary.
-      - query: evaluation-task prompt to send into the runtime.
-      - pipeline: pipeline preset name for the agent runtime.
-      - architecture: worker architecture preset name for the runtime.
-      - validator_review_level: validator strictness label for validated pipelines.
-      - tool_profile: named tool-availability profile already reflected in the
-        artifact MCP manifest.
-      - output_json: optional path where the canonical agent result should be
-        written.
-    Description:
-      Run one artifact-backed analysis case against the multi-agent workflow
-      runtime, capture the resulting report, tool usage, validation history,
-      and failure state, and normalize the result for judging/reporting.
-    Outputs:
-      Returns the canonical `agent_result.json` dictionary for this sample-task
-      case. When `output_json` is provided, the same payload is written to disk.
-    Side Effects:
-      Sets `MCP_SERVER_MANIFEST_PATH` for the duration of the run, imports the
-      runtime modules lazily, may execute the full analysis pipeline, and may
-      write the result artifact.
-    """
     # Normalize the bundle path once so every downstream artifact reference is
     # stable and absolute in logs and result payloads.
     bundle_dir = bundle_dir.resolve()
@@ -366,17 +484,76 @@ def run_agent_case(
             "cost_estimate": {},
             "duration_sec": 0.0,
             "status_log": "",
+            "failure_category": "bundle_missing_required",
+            "failure_retryable": False,
+            "failure_source": "bundle",
+            "failure_stage": "",
         }
         if output_json is not None:
             write_json(output_json, result)
         return result
 
-    automation_payload_path = bundle_dir / "automation_payload.json"
-    manifest_path = bundle_dir / "bundle_manifest.json"
+    bundle_resolution = resolve_analysis_bundle(
+        bundle_dir,
+        prefer_upx_unpacked=prefer_upx_unpacked,
+        timeout_sec=timeout_sec,
+        ghidra_install_dir=ghidra_install_dir,
+        ghidra_headless=ghidra_headless,
+        skip_cli_tools=skip_cli_tools,
+        keep_project=keep_project,
+    )
+    effective_bundle_dir = Path(str(bundle_resolution.get("bundle_dir") or bundle_dir)).resolve()
+    effective_bundle_readiness = inspect_bundle_dir(effective_bundle_dir)
+    if not bool(effective_bundle_readiness.get("ready_for_analysis")):
+        missing_required = list(effective_bundle_readiness.get("missing_required") or [])
+        result = {
+            "bundle_dir": str(bundle_dir),
+            "analysis_bundle_dir": str(effective_bundle_dir),
+            "source_bundle_dir": str(bundle_dir),
+            "pipeline": pipeline,
+            "architecture": architecture,
+            "query": str(query or "").strip(),
+            "manifest_path": "",
+            "ok": False,
+            "status": "analysis_error",
+            "produced_result": False,
+            "accepted_final_output": False,
+            "failure_reason": (
+                "Effective analysis bundle is missing required files: "
+                + ", ".join(missing_required)
+                + "."
+            ),
+            "bundle_readiness": effective_bundle_readiness,
+            "source_bundle_readiness": bundle_readiness,
+            "analysis_target": dict(bundle_resolution.get("analysis_target") or {}),
+            "validator_review_level": str(validator_review_level or "default").strip() or "default",
+            "validator_summary": {},
+            "validation": {},
+            "tool_profile": str(tool_profile or "full").strip() or "full",
+            "model_usage": {"totals": {}, "by_stage": {}, "events": []},
+            "cost_estimate": {},
+            "duration_sec": 0.0,
+            "status_log": "",
+            "failure_category": "bundle_missing_required",
+            "failure_retryable": False,
+            "failure_source": "bundle",
+            "failure_stage": "",
+        }
+        if output_json is not None:
+            write_json(output_json, result)
+        return result
+
+    automation_payload_path = effective_bundle_dir / "automation_payload.json"
+    manifest_path = effective_bundle_dir / "bundle_manifest.json"
 
     with tempfile.TemporaryDirectory(prefix="artifact_mcp_manifest_") as temp_dir:
         manifest_output = Path(temp_dir) / "servers.json"
-        build_artifact_servers_manifest(bundle_dir, manifest_output, tool_profile=str(tool_profile or "full").strip() or "full")
+        build_artifact_servers_manifest(
+            effective_bundle_dir,
+            manifest_output,
+            tool_profile=str(tool_profile or "full").strip() or "full",
+            analysis_target_kind=str(((bundle_resolution.get("analysis_target") or {}) if isinstance(bundle_resolution.get("analysis_target"), dict) else {}).get("kind") or ""),
+        )
         with _fresh_harness_runtime(manifest_output) as runtime_parts:
             run_deepagent_pipeline = runtime_parts["run_deepagent_pipeline"]
             get_runtime_sync = runtime_parts["get_runtime_sync"]
@@ -387,11 +564,29 @@ def run_agent_case(
             # workflow expects, then inject any automation payload bundled for the
             # sample before executing the pipeline.
             state = _build_initial_state(_new_shared_state)
+            run_label = (
+                f"pid-{os.getpid()}:{output_json.parent.name}"
+                if output_json is not None and output_json.parent.name
+                else f"pid-{os.getpid()}:analysis"
+            )
+            state["active_run_id"] = run_label
             state["validator_review_level"] = str(validator_review_level or "default").strip() or "default"
             if isinstance(state.get("shared_state"), dict):
                 state["shared_state"]["validator_review_level"] = state["validator_review_level"]
-            manifest = read_json(manifest_path) if manifest_path.exists() else {}
-            automation_payload = read_json(automation_payload_path) if automation_payload_path.exists() else {}
+            manifest = (
+                dict(bundle_resolution.get("bundle_manifest") or {})
+                if isinstance(bundle_resolution.get("bundle_manifest"), dict)
+                else {}
+            )
+            if not manifest:
+                manifest = read_json(manifest_path) if manifest_path.exists() else {}
+            automation_payload = (
+                dict(bundle_resolution.get("automation_payload") or {})
+                if isinstance(bundle_resolution.get("automation_payload"), dict)
+                else {}
+            )
+            if not automation_payload:
+                automation_payload = read_json(automation_payload_path) if automation_payload_path.exists() else {}
             if automation_payload:
                 apply_automation_payload_to_state(state, automation_payload)
 
@@ -403,12 +598,17 @@ def run_agent_case(
                 )
 
             result: Dict[str, Any] = {
-                "bundle_dir": str(bundle_dir),
-                "bundle_readiness": bundle_readiness,
+                "bundle_dir": str(effective_bundle_dir),
+                "analysis_bundle_dir": str(effective_bundle_dir),
+                "source_bundle_dir": str(bundle_dir),
+                "bundle_readiness": effective_bundle_readiness,
+                "source_bundle_readiness": bundle_readiness,
                 "pipeline": pipeline,
                 "architecture": architecture,
                 "query": effective_query,
                 "manifest_path": str(manifest_output),
+                "analysis_bundle_manifest_path": str(manifest_path),
+                "analysis_target": dict(bundle_resolution.get("analysis_target") or {}),
                 "tool_profile": str(tool_profile or "full").strip() or "full",
                 "ok": False,
             }
@@ -417,6 +617,11 @@ def run_agent_case(
                 report = run_deepagent_pipeline(runtime, effective_query, state)
                 shared = state.get("shared_state") or {}
                 parsed_tool_entries = parse_tool_log_sections(state.get("tool_log_sections") or {})
+                normalized_tool_calls = normalize_tool_call_entries(parsed_tool_entries)
+                tool_redundancy = summarize_tool_call_redundancy(
+                    parsed_tool_entries,
+                    normalized_calls=normalized_tool_calls,
+                )
                 model_usage_events = list(shared.get("model_usage_events") or [])
                 status_info = _derive_result_status(shared, report)
                 result.update(
@@ -431,6 +636,10 @@ def run_agent_case(
                         "validator_summary": dict(status_info.get("validator_summary") or {}),
                         "validation": dict(status_info.get("validation") or {}),
                         "worker_assignment_summary": dict(status_info.get("worker_assignment_summary") or {}),
+                        "failure_category": str(status_info.get("failure_category") or ""),
+                        "failure_retryable": bool(status_info.get("failure_retryable")),
+                        "failure_source": str(status_info.get("failure_source") or ""),
+                        "failure_stage": str(status_info.get("failure_stage") or ""),
                         "automation_status": str(shared.get("automation_status") or ""),
                         "auto_triage_status": str(shared.get("auto_triage_status") or ""),
                         "auto_triage_context_summary": str(shared.get("auto_triage_context_summary") or ""),
@@ -438,6 +647,8 @@ def run_agent_case(
                         "ghidra_change_proposals": list(shared.get("ghidra_change_proposals") or []),
                         "generated_yara_rules": list(shared.get("generated_yara_rules") or []),
                         "tool_usage": summarize_tool_usage(parsed_tool_entries),
+                        "normalized_tool_calls": normalized_tool_calls,
+                        "tool_redundancy": tool_redundancy,
                         "model_usage": {
                             "totals": dict(shared.get("model_usage_totals") or {}),
                             "by_stage": dict(shared.get("model_usage_by_stage") or {}),
@@ -464,6 +675,10 @@ def run_agent_case(
                         "validator_summary": dict(status_info.get("validator_summary") or {}),
                         "validation": dict(status_info.get("validation") or {}),
                         "worker_assignment_summary": dict(status_info.get("worker_assignment_summary") or {}),
+                        "failure_category": str(status_info.get("failure_category") or ""),
+                        "failure_retryable": bool(status_info.get("failure_retryable")),
+                        "failure_source": str(status_info.get("failure_source") or ""),
+                        "failure_stage": str(status_info.get("failure_stage") or ""),
                         "error": "%s: %s" % (type(exc).__name__, exc),
                         "traceback": traceback.format_exc(),
                         "model_usage": {

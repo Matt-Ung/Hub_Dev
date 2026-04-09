@@ -105,6 +105,118 @@ _USAGE_KEYS = (
     "output_tokens",
 )
 
+_ASYNC_TASK_MANAGEMENT_TOOL_NAMES = (
+    "check_task",
+    "wait_tasks",
+    "list_active_tasks",
+    "answer_subagent",
+)
+_STAGE_MAX_TRANSIENT_RETRIES = 2
+_STAGE_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
+_HOST_WORKER_MAX_TRANSIENT_RETRIES = 2
+_HOST_WORKER_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
+_HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES = 1
+_HOST_WORKER_STAGE_RETRY_BACKOFF_SECONDS = (2.0,)
+_HOST_WORKER_NON_RETRYABLE_ERROR_MARKERS = (
+    "status_code: 400",
+    "invalid_request_error",
+    "context_length_exceeded",
+    "could not parse the json body",
+    "input tokens exceed the configured limit",
+    "validationerror",
+    "unexpectedmodelbehavior",
+    "usagelimitexceeded",
+    "request_limit of 50",
+)
+_HOST_WORKER_RETRYABLE_ERROR_MARKERS = (
+    "remoteprotocolerror",
+    "readerror",
+    "peer closed connection",
+    "incomplete chunked read",
+    "server disconnected",
+    "connection reset",
+    "connection aborted",
+    "apiconnectionerror",
+    "connecttimeout",
+    "readtimeout",
+    "timeout",
+    "timed out",
+    "429",
+    "rate limit",
+    "too many requests",
+    "ratelimit",
+    "internalservererror",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "status_code: 500",
+    "status_code: 502",
+    "status_code: 503",
+    "status_code: 504",
+)
+_RATE_LIMIT_ERROR_MARKERS = (
+    "429",
+    "rate limit",
+    "too many requests",
+    "ratelimit",
+)
+_TIMEOUT_ERROR_MARKERS = (
+    "connecttimeout",
+    "readtimeout",
+    "timeout",
+    "timed out",
+    "gateway timeout",
+)
+_TRANSIENT_TRANSPORT_ERROR_MARKERS = (
+    "remoteprotocolerror",
+    "readerror",
+    "peer closed connection",
+    "incomplete chunked read",
+    "server disconnected",
+    "connection reset",
+    "connection aborted",
+    "apiconnectionerror",
+    "service unavailable",
+    "bad gateway",
+    "internalservererror",
+    "status_code: 500",
+    "status_code: 502",
+    "status_code: 503",
+    "status_code: 504",
+)
+_INVALID_REQUEST_ERROR_MARKERS = (
+    "status_code: 400",
+    "invalid_request_error",
+)
+_INVALID_JSON_BODY_ERROR_MARKERS = (
+    "could not parse the json body",
+    "json payload",
+)
+_CONTEXT_LENGTH_ERROR_MARKERS = (
+    "context_length_exceeded",
+    "input tokens exceed the configured limit",
+    "messages resulted in",
+)
+_USAGE_LIMIT_ERROR_MARKERS = (
+    "usagelimitexceeded",
+    "request_limit of 50",
+)
+_CANCELLATION_ERROR_MARKERS = (
+    "pipeline canceled by user",
+    "pipeline cancelled by user",
+    "cancellederror",
+    "cancelled by user",
+    "canceled by user",
+)
+
+
+def _retry_backoff_sec(retry_index: int, schedule: Tuple[float, ...]) -> float:
+    if retry_index < len(schedule):
+        return float(schedule[retry_index])
+    last = float(schedule[-1])
+    growth = 2 ** max(0, retry_index - len(schedule) + 1)
+    return float(min(8.0, last * growth))
+
 
 def _empty_usage_snapshot() -> Dict[str, Any]:
     return {**{key: 0 for key in _USAGE_KEYS}, "details": {}}
@@ -180,6 +292,153 @@ def _record_model_usage(
             "usage": usage_snapshot,
         }
     )
+
+
+def _error_text(error: Exception | str) -> str:
+    if isinstance(error, Exception):
+        return f"{type(error).__name__}: {error}"
+    return str(error or "").strip()
+
+
+def _classify_runtime_error(error: Exception | str) -> Dict[str, Any]:
+    text = _error_text(error)
+    lowered = text.lower()
+
+    category = "unknown"
+    retryable = False
+
+    if _is_async_task_management_misuse_error(error):
+        category = "async_task_tool_misuse"
+    elif any(marker in lowered for marker in _CANCELLATION_ERROR_MARKERS):
+        category = "cancelled"
+    elif any(marker in lowered for marker in _USAGE_LIMIT_ERROR_MARKERS):
+        category = "usage_limit_exceeded"
+    elif any(marker in lowered for marker in _CONTEXT_LENGTH_ERROR_MARKERS):
+        category = "context_length_exceeded"
+    elif any(marker in lowered for marker in _INVALID_REQUEST_ERROR_MARKERS):
+        if any(marker in lowered for marker in _INVALID_JSON_BODY_ERROR_MARKERS):
+            category = "invalid_request_payload"
+        else:
+            category = "invalid_request"
+    elif any(marker in lowered for marker in _RATE_LIMIT_ERROR_MARKERS):
+        category = "rate_limit"
+        retryable = True
+    elif any(marker in lowered for marker in _TIMEOUT_ERROR_MARKERS):
+        category = "timeout"
+        retryable = True
+    elif any(marker in lowered for marker in _TRANSIENT_TRANSPORT_ERROR_MARKERS):
+        category = "transient_transport"
+        retryable = True
+
+    return {
+        "error_text": text,
+        "category": category,
+        "retryable": retryable,
+    }
+
+
+def _is_async_task_management_misuse_error(error: Exception | str) -> bool:
+    text = _error_text(error).lower()
+    if not any(tool_name in text for tool_name in _ASYNC_TASK_MANAGEMENT_TOOL_NAMES):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "exceeded max retries count",
+            "validation error for",
+            "field required",
+            "input_value={}",
+        )
+    )
+
+
+def _with_sync_only_retry_guidance(prompt: str) -> str:
+    guidance = (
+        "Retry correction:\n"
+        "- Async task-management tools (`check_task`, `wait_tasks`, `list_active_tasks`, `answer_subagent`) are disabled for this retry.\n"
+        "- Do not call them.\n"
+        "- Execute synchronously within this stage.\n"
+        "- If you need help from a configured subagent, make a normal synchronous delegation and wait for the response before continuing.\n"
+    )
+    return f"{str(prompt or '').rstrip()}\n\n{guidance}"
+
+
+def _run_stage_agent_sync_with_guardrails(
+    *,
+    stage: Any,
+    stage_prompt: str,
+    old_history: List[ModelMessage],
+    state: Dict[str, Any],
+) -> Any:
+    max_attempts = 1 + max(0, int(_STAGE_MAX_TRANSIENT_RETRIES))
+    attempt = 1
+    async_misuse_retry_used = False
+
+    while True:
+        try:
+            return stage.agent.run_sync(
+                stage_prompt,
+                message_history=old_history if old_history else None,
+                deps=stage.deps,
+            )
+        except Exception as error:
+            classification = _classify_runtime_error(error)
+            if classification["category"] == "async_task_tool_misuse" and not async_misuse_retry_used:
+                async_misuse_retry_used = True
+                append_status(
+                    state,
+                    (
+                        f"Stage retry triggered: {stage.name} attempted async task-management tooling "
+                        "without a valid async task context; retrying synchronously without prior history."
+                    ),
+                )
+                retry_result = stage.agent.run_sync(
+                    _with_sync_only_retry_guidance(stage_prompt),
+                    message_history=None,
+                    deps=stage.deps,
+                )
+                append_status(
+                    state,
+                    f"Stage retry recovered: {stage.name} completed after async task-management misuse.",
+                )
+                return retry_result
+            if classification["retryable"] and attempt < max_attempts and not bool(state.get("cancel_requested")):
+                backoff_sec = _retry_backoff_sec(attempt - 1, _STAGE_RETRY_BACKOFF_SECONDS)
+                append_status(
+                    state,
+                    (
+                        f"Stage transient failure: {stage.name} attempt {attempt}/{max_attempts} "
+                        f"category={classification['category']} ({classification['error_text']}); "
+                        f"retrying in {backoff_sec:.1f}s"
+                    ),
+                )
+                time.sleep(backoff_sec)
+                attempt += 1
+                continue
+            raise
+
+
+def _is_retryable_host_worker_error(error: Exception | str) -> bool:
+    lowered = _error_text(error).lower()
+    if any(marker in lowered for marker in _HOST_WORKER_NON_RETRYABLE_ERROR_MARKERS):
+        return False
+    if any(marker in lowered for marker in _HOST_WORKER_RETRYABLE_ERROR_MARKERS):
+        return True
+    return bool(_classify_runtime_error(error).get("retryable"))
+
+
+def _host_worker_retry_backoff_sec(retry_index: int) -> float:
+    return _retry_backoff_sec(retry_index, _HOST_WORKER_RETRY_BACKOFF_SECONDS)
+
+
+def _worker_result_retryable(result: Dict[str, Any]) -> bool:
+    if bool(result.get("retryable")):
+        return True
+    return _is_retryable_host_worker_error(str(result.get("error") or ""))
+
+
+def _host_worker_stage_retry_backoff_sec(retry_index: int) -> float:
+    return _retry_backoff_sec(retry_index, _HOST_WORKER_STAGE_RETRY_BACKOFF_SECONDS)
 
 
 def _extract_yara_section(rule_text: str, section_name: str) -> str:
@@ -2162,152 +2421,185 @@ async def _run_host_worker_assignment(
         duration_sec=None,
         error="",
     )
-    old_history = get_role_history(state, role_key)
-
-    live_tool_log_token = _LIVE_TOOL_LOG_STATE.set(state)
-    active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
-    active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage_name)
-    try:
-        agent, deps, resolved_model, executor_meta = build_host_worker_assignment_executor(
-            runtime,
-            stage_name=stage_name,
-            slot_name=slot_name,
-            archetype_name=archetype_name,
-            work_item_id=work_item_id,
-            stage_model=stage_model,
-        )
-        deps.ask_user = _make_parent_input_callback(state, f"{stage_name}/{slot_name}/{work_item_id}")
-        model_run_started_at = datetime.now().isoformat(timespec="seconds")
-        _append_tool_log_entries(
-            state,
-            stage_name,
-            [
-                {
-                    "stage": stage_name,
-                    "kind": "model_run_start",
-                    "source": slot_name,
-                    "work_item_id": work_item_id,
-                    "archetype_name": archetype_name,
-                    "model": str(resolved_model or ""),
-                    "started_at": model_run_started_at,
-                    "isolated_backend": bool(executor_meta.get("isolated_backend")),
-                    "backend_root": str(executor_meta.get("backend_root") or ""),
-                    "context_manager_enabled": bool(executor_meta.get("context_manager_enabled")),
-                    "memory_dir": str(executor_meta.get("memory_dir") or ""),
-                }
-            ],
-        )
-        model_t0 = time.perf_counter()
-        result = await agent.run(
-            prompt,
-            message_history=old_history if old_history else None,
-            deps=deps,
-        )
-        new_history = result.all_messages()
-        output_text = str(result.output)
-        duration_sec = time.perf_counter() - worker_t0
-        model_duration_sec = time.perf_counter() - model_t0
-        _append_tool_log_entries(
-            state,
-            stage_name,
-            [
-                {
-                    "stage": stage_name,
-                    "kind": "model_run_finish",
-                    "source": slot_name,
-                    "work_item_id": work_item_id,
-                    "archetype_name": archetype_name,
-                    "model": str(resolved_model or ""),
-                    "status": "ok",
-                    "duration_sec": round(model_duration_sec, 6),
-                    "finished_at": datetime.now().isoformat(timespec="seconds"),
-                }
-            ],
-        )
-        _append_tool_log_entries(
-            state,
-            stage_name,
-            [
-                {
-                    "stage": stage_name,
-                    "kind": "worker_assignment_finish",
-                    "source": slot_name,
-                    "work_item_id": work_item_id,
-                    "archetype_name": archetype_name,
-                    "model": str(resolved_model or ""),
-                    "status": "ok",
-                    "duration_sec": round(duration_sec, 6),
-                    "finished_at": datetime.now().isoformat(timespec="seconds"),
-                }
-            ],
-        )
-        return {
-            "index": int(assignment["index"]),
-            "work_item_id": work_item_id,
-            "slot_name": slot_name,
-            "archetype_name": archetype_name,
-            "model": str(resolved_model or ""),
-            "role_key": role_key,
-            "history": new_history,
-            "output_text": output_text,
-            "usage": _result_usage_snapshot(result),
-            "duration_sec": duration_sec,
-            "model_duration_sec": model_duration_sec,
-            "status": "ok",
-            "executor_meta": dict(executor_meta or {}),
-        }
-    except Exception as e:
-        duration_sec = time.perf_counter() - worker_t0
-        _append_tool_log_entries(
-            state,
-            stage_name,
-            [
-                {
-                    "stage": stage_name,
-                    "kind": "model_run_finish",
-                    "source": slot_name,
-                    "work_item_id": work_item_id,
-                    "archetype_name": archetype_name,
-                    "model": str(stage_model or ""),
-                    "status": "failed",
-                    "duration_sec": round(duration_sec, 6),
-                    "finished_at": datetime.now().isoformat(timespec="seconds"),
-                    "error": f"{type(e).__name__}: {e}",
-                },
-                {
-                    "stage": stage_name,
-                    "kind": "worker_assignment_finish",
-                    "source": slot_name,
-                    "work_item_id": work_item_id,
-                    "archetype_name": archetype_name,
-                    "model": str(stage_model or ""),
-                    "status": "failed",
-                    "duration_sec": round(duration_sec, 6),
-                    "finished_at": datetime.now().isoformat(timespec="seconds"),
-                    "error": f"{type(e).__name__}: {e}",
-                },
-            ],
-        )
-        return {
-            "index": int(assignment["index"]),
-            "work_item_id": work_item_id,
-            "slot_name": slot_name,
-            "archetype_name": archetype_name,
-            "model": str(stage_model or ""),
-            "role_key": role_key,
-            "history": [],
-            "output_text": "",
-            "usage": _empty_usage_snapshot(),
-            "duration_sec": duration_sec,
-            "model_duration_sec": duration_sec,
-            "status": "failed",
-            "error": f"{type(e).__name__}: {e}",
-            "executor_meta": dict(executor_meta or {}) if "executor_meta" in locals() else {},
-        }
-    finally:
-        _ACTIVE_PIPELINE_STAGE.reset(active_stage_token)
-        _ACTIVE_PIPELINE_STATE.reset(active_state_token)
-        _LIVE_TOOL_LOG_STATE.reset(live_tool_log_token)
+    max_attempts = 1 + _HOST_WORKER_MAX_TRANSIENT_RETRIES
+    for attempt in range(1, max_attempts + 1):
+        live_tool_log_token = _LIVE_TOOL_LOG_STATE.set(state)
+        active_state_token = _ACTIVE_PIPELINE_STATE.set(state)
+        active_stage_token = _ACTIVE_PIPELINE_STAGE.set(stage_name)
+        try:
+            agent, deps, resolved_model, executor_meta = build_host_worker_assignment_executor(
+                runtime,
+                stage_name=stage_name,
+                slot_name=slot_name,
+                archetype_name=archetype_name,
+                work_item_id=work_item_id,
+                stage_model=stage_model,
+            )
+            deps.ask_user = _make_parent_input_callback(state, f"{stage_name}/{slot_name}/{work_item_id}")
+            model_run_started_at = datetime.now().isoformat(timespec="seconds")
+            _append_tool_log_entries(
+                state,
+                stage_name,
+                [
+                    {
+                        "stage": stage_name,
+                        "kind": "model_run_start",
+                        "source": slot_name,
+                        "work_item_id": work_item_id,
+                        "archetype_name": archetype_name,
+                        "model": str(resolved_model or ""),
+                        "attempt": attempt,
+                        "started_at": model_run_started_at,
+                        "isolated_backend": bool(executor_meta.get("isolated_backend")),
+                        "backend_root": str(executor_meta.get("backend_root") or ""),
+                        "context_manager_enabled": bool(executor_meta.get("context_manager_enabled")),
+                        "memory_dir": str(executor_meta.get("memory_dir") or ""),
+                    }
+                ],
+            )
+            model_t0 = time.perf_counter()
+            result = await agent.run(
+                prompt,
+                message_history=None,
+                deps=deps,
+            )
+            new_history = result.all_messages()
+            output_text = str(result.output)
+            duration_sec = time.perf_counter() - worker_t0
+            model_duration_sec = time.perf_counter() - model_t0
+            _append_tool_log_entries(
+                state,
+                stage_name,
+                [
+                    {
+                        "stage": stage_name,
+                        "kind": "model_run_finish",
+                        "source": slot_name,
+                        "work_item_id": work_item_id,
+                        "archetype_name": archetype_name,
+                        "model": str(resolved_model or ""),
+                        "attempt": attempt,
+                        "status": "ok",
+                        "duration_sec": round(model_duration_sec, 6),
+                        "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    }
+                ],
+            )
+            _append_tool_log_entries(
+                state,
+                stage_name,
+                [
+                    {
+                        "stage": stage_name,
+                        "kind": "worker_assignment_finish",
+                        "source": slot_name,
+                        "work_item_id": work_item_id,
+                        "archetype_name": archetype_name,
+                        "model": str(resolved_model or ""),
+                        "attempt": attempt,
+                        "status": "ok",
+                        "duration_sec": round(duration_sec, 6),
+                        "finished_at": datetime.now().isoformat(timespec="seconds"),
+                    }
+                ],
+            )
+            if attempt > 1:
+                append_status(
+                    state,
+                    (
+                        f"Worker assignment recovered after retry: {work_item_id} -> {slot_name} "
+                        f"on attempt {attempt}/{max_attempts}"
+                    ),
+                )
+            return {
+                "index": int(assignment["index"]),
+                "work_item_id": work_item_id,
+                "slot_name": slot_name,
+                "archetype_name": archetype_name,
+                "model": str(resolved_model or ""),
+                "role_key": role_key,
+                "history": new_history,
+                "output_text": output_text,
+                "usage": _result_usage_snapshot(result),
+                "duration_sec": duration_sec,
+                "model_duration_sec": model_duration_sec,
+                "status": "ok",
+                "retryable": False,
+                "error_category": "",
+                "executor_meta": dict(executor_meta or {}),
+            }
+        except Exception as error:
+            duration_sec = time.perf_counter() - worker_t0
+            error_text = _error_text(error)
+            retryable = _is_retryable_host_worker_error(error)
+            classification = _classify_runtime_error(error)
+            _append_tool_log_entries(
+                state,
+                stage_name,
+                [
+                    {
+                        "stage": stage_name,
+                        "kind": "model_run_finish",
+                        "source": slot_name,
+                        "work_item_id": work_item_id,
+                        "archetype_name": archetype_name,
+                        "model": str(stage_model or ""),
+                        "attempt": attempt,
+                        "status": "failed",
+                        "duration_sec": round(duration_sec, 6),
+                        "finished_at": datetime.now().isoformat(timespec="seconds"),
+                        "error": error_text,
+                        "retryable": retryable,
+                    },
+                    {
+                        "stage": stage_name,
+                        "kind": "worker_assignment_finish",
+                        "source": slot_name,
+                        "work_item_id": work_item_id,
+                        "archetype_name": archetype_name,
+                        "model": str(stage_model or ""),
+                        "attempt": attempt,
+                        "status": "failed",
+                        "duration_sec": round(duration_sec, 6),
+                        "finished_at": datetime.now().isoformat(timespec="seconds"),
+                        "error": error_text,
+                        "retryable": retryable,
+                    },
+                ],
+            )
+            if retryable and attempt < max_attempts and not bool(state.get("cancel_requested")):
+                backoff_sec = _host_worker_retry_backoff_sec(attempt - 1)
+                append_status(
+                    state,
+                    (
+                        f"Worker assignment transient failure: {work_item_id} -> {slot_name} "
+                        f"attempt {attempt}/{max_attempts} ({error_text}); retrying in {backoff_sec:.1f}s"
+                    ),
+                )
+                await asyncio.sleep(backoff_sec)
+                continue
+            return {
+                "index": int(assignment["index"]),
+                "work_item_id": work_item_id,
+                "slot_name": slot_name,
+                "archetype_name": archetype_name,
+                "model": str(stage_model or ""),
+                "role_key": role_key,
+                "history": [],
+                "output_text": "",
+                "usage": _empty_usage_snapshot(),
+                "duration_sec": duration_sec,
+                "model_duration_sec": duration_sec,
+                "status": "failed",
+                "error": error_text,
+                "retryable": retryable,
+                "error_category": str(classification.get("category") or ""),
+                "executor_meta": dict(executor_meta or {}) if "executor_meta" in locals() else {},
+            }
+        finally:
+            _ACTIVE_PIPELINE_STAGE.reset(active_stage_token)
+            _ACTIVE_PIPELINE_STATE.reset(active_state_token)
+            _LIVE_TOOL_LOG_STATE.reset(live_tool_log_token)
 
 
 def _merge_host_worker_results(results: List[Dict[str, Any]], concurrency_limit: int) -> str:
@@ -2525,6 +2817,66 @@ def _run_host_parallel_worker_stage(
                     stage_model=str(stage.model or ""),
                 ),
             )
+            stage_retry_rounds_used = 0
+            stage_retry_recovered_assignments = 0
+            for retry_round in range(1, 1 + _HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES):
+                retry_assignments = [
+                    assignment
+                    for assignment in assignments
+                    if (retry_result := results_by_index_async.get(int(assignment["index"]))) is not None
+                    and retry_result.get("status") != "ok"
+                    and _worker_result_retryable(retry_result)
+                ]
+                if not retry_assignments or bool(state.get("cancel_requested")):
+                    break
+                stage_retry_rounds_used = retry_round
+                backoff_sec = _host_worker_stage_retry_backoff_sec(retry_round - 1)
+                append_status(
+                    state,
+                    (
+                        f"Stage retry triggered: {stage.name} rerunning {len(retry_assignments)} "
+                        f"transiently failed worker assignment(s) round {retry_round}/"
+                        f"{_HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES}"
+                        + (f" in {backoff_sec:.1f}s" if backoff_sec > 0 else "")
+                    ),
+                )
+                if backoff_sec > 0:
+                    await asyncio.sleep(backoff_sec)
+                retried_results = await _run_host_parallel_assignments_async(
+                    retry_assignments,
+                    concurrency_limit=max(1, min(concurrency_limit, len(retry_assignments))),
+                    serial_archetypes=SERIAL_HOST_WORKER_ARCHETYPES,
+                    assignment_runner=lambda assignment: _run_host_worker_assignment(
+                        loop_local_runtime,
+                        stage.name,
+                        stage.stage_kind,
+                        state,
+                        user_text,
+                        prior_stage_outputs,
+                        assignment,
+                        stage_model=str(stage.model or ""),
+                    ),
+                )
+                recovered_this_round = 0
+                for index, retried_result in retried_results.items():
+                    prior_result = dict(results_by_index_async.get(index) or {})
+                    if prior_result.get("status") != "ok" and retried_result.get("status") == "ok":
+                        recovered_this_round += 1
+                    results_by_index_async[index] = retried_result
+                stage_retry_recovered_assignments += recovered_this_round
+                append_status(
+                    state,
+                    (
+                        f"Stage retry finished: {stage.name} recovered {recovered_this_round}/"
+                        f"{len(retry_assignments)} retried worker assignment(s)"
+                    ),
+                )
+            state.setdefault("shared_state", _new_shared_state())["host_worker_stage_retry_summary"] = {
+                "stage_name": stage.name,
+                "retry_rounds_used": stage_retry_rounds_used,
+                "max_retry_rounds": int(_HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES),
+                "recovered_assignments": stage_retry_recovered_assignments,
+            }
             for result in [results_by_index_async[idx] for idx in sorted(results_by_index_async)]:
                 _check_cancel_requested(state, location="during worker stage")
                 _record_model_usage(
@@ -2614,18 +2966,29 @@ def _run_host_parallel_worker_stage(
         "total_assignments": len(ordered_results),
         "completed_assignments": len(ordered_results) - len(failed_results),
         "failed_assignments": len(failed_results),
+        "all_assignments_failed": len(failed_results) == len(ordered_results),
+        "stage_retry_rounds_used": int((((shared.get("host_worker_stage_retry_summary") or {}) if isinstance(shared.get("host_worker_stage_retry_summary"), dict) else {}) or {}).get("retry_rounds_used") or 0),
+        "stage_retry_recovered_assignments": int((((shared.get("host_worker_stage_retry_summary") or {}) if isinstance(shared.get("host_worker_stage_retry_summary"), dict) else {}) or {}).get("recovered_assignments") or 0),
         "failed_work_items": [
             {
                 "work_item_id": str(item.get("work_item_id") or ""),
                 "slot_name": str(item.get("slot_name") or ""),
                 "archetype_name": str(item.get("archetype_name") or ""),
                 "error": str(item.get("error") or ""),
+                "error_category": str(item.get("error_category") or ""),
+                "retryable": bool(item.get("retryable")),
             }
             for item in failed_results
         ],
     }
     if not any(item.get("status") == "ok" for item in ordered_results):
-        raise RuntimeError("All host-managed worker assignments failed.")
+        append_status(
+            state,
+            (
+                f"Stage contained failure: {stage.name} finished with all "
+                f"{len(ordered_results)} host-managed worker assignments failed"
+            ),
+        )
     return _merge_host_worker_results(ordered_results, concurrency_limit)
 
 
@@ -2699,6 +3062,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["validation_replan_feedback"] = ""
     shared["validation_history"] = []
     shared["pipeline_duration_sec"] = 0.0
+    shared["last_pipeline_error"] = {}
     shared["model_usage_totals"] = _empty_usage_snapshot()
     shared["model_usage_by_stage"] = {}
     shared["model_usage_events"] = []
@@ -2797,12 +3161,22 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 )
                 result = None
             else:
-                result = stage.agent.run_sync(
-                    stage_prompt,
-                    message_history=old_history if old_history else None,
-                    deps=stage.deps,
+                result = _run_stage_agent_sync_with_guardrails(
+                    stage=stage,
+                    stage_prompt=stage_prompt,
+                    old_history=old_history,
+                    state=state,
                 )
         except Exception as e:
+            error_info = _classify_runtime_error(e)
+            shared["last_pipeline_error"] = {
+                "stage_name": stage.name,
+                "stage_kind": stage.stage_kind,
+                "error_text": str(error_info.get("error_text") or ""),
+                "category": str(error_info.get("category") or "unknown"),
+                "retryable": bool(error_info.get("retryable")),
+                "occurred_at": datetime.now().isoformat(timespec="seconds"),
+            }
             if stage_meta["supports_parallel_assignments"]:
                 status_map = ((state.get("shared_state") or {}).get("planned_work_item_status") or {})
                 for work_item in list((state.get("shared_state") or {}).get("planned_work_items") or []):
@@ -2827,13 +3201,16 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
             )
             append_status(
                 state,
-                f"Stage failed: {stage.name} after {time.perf_counter() - stage_t0:.1f}s ({type(e).__name__})",
+                (
+                    f"Stage failed: {stage.name} after {time.perf_counter() - stage_t0:.1f}s "
+                    f"({type(e).__name__}, category={error_info.get('category')}, retryable={bool(error_info.get('retryable'))})"
+                ),
             )
             if runtime.pipeline_name == "auto_triage":
                 _record_auto_triage_run(
                     state,
                     status="failed",
-                    error=f"{type(e).__name__}: {e}",
+                    error=str(error_info.get("error_text") or f"{type(e).__name__}: {e}"),
                 )
             raise
         finally:

@@ -1,3 +1,16 @@
+"""
+File: costing.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Normalize usage snapshots and estimate relative or USD-like run cost.
+
+Summary:
+  This module converts heterogeneous model-usage payloads into stable usage
+  snapshots, loads relative cost profiles, and computes the heuristic cost
+  values used by budgeting, reporting, and experiment summaries.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List

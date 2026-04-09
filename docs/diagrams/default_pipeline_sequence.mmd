@@ -11,7 +11,7 @@ sequenceDiagram
     participant Report as "reporting + result_layout"
     participant FS as "results filesystem"
 
-    Trigger->>Runner: run args / UI inputs<br/>{corpus, sample?, task?, pipeline?, architecture?, query_variant, ...}
+    Trigger->>Runner: run args / UI inputs<br/>{corpus, sample?, task?, pipeline?, architecture?, response_scope_variant, analysis_hint_variant, ...}
     Runner->>Samples: list_sample_binaries()<br/>build_evaluation_tasks()
     Samples-->>Runner: EvaluationTask[]<br/>{sample_name, sample_path,<br/> task_id, task_name, query,<br/> difficulty, target_tools,<br/> expected_evidence,<br/> acceptance_targets, tags}
     Runner->>Bundles: build_corpus()<br/>prepare_corpus_bundles()<br/>inspect_corpus_bundles()
@@ -45,9 +45,9 @@ sequenceDiagram
         Judge-->>Runner: judge_result<br/>{dimension_scores,<br/> overall_score_0_to_100, pass,<br/> unsupported_claims,<br/> missed_expected_points,<br/> strongest_points,<br/> technical_summary,<br/> writing_summary,<br/> confidence_0_to_1, cost_estimate}
         Runner->>Report: build_sample_record(...)
         Report-->>Runner: record<br/>{sample_task_id, task_query,<br/> difficulty, expected_evidence,<br/> acceptance_targets,<br/> metrics{analysis_status, judge_status,<br/> overall_score_0_to_100,<br/> task_success, tool_calls_total,<br/> total_duration_sec,<br/> task_wall_clock_duration_sec}}
-        Runner->>FS: write samples/sample_task_slug/<br/>agent_result.json,<br/>judge_result.json,<br/>record.json
+        Runner->>FS: write cases/sample/task/<br/>agent_result.json,<br/>judge_result.json,<br/>record.json
     end
 
     Runner->>Report: aggregate_records(run_metadata, records)<br/>build_run_output_layout(...)
     Report-->>Runner: aggregate + layout payload
-    Runner->>FS: write aggregate.json,<br/>summary.csv, report.md,<br/>result_layout.json,<br/>by_executable/exe_name/config_lineage_id/...
+    Runner->>FS: write aggregate.json,<br/>summary.csv, report.md,<br/>result_layout.json,<br/>case_index.json,<br/>logs/run.log

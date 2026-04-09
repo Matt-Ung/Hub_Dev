@@ -1,0 +1,78 @@
+{
+  "schema_version": "launch_preset_v3",
+  "name": "sweep_decoder_depth_followups_r3",
+  "description": "Decoder-depth follow-up sweep. Keeps the stripped and UPX-stripped decoder scope fixed, preserves the original baseline, and tests only the worker-prompt-shape follow-ups plus one validator-backed pipeline variant.",
+  "runner": "sweep",
+  "corpus": "experimental",
+  "samples": [
+    "config_decoder_test_stripped.exe",
+    "config_decoder_test_upx_stripped.exe"
+  ],
+  "tasks": [
+    "default_analysis",
+    "config_value_recovery",
+    "decode_parser_flow_recovery",
+    "parser_validation_audit",
+    "packing_decoder_triage"
+  ],
+  "repetitions": 3,
+  "label": "decoder-depth-followups-r3",
+  "prefer_upx_unpacked": true,
+  "skip_visuals": false,
+  "recommended_judge_model": "openai:gpt-4o-mini",
+  "baseline": {
+    "corpus": "experimental",
+    "pipeline": "auto_triage",
+    "architecture": "balanced",
+    "response_scope_variant": "default",
+    "analysis_hint_variant": "default",
+    "subagent_profile": "default",
+    "worker_persona_profile": "default",
+    "worker_role_prompt_mode": "default",
+    "validator_review_level": "default",
+    "tool_profile": "full",
+    "model_profile": "repo_default",
+    "force_model": "",
+    "judge_mode": "agent"
+  },
+  "model_profiles": {
+    "repo_default": {
+      "description": "Use the repo defaults with no forced override.",
+      "force_model": ""
+    }
+  },
+  "sweeps": [
+    {
+      "variable": "worker_prompt_shape",
+      "description": "Compare the maintained default worker prompts against the evidence-first overlay and the empty worker-role condition while holding the decoder-depth baseline fixed.",
+      "variants": [
+        {
+          "name": "artifact_focused",
+          "overrides": {
+            "worker_persona_profile": "artifact_focused",
+            "worker_role_prompt_mode": "default"
+          }
+        },
+        {
+          "name": "empty",
+          "overrides": {
+            "worker_persona_profile": "default",
+            "worker_role_prompt_mode": "blank"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "pipeline_preset",
+      "description": "Test one validator-backed planner-workers pipeline while leaving the baseline itself unchanged for comparison.",
+      "variants": [
+        {
+          "name": "validators_reporter",
+          "overrides": {
+            "pipeline": "preflight_planner_workers_validators_reporter"
+          }
+        }
+      ]
+    }
+  ]
+}

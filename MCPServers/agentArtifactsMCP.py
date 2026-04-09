@@ -86,7 +86,11 @@ def _write_text_file(
 @mcp.tool()
 def agentArtifactPaths() -> dict[str, Any]:
     """Return the configured root and typed subdirectories for generated agent artifacts."""
-    return {"ok": True, "artifact_dirs": list_agent_artifact_dirs()}
+    try:
+        return {"ok": True, "artifact_dirs": list_agent_artifact_dirs()}
+    except Exception as exc:
+        logger.warning("agentArtifactPaths rejected invalid artifact configuration: %s", exc)
+        return {"ok": False, "error": str(exc)}
 
 
 @mcp.tool()
@@ -166,48 +170,57 @@ def writeJavaArtifact(
 @mcp.tool()
 def listAgentArtifacts(artifact_type: str = "", max_results: int = 200) -> dict[str, Any]:
     """List generated artifacts under one typed directory or across all configured artifact directories."""
-    entries: list[dict[str, str]] = []
-    choices = [str(artifact_type or "").strip().lower()] if str(artifact_type or "").strip() else sorted(ARTIFACT_TYPE_DEFAULTS)
-    for item_type in choices:
-        if item_type not in ARTIFACT_TYPE_DEFAULTS:
-            return {"ok": False, "error": f"unsupported artifact_type {artifact_type!r}"}
-        directory = get_agent_artifact_dir(item_type)
-        if not directory.is_dir():
-            continue
-        for path in sorted(p for p in directory.rglob("*") if p.is_file()):
-            entries.append(
-                {
-                    "artifact_type": item_type,
-                    "absolute_path": str(path),
-                    "relative_path": str(path.relative_to(directory)),
-                }
-            )
+    try:
+        entries: list[dict[str, str]] = []
+        choices = [str(artifact_type or "").strip().lower()] if str(artifact_type or "").strip() else sorted(ARTIFACT_TYPE_DEFAULTS)
+        for item_type in choices:
+            if item_type not in ARTIFACT_TYPE_DEFAULTS:
+                return {"ok": False, "error": f"unsupported artifact_type {artifact_type!r}"}
+            directory = get_agent_artifact_dir(item_type)
+            if not directory.is_dir():
+                continue
+            for path in sorted(p for p in directory.rglob("*") if p.is_file()):
+                entries.append(
+                    {
+                        "artifact_type": item_type,
+                        "absolute_path": str(path),
+                        "relative_path": str(path.relative_to(directory)),
+                    }
+                )
+                if len(entries) >= max_results:
+                    break
             if len(entries) >= max_results:
                 break
-        if len(entries) >= max_results:
-            break
-    return {"ok": True, "entries": entries, "count": len(entries), "artifact_dirs": list_agent_artifact_dirs()}
+        return {"ok": True, "entries": entries, "count": len(entries), "artifact_dirs": list_agent_artifact_dirs()}
+    except Exception as exc:
+        logger.warning("listAgentArtifacts rejected invalid artifact configuration: %s", exc)
+        return {"ok": False, "error": str(exc)}
 
 
 @mcp.tool()
 def agentArtifactHelp() -> dict[str, Any]:
     """Describe the standardized artifact layout and the available write tools."""
-    return {
-        "ok": True,
-        "artifact_dirs": list_agent_artifact_dirs(),
-        "artifact_types": sorted(ARTIFACT_TYPE_DEFAULTS),
-        "tools": [
-            "agentArtifactPaths()",
-            "writeTextArtifact(artifact_type, content, filename='', overwrite=False, subdir='', description='')",
-            "writePythonArtifact(content, filename='', overwrite=False, subdir='', description='', ghidra_script=False)",
-            "writeJavaArtifact(content, filename='', overwrite=False, subdir='', description='', ghidra_script=False)",
-            "listAgentArtifacts(artifact_type='', max_results=200)",
-        ],
-        "notes": [
-            "Use the YARA MCP server for YARA rules so the rule text can still be validated and indexed before writing.",
-            "Use this server for reusable Python/Java helpers, deobfuscation utilities, reports, and Ghidra-supporting scripts.",
-        ],
-    }
+    try:
+        return {
+            "ok": True,
+            "artifact_dirs": list_agent_artifact_dirs(),
+            "artifact_types": sorted(ARTIFACT_TYPE_DEFAULTS),
+            "tools": [
+                "agentArtifactPaths()",
+                "writeTextArtifact(artifact_type, content, filename='', overwrite=False, subdir='', description='')",
+                "writePythonArtifact(content, filename='', overwrite=False, subdir='', description='', ghidra_script=False)",
+                "writeJavaArtifact(content, filename='', overwrite=False, subdir='', description='', ghidra_script=False)",
+                "listAgentArtifacts(artifact_type='', max_results=200)",
+            ],
+            "notes": [
+                "Use the YARA MCP server for YARA rules so the rule text can still be validated and indexed before writing.",
+                "Use this server for reusable Python/Java helpers, deobfuscation utilities, reports, and Ghidra-supporting scripts.",
+                "Server-side path enforcement keeps per-type directories and artifact writes under the configured AGENT_ARTIFACT_DIR root.",
+            ],
+        }
+    except Exception as exc:
+        logger.warning("agentArtifactHelp rejected invalid artifact configuration: %s", exc)
+        return {"ok": False, "error": str(exc)}
 
 
 def main() -> None:

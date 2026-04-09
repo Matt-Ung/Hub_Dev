@@ -1,0 +1,938 @@
+{
+  "manifest_version": 1,
+  "build_profile": {
+    "mode": "final_testing_round",
+    "compiler": "provided by build environment",
+    "strip_tool": "provided by build environment",
+    "packer": "provided by build environment",
+    "source_date_epoch": "1700000000",
+    "opaque_output_directory": "output",
+    "reference_directory": "reference",
+    "naming_scheme": {
+      "sample1.exe": "Emotet",
+      "sample2.exe": "QakBot",
+      "sample3.exe": "TrickBot",
+      "sample4.exe": "WannaCry",
+      "sample5.exe": "PlugX"
+    },
+    "notes": [
+      "Final filenames are intentionally ambiguous to avoid descriptive family labels in the executable names.",
+      "Reference content is grounded in checked-in source files only.",
+      "Where resource blobs or richer payloads are absent from the repository, the references call that out explicitly."
+    ]
+  },
+  "samples": [
+    {
+      "sample_index": 1,
+      "final_filename": "sample1.exe",
+      "original_source_name": "Emotet",
+      "family_label": "Emotet simulation",
+      "platform": "windows",
+      "architecture": "x86_64",
+      "build_mode": "release",
+      "stripped": true,
+      "packed": true,
+      "source_files": [
+        "Emotet/main.cpp",
+        "Emotet/utils.cpp",
+        "Emotet/config.h"
+      ],
+      "artifact": {
+        "final_path": "output/sample1.exe",
+        "release_path": "release/emotet_release.exe",
+        "stripped_path": "stripped/emotet_release.exe",
+        "exists": null,
+        "sha256": null,
+        "size_bytes": null
+      },
+      "intended_simulation": "Modular loader / downloader / injector with anti-analysis, registry persistence, RC4-style encoded configuration, API-hash scaffolding, module dispatch, and process-hollowing-style execution.",
+      "major_observable_capabilities": [
+        "Early anti-analysis checks using debugger detection, debugger-window enumeration, Toolhelp-based analyst-process enumeration, and timing-based VM heuristics.",
+        "Registry Run-key persistence under Software\\Microsoft\\Windows\\CurrentVersion\\Run with value name SystemService.",
+        "Encoded C2 seed list stored as DWORDs and decoded at runtime through the helper in Emotet/utils.cpp.",
+        "RC4-style embedded configuration blob that carries c2, sleep, campaign, and install metadata.",
+        "FNV-1a API-hash resolver over kernel32 exports, including forwarded export handling.",
+        "HTTP POST beaconing via WinHTTP to a fixed /mult/vermont/odbc path using campaign and install-path host-information fields.",
+        "Suspended-process injection flow targeting C:\\Windows\\System32\\svchost.exe -k netsvcs.",
+        "Explicit recovered-module dispatch that stages spam / Outlook / credential / spreader-oriented follow-on behavior."
+      ],
+      "important_limitations": [
+        "The sample now decrypts an embedded config blob, but the network protocol remains simplified and does not implement full Emotet session-key exchange or protobuf handling.",
+        "Only three encoded C2 seeds are present in config.h.",
+        "Module handling is simulated through raw response buffering and injection rather than a full reflective DLL loader."
+      ],
+      "static_strings_expected": [
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        "SystemService",
+        "OllyDbg",
+        "WinDbgFrameClass",
+        "x64dbg",
+        "C:\\Windows\\System32\\svchost.exe -k netsvcs",
+        "/mult/vermont/odbc",
+        "Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 10.0; Trident/4.0)",
+        "Software\\Microsoft\\Office\\16.0\\Outlook\\Profiles",
+        "EmotetCampaign"
+      ],
+      "encoded_or_config_artifacts": [
+        "ENCODED_C2_LIST DWORD array in Emotet/config.h.",
+        "EMOTET_RC4_KEY / EMOTET_ENC_CONFIG embedded config blob in Emotet/config.h.",
+        "XOR_KEY byte array in Emotet/config.h.",
+        "String decoder pattern, MBA decode helper, and FNV-1a API hash resolver in Emotet/utils.cpp."
+      ],
+      "resources_or_embedded_data": [
+        "No .rc file or external resource payload is present in this source tree."
+      ],
+      "imports_and_runtime_clues": [
+        "Native Win32 C++ sample using WinHTTP, registry APIs, process creation, thread-context manipulation, VirtualAllocEx, and WriteProcessMemory.",
+        "No .NET or script runtime is present in the source tree."
+      ],
+      "relationship_reference": {
+        "related_files": [
+          "Emotet/main.cpp",
+          "Emotet/utils.cpp",
+          "Emotet/config.h"
+        ],
+        "config_files": [
+          "Emotet/config.h"
+        ],
+        "dropped_or_generated_artifacts": [
+          "Registry Run value SystemService referencing the running executable path."
+        ],
+        "loader_payload_helper_relationships": [
+          "main.cpp drives persistence, C2 loop, recovered-module dispatch, and injection flow.",
+          "utils.cpp provides debugger / VM heuristics, analyst-process checks, RC4 config decode, and API-hash helpers.",
+          "config.h holds encoded constants and module IDs."
+        ]
+      },
+      "reporting_reference": {
+        "executive_summary_points": [
+          "Anti-analysis gates execution before persistence or networking.",
+          "Persistence is implemented through a user Run key named SystemService.",
+          "Networking logic uses WinHTTP POST traffic to a fixed Emotet-like path and stages a campaign-bearing host-information payload from decrypted config values.",
+          "The sample attempts process hollowing / remote-memory execution against svchost.exe."
+        ],
+        "expected_functionality_sections": [
+          "anti-analysis and sandbox evasion",
+          "persistence",
+          "C2 configuration and networking",
+          "process injection / module execution"
+        ],
+        "detection_opportunities": [
+          "Registry Run-value creation with name SystemService.",
+          "Fixed path /mult/vermont/odbc in HTTP requests.",
+          "Debugger-window class strings and svchost.exe -k netsvcs command line."
+        ]
+      },
+      "optional_detection_reference": {
+        "candidate_yara_features": [
+          "SystemService",
+          "/mult/vermont/odbc",
+          "svchost.exe -k netsvcs",
+          "OllyDbg",
+          "WinDbgFrameClass",
+          "x64dbg"
+        ],
+        "candidate_sigma_behaviors": [
+          "Registry Run-key creation for HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run with value name SystemService.",
+          "Suspended-process creation followed by remote-memory write into svchost.exe."
+        ]
+      },
+      "grounding": [
+        {
+          "file": "Emotet/main.cpp",
+          "symbol": "WinMain",
+          "supports": [
+            "anti-analysis flow",
+            "registry persistence",
+            "C2 loop"
+          ]
+        },
+        {
+          "file": "Emotet/main.cpp",
+          "symbol": "DownloadModules",
+          "supports": [
+            "WinHTTP beacon",
+            "fixed POST path",
+            "response handling"
+          ]
+        },
+        {
+          "file": "Emotet/main.cpp",
+          "symbol": "DispatchRecoveredModules",
+          "supports": [
+            "module dispatch staging",
+            "secondary registry / event artifacts"
+          ]
+        },
+        {
+          "file": "Emotet/main.cpp",
+          "symbol": "InjectModule",
+          "supports": [
+            "remote process injection",
+            "suspended process creation"
+          ]
+        },
+        {
+          "file": "Emotet/utils.cpp",
+          "symbol": "DecodeEmbeddedConfig",
+          "supports": [
+            "RC4 config blob",
+            "campaign/install metadata"
+          ]
+        },
+        {
+          "file": "Emotet/utils.cpp",
+          "symbol": "ResolveKernel32ApiByHash",
+          "supports": [
+            "FNV-1a API-hash resolution"
+          ]
+        },
+        {
+          "file": "Emotet/utils.cpp",
+          "symbol": "IsDebuggerPresent_Emotet",
+          "supports": [
+            "debugger detection"
+          ]
+        },
+        {
+          "file": "Emotet/utils.cpp",
+          "symbol": "IsHypervisorOverhead",
+          "supports": [
+            "timing-based VM heuristic"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_index": 2,
+      "final_filename": "sample2.exe",
+      "original_source_name": "QakBot",
+      "family_label": "QakBot simulation",
+      "platform": "windows",
+      "architecture": "x86_64",
+      "build_mode": "release",
+      "stripped": true,
+      "packed": true,
+      "source_files": [
+        "Qakbot/qbot_main.cpp",
+        "Qakbot/qbot_utils.cpp",
+        "Qakbot/qakbot_config.h"
+      ],
+      "artifact": {
+        "final_path": "output/sample2.exe",
+        "release_path": "release/qakbot_release.exe",
+        "stripped_path": "stripped/qakbot_release.exe",
+        "exists": null,
+        "sha256": null,
+        "size_bytes": null
+      },
+      "intended_simulation": "Banking-trojan-style loader with parameter-driven execution paths, scheduled-task persistence, resource-based payload staging, injection, named-pipe coordination, and self-delete logic.",
+      "major_observable_capabilities": [
+        "Command-line-controlled execution branches for install, wait, inject, pipe, and self-delete modes.",
+        "Environment checks against analyst-tool process names plus CPUID hypervisor checks, timing anomalies, and VM-related registry artifacts.",
+        "Single-instance mutex using the Global\\QBot_%08X_Session pattern.",
+        "Scheduled-task persistence via Task Scheduler COM APIs with a WindowsUpdateTask_%08X naming scheme.",
+        "Resource-payload extraction / XOR decode path centered on resource ID 307.",
+        "Remote-thread injection into a discovered svchost.exe process.",
+        "Named-pipe server setup under \\\\.\\pipe\\qbot_%08X for module coordination.",
+        "Self-delete through a generated cleanup.bat file launched with ShellExecuteW."
+      ],
+      "important_limitations": [
+        "The repository does not contain a .rc file or embedded payload resource, so ExtractResourcePayload() is structurally present but unbacked by checked-in artifact data.",
+        "Injection success depends on that extracted payload path producing bytes at runtime.",
+        "The module execution path is simplified and does not implement a full reflective loader."
+      ],
+      "static_strings_expected": [
+        "Global\\QBot_%08X_Session",
+        "WindowsUpdateTask_%08X",
+        "\\\\.\\pipe\\qbot_%08X",
+        "cleanup.bat",
+        "svchost.exe",
+        "/C",
+        "/W",
+        "/I",
+        "/P",
+        "/Q",
+        "procmon.exe",
+        "wireshark.exe",
+        "x64dbg.exe",
+        "HARDWARE\\ACPI\\DSDT\\VBOX__",
+        "SOFTWARE\\VMware Inc.\\VMware Tools"
+      ],
+      "encoded_or_config_artifacts": [
+        "Resource payload ID 307 in qakbot_config.h.",
+        "Version constants QBOT_MAJOR_VERSION / QBOT_MINOR_VERSION / QBOT_BUILD_TIMESTAMP.",
+        "XOR-based payload decode in ExtractResourcePayload()."
+      ],
+      "resources_or_embedded_data": [
+        "Resource extraction logic expects a PAYLOAD resource with ID 307, but no resource script or binary blob is checked in."
+      ],
+      "imports_and_runtime_clues": [
+        "Native Win32 C++ sample using Task Scheduler COM APIs, Toolhelp process enumeration, ShellExecuteW, named pipes, and remote-thread injection.",
+        "No managed runtime or script interpreter is present."
+      ],
+      "relationship_reference": {
+        "related_files": [
+          "Qakbot/qbot_main.cpp",
+          "Qakbot/qbot_utils.cpp",
+          "Qakbot/qakbot_config.h"
+        ],
+        "config_files": [
+          "Qakbot/qakbot_config.h"
+        ],
+        "dropped_or_generated_artifacts": [
+          "Scheduled task named WindowsUpdateTask_<tickcount>.",
+          "cleanup.bat self-delete script in the temp directory.",
+          "Named pipe \\\\.\\pipe\\qbot_<pid>."
+        ],
+        "loader_payload_helper_relationships": [
+          "qbot_main.cpp selects the behavior branch based on command-line switches.",
+          "qbot_utils.cpp implements process, CPUID, timing, and registry environment checks plus scheduled-task persistence, resource extraction, and named-pipe creation."
+        ]
+      },
+      "reporting_reference": {
+        "executive_summary_points": [
+          "The sample branches heavily on command-line mode flags rather than a single linear execution path.",
+          "Persistence is implemented as a scheduled task masquerading as a Windows update component.",
+          "A resource-backed core payload is expected and then injected into svchost.exe.",
+          "Named-pipe coordination and self-delete logic are present."
+        ],
+        "expected_functionality_sections": [
+          "execution modes / command-line handling",
+          "anti-analysis",
+          "scheduled-task persistence",
+          "resource payload staging",
+          "process injection",
+          "named-pipe coordination",
+          "self-delete behavior"
+        ],
+        "detection_opportunities": [
+          "Task names matching WindowsUpdateTask_* created through Task Scheduler COM.",
+          "Named-pipe pattern \\\\.\\pipe\\qbot_*.",
+          "cleanup.bat self-delete batch creation.",
+          "Registry/process blacklist strings for common analyst tools."
+        ]
+      },
+      "optional_detection_reference": {
+        "candidate_yara_features": [
+          "Global\\QBot_%08X_Session",
+          "\\\\.\\pipe\\qbot_%08X",
+          "WindowsUpdateTask_%08X",
+          "cleanup.bat"
+        ],
+        "candidate_sigma_behaviors": [
+          "Scheduled-task creation masquerading as a Windows update component.",
+          "Creation of a named pipe matching \\\\.\\pipe\\qbot_*.",
+          "Batch-file-based self-delete behavior."
+        ]
+      },
+      "grounding": [
+        {
+          "file": "Qakbot/qbot_main.cpp",
+          "symbol": "wWinMain",
+          "supports": [
+            "mode flags",
+            "mutex",
+            "payload branch",
+            "self-delete path"
+          ]
+        },
+        {
+          "file": "Qakbot/qbot_main.cpp",
+          "symbol": "InjectIntoProcess",
+          "supports": [
+            "svchost.exe targeting",
+            "remote-thread injection"
+          ]
+        },
+        {
+          "file": "Qakbot/qbot_main.cpp",
+          "symbol": "SetupPipeCommunication",
+          "supports": [
+            "named-pipe coordination"
+          ]
+        },
+        {
+          "file": "Qakbot/qbot_utils.cpp",
+          "symbol": "QbotCheckEnvironment",
+          "supports": [
+            "analysis-tool blacklist",
+            "CPUID hypervisor check",
+            "timing probe",
+            "VM registry artifact check"
+          ]
+        },
+        {
+          "file": "Qakbot/qbot_utils.cpp",
+          "symbol": "InstallScheduledTask",
+          "supports": [
+            "scheduled-task persistence"
+          ]
+        },
+        {
+          "file": "Qakbot/qbot_utils.cpp",
+          "symbol": "ExtractResourcePayload",
+          "supports": [
+            "resource-backed payload path",
+            "XOR decode"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_index": 3,
+      "final_filename": "sample3.exe",
+      "original_source_name": "TrickBot",
+      "family_label": "TrickBot simulation",
+      "platform": "windows",
+      "architecture": "x86_64",
+      "build_mode": "release",
+      "stripped": true,
+      "packed": true,
+      "source_files": [
+        "TrickBot/trick_main.cpp",
+        "TrickBot/trick_antidebug.cpp",
+        "TrickBot/trick_config.h"
+      ],
+      "artifact": {
+        "final_path": "output/sample3.exe",
+        "release_path": "release/trickbot_release.exe",
+        "stripped_path": "stripped/trickbot_release.exe",
+        "exists": null,
+        "sha256": null,
+        "size_bytes": null
+      },
+      "intended_simulation": "Modular banking-trojan-style loader with layered anti-analysis, registry persistence, encrypted C2 seeds, HTTPS module retrieval, and web-inject-oriented post-exploitation hooks.",
+      "major_observable_capabilities": [
+        "Timing-based debugger detection, hardware-breakpoint checks, WMI-based VM detection, NTDLL .text integrity checking, and TLS-callback anti-debug logic.",
+        "In-memory PE-header corruption intended to complicate dumping.",
+        "Registry Run-key persistence using value name WindowsDefender.",
+        "Encrypted C2 server list bytes in config.h decoded before network use.",
+        "HTTPS POST check-in to /ga/ on port 447.",
+        "Downloaded module handling that distinguishes module IDs such as systeminfo and webinjects.",
+        "Built-in module-descriptor dispatch with DJB2-hashed names and XML-style per-module configuration parsing.",
+        "Web-inject setup that writes browser-facing configuration into an Internet Explorer registry location."
+      ],
+      "important_limitations": [
+        "The code simulates module retrieval and does not implement a full reflective DLL loader or real TrickBot cryptography.",
+        "GetAntiDebugScript() is present as a reference artifact, but it is not invoked by the main execution path in trick_main.cpp.",
+        "TLS callback registration behavior depends on the Windows toolchain / linker honoring the callback section directives."
+      ],
+      "static_strings_expected": [
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        "WindowsDefender",
+        "/ga/",
+        "ROOT\\CIMV2",
+        "SELECT * FROM Win32_ComputerSystem WHERE Model LIKE '%VMware%' OR Model LIKE '%VirtualBox%'",
+        "*.bankofamerica.com/*",
+        "*.wellsfargo.com/*",
+        "*.chase.com/*",
+        "*.citi.com/*",
+        "Software\\Microsoft\\Internet Explorer\\International",
+        "AcceptLanguage",
+        "InjectTarget",
+        "NetworkExfilUrl"
+      ],
+      "encoded_or_config_artifacts": [
+        "ENC_C2_SERVERS byte array in TrickBot/trick_config.h.",
+        "TrickModule enum with module IDs for system info, inject DLL, web injects, network DLL, and bcrypt support.",
+        "Bank-target URL patterns stored in INJECT_TARGETS."
+      ],
+      "resources_or_embedded_data": [
+        "No external module blobs or resource files are checked in with this simulation."
+      ],
+      "imports_and_runtime_clues": [
+        "Native Win32 C++ sample using WinHTTP, WMI COM interfaces, registry APIs, and low-level thread context / PE structures.",
+        "No browser hooking implementation is shipped; only the structure and target patterns are present."
+      ],
+      "relationship_reference": {
+        "related_files": [
+          "TrickBot/trick_main.cpp",
+          "TrickBot/trick_antidebug.cpp",
+          "TrickBot/trick_config.h"
+        ],
+        "config_files": [
+          "TrickBot/trick_config.h"
+        ],
+        "dropped_or_generated_artifacts": [
+          "Registry Run value WindowsDefender referencing the current executable.",
+          "Internet Explorer AcceptLanguage registry value under the International key."
+        ],
+        "loader_payload_helper_relationships": [
+          "trick_main.cpp handles persistence, C2 traffic, XML-backed module dispatch, and browser-facing staging.",
+          "trick_antidebug.cpp contains debugger, VM, NTDLL hook-detection, PE corruption, and TLS callback routines.",
+          "trick_config.h stores encrypted server bytes and web-inject target patterns."
+        ]
+      },
+      "reporting_reference": {
+        "executive_summary_points": [
+          "The sample foregrounds anti-analysis before registry persistence or module retrieval.",
+          "Persistence is set through a Run value named WindowsDefender.",
+          "HTTPS C2 traffic is modeled through a /ga/ POST path and encrypted-seed server list.",
+          "Web-inject-style post-exploitation is represented by bank target patterns and browser-related registry changes."
+        ],
+        "expected_functionality_sections": [
+          "anti-analysis and anti-debugging",
+          "persistence",
+          "C2 and module retrieval",
+          "web-inject / browser-manipulation intent",
+          "module architecture"
+        ],
+        "detection_opportunities": [
+          "Registry Run value WindowsDefender in the current-user hive.",
+          "Fixed /ga/ C2 path and port-447 HTTPS usage.",
+          "WMI query strings for VMware / VirtualBox model checks.",
+          "Bank-target wildcard strings that resemble web-inject target lists."
+        ]
+      },
+      "optional_detection_reference": {
+        "candidate_yara_features": [
+          "WindowsDefender",
+          "/ga/",
+          "*.bankofamerica.com/*",
+          "*.wellsfargo.com/*",
+          "*.chase.com/*",
+          "*.citi.com/*"
+        ],
+        "candidate_sigma_behaviors": [
+          "Registry Run-key creation with value name WindowsDefender.",
+          "HTTPS connections to high ports such as 447 with a fixed /ga/ path.",
+          "Registry modification of Internet Explorer International\\AcceptLanguage."
+        ]
+      },
+      "grounding": [
+        {
+          "file": "TrickBot/trick_main.cpp",
+          "symbol": "WinMain",
+          "supports": [
+            "anti-analysis gating",
+            "Run-key persistence",
+            "module loop"
+          ]
+        },
+        {
+          "file": "TrickBot/trick_main.cpp",
+          "symbol": "TrickbotC2Checkin",
+          "supports": [
+            "HTTPS POST /ga/",
+            "module-response handling"
+          ]
+        },
+        {
+          "file": "TrickBot/trick_main.cpp",
+          "symbol": "DispatchConfiguredModules",
+          "supports": [
+            "DJB2 module hashing",
+            "XML-style config parsing",
+            "module staging"
+          ]
+        },
+        {
+          "file": "TrickBot/trick_main.cpp",
+          "symbol": "InstallWebInjects",
+          "supports": [
+            "browser-facing registry manipulation"
+          ]
+        },
+        {
+          "file": "TrickBot/trick_antidebug.cpp",
+          "symbol": "IsVirtualMachine",
+          "supports": [
+            "WMI-based VM check"
+          ]
+        },
+        {
+          "file": "TrickBot/trick_antidebug.cpp",
+          "symbol": "DetectNtdllHooks",
+          "supports": [
+            "NTDLL hook / section-hash detection"
+          ]
+        },
+        {
+          "file": "TrickBot/trick_antidebug.cpp",
+          "symbol": "TlsCallback",
+          "supports": [
+            "TLS anti-debug path"
+          ]
+        },
+        {
+          "file": "TrickBot/trick_antidebug.cpp",
+          "symbol": "CorruptPEHeader",
+          "supports": [
+            "in-memory PE corruption"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_index": 4,
+      "final_filename": "sample4.exe",
+      "original_source_name": "WannaCry",
+      "family_label": "WannaCry simulation",
+      "platform": "windows",
+      "architecture": "x86_64",
+      "build_mode": "release",
+      "stripped": true,
+      "packed": true,
+      "source_files": [
+        "Wannacry/wannacry_main.cpp",
+        "Wannacry/wannacry_worm.cpp",
+        "Wannacry/wannacry_config.h"
+      ],
+      "artifact": {
+        "final_path": "output/sample4.exe",
+        "release_path": "release/wannacry_release.exe",
+        "stripped_path": "stripped/wannacry_release.exe",
+        "exists": null,
+        "sha256": null,
+        "size_bytes": null
+      },
+      "intended_simulation": "Ransomware-worm-style sample combining mutex / service persistence, resource extraction attempts, backup deletion, ransom-note display, and multithreaded SMB propagation logic.",
+      "major_observable_capabilities": [
+        "Killswitch-domain HTTP reachability check using WinINet before the main ransomware flow proceeds.",
+        "Single-instance mutex using Global\\MsWinZonesCacheCounterMutexA.",
+        "Service installation masquerading as Microsoft Security Center (2.0) Service with service name mssecsvc2.0.",
+        "Extraction attempts for @WanaDecryptor@.exe and related component resources into a hidden temp directory.",
+        "Backup-deletion command execution through vssadmin delete shadows and wmic shadowcopy delete.",
+        "Recursive candidate-file enumeration against the configured target-extension list before ransom-note display.",
+        "Ransom-note-style UI with embedded bitcoin addresses.",
+        "Multithreaded SMB port-445 scanning, random IP generation, and EternalBlue-like packet structure simulation."
+      ],
+      "important_limitations": [
+        "No .rc file or embedded resource binaries are checked in, so decryptor / cleanup extraction paths are structurally present but unbacked by repository artifacts.",
+        "The encryption logic itself is not implemented in the checked-in source.",
+        "The worm routine simulates exploit structure and returns success without implementing MS17-010 exploitation.",
+        "Enumeration currently counts candidate files but does not encrypt or rename them."
+      ],
+      "static_strings_expected": [
+        "Global\\MsWinZonesCacheCounterMutexA",
+        "mssecsvc2.0",
+        "Microsoft Security Center (2.0) Service",
+        "@WanaDecryptor@.exe",
+        "http://www.example-killswitch.com/",
+        "vssadmin delete shadows /all /quiet",
+        "wmic shadowcopy delete",
+        "Ooops, your files have been encrypted!",
+        "13AM4VW2dhxYgXeQepoHkHSQuy6NgaEb94"
+      ],
+      "encoded_or_config_artifacts": [
+        "Bitcoin address list in wannacry_config.h.",
+        "Target extension and excluded-path lists in wannacry_config.h.",
+        "Resource ID constants for encryptor, privilege escalation helper, cleanup helper, and language resources."
+      ],
+      "resources_or_embedded_data": [
+        "Resource IDs are defined in wannacry_config.h, but the repository does not include a resource script or embedded component binaries."
+      ],
+      "imports_and_runtime_clues": [
+        "Native Win32 C++ sample using service APIs, ShellExecuteW, WinSock SMB-style sockets, and multithreading.",
+        "The source now includes a WinINet killswitch check and recursive target-file enumeration, but still stops short of real encryption."
+      ],
+      "relationship_reference": {
+        "related_files": [
+          "Wannacry/wannacry_main.cpp",
+          "Wannacry/wannacry_worm.cpp",
+          "Wannacry/wannacry_config.h"
+        ],
+        "config_files": [
+          "Wannacry/wannacry_config.h"
+        ],
+        "dropped_or_generated_artifacts": [
+          "Hidden temp working directory named from GetTickCount().",
+          "@WanaDecryptor@.exe written into the temp directory if the expected resource exists.",
+          "Service registration under mssecsvc2.0."
+        ],
+        "loader_payload_helper_relationships": [
+          "wannacry_main.cpp handles mutex, service install, resource extraction, and ransom-note display.",
+          "wannacry_worm.cpp provides the SMB scan / exploit-structure loop."
+        ]
+      },
+      "reporting_reference": {
+        "executive_summary_points": [
+          "The sample combines ransomware presentation with worm-like SMB propagation behavior.",
+          "Persistence is handled through service installation rather than a Run key.",
+          "Backup deletion commands and ransom-note strings are strong static anchors.",
+          "Resource-based component extraction is intended but unsupported by any checked-in resource blob."
+        ],
+        "expected_functionality_sections": [
+          "mutex / single-instance control",
+          "service-based persistence",
+          "resource extraction and staging",
+          "backup deletion and ransom-note behavior",
+          "SMB propagation / exploit structure"
+        ],
+        "detection_opportunities": [
+          "Service creation for mssecsvc2.0 / Microsoft Security Center (2.0) Service.",
+          "WinINet GET to the placeholder killswitch domain.",
+          "Command execution containing vssadmin delete shadows /all /quiet or wmic shadowcopy delete.",
+          "Ransom-note strings and @WanaDecryptor@.exe path.",
+          "Aggressive outbound TCP 445 scanning."
+        ]
+      },
+      "optional_detection_reference": {
+        "candidate_yara_features": [
+          "Global\\MsWinZonesCacheCounterMutexA",
+          "mssecsvc2.0",
+          "@WanaDecryptor@.exe",
+          "vssadmin delete shadows /all /quiet",
+          "Ooops, your files have been encrypted!"
+        ],
+        "candidate_sigma_behaviors": [
+          "Service creation for mssecsvc2.0.",
+          "Execution of vssadmin delete shadows or wmic shadowcopy delete.",
+          "Repeated outbound connections to TCP 445 across many hosts."
+        ]
+      },
+      "grounding": [
+        {
+          "file": "Wannacry/wannacry_main.cpp",
+          "symbol": "WinMain",
+          "supports": [
+            "killswitch gate",
+            "mutex check",
+            "service install",
+            "ransom note"
+          ]
+        },
+        {
+          "file": "Wannacry/wannacry_main.cpp",
+          "symbol": "IsKillSwitchActivated",
+          "supports": [
+            "WinINet killswitch check"
+          ]
+        },
+        {
+          "file": "Wannacry/wannacry_main.cpp",
+          "symbol": "EnumerateCandidateFiles",
+          "supports": [
+            "target-extension recursion"
+          ]
+        },
+        {
+          "file": "Wannacry/wannacry_main.cpp",
+          "symbol": "ExtractAndRunComponents",
+          "supports": [
+            "resource extraction",
+            "backup deletion command"
+          ]
+        },
+        {
+          "file": "Wannacry/wannacry_main.cpp",
+          "symbol": "InstallService",
+          "supports": [
+            "service-based persistence"
+          ]
+        },
+        {
+          "file": "Wannacry/wannacry_worm.cpp",
+          "symbol": "IsSMBPortOpen",
+          "supports": [
+            "port 445 scan"
+          ]
+        },
+        {
+          "file": "Wannacry/wannacry_worm.cpp",
+          "symbol": "ExploitEternalBlue",
+          "supports": [
+            "EternalBlue-like packet structure simulation"
+          ]
+        },
+        {
+          "file": "Wannacry/wannacry_worm.cpp",
+          "symbol": "StartWormPropagation",
+          "supports": [
+            "multithreaded worm behavior"
+          ]
+        }
+      ]
+    },
+    {
+      "sample_index": 5,
+      "final_filename": "sample5.exe",
+      "original_source_name": "PlugX",
+      "family_label": "PlugX simulation",
+      "platform": "windows",
+      "architecture": "x86_64",
+      "build_mode": "release",
+      "stripped": true,
+      "packed": true,
+      "source_files": [
+        "Plugx/plugx_main.cpp",
+        "Plugx/plugx_shellcode.c",
+        "Plugx/plugx_config.h"
+      ],
+      "artifact": {
+        "final_path": "output/sample5.exe",
+        "release_path": "release/plugx_release.exe",
+        "stripped_path": "stripped/plugx_release.exe",
+        "exists": null,
+        "sha256": null,
+        "size_bytes": null
+      },
+      "intended_simulation": "PlugX-style RAT / sideloading scenario with registry persistence, config decryption, encrypted runtime-profile staging, keylogging, screenshot capture, structured TCP beaconing, plugin dispatch, and a DLL-entry-oriented execution model exposed through an EXE wrapper.",
+      "major_observable_capabilities": [
+        "Registry Run-key persistence using value name Windows Security Monitor.",
+        "Configuration-decryption routine over an encrypted config blob.",
+        "XOR-decoded runtime profile that supplies C2 endpoints, campaign identifier, interval, and mutex name.",
+        "Single-instance mutex based on the decoded runtime profile.",
+        "Allocated shellcode-execution path backed by an embedded shellcode array.",
+        "Keylogger thread writing a hidden temp file named system.cache.",
+        "Screen-capture routine using GDI bitmap APIs.",
+        "Custom TCP heartbeat packet with magic 0x504C5558 and base64-encoded host metadata payload.",
+        "Plugin dispatch table for screenshot, keylog, and file-manager-style command handling.",
+        "DLL-entry-driven execution model that simulates a sideloaded DLL while still exposing a WinMain wrapper for EXE builds."
+      ],
+      "important_limitations": [
+        "plugx_shellcode.c intentionally contains a deterministic one-byte ret stub rather than full shellcode so the sample remains portable and reproducible.",
+        "The final-round workflow emits a single EXE artifact, not a DLL + signed-loader pair.",
+        "The legacy binary config path is still skeletal; the richer operator-facing data lives in the XOR-decoded runtime profile rather than a true loader-side plugin ecosystem.",
+        "Command handlers remain bounded stubs and do not implement a full reverse shell or remote file-management stack."
+      ],
+      "static_strings_expected": [
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        "Windows Security Monitor",
+        "system.cache",
+        "plugx_filemgr.txt",
+        "PLUGIN_KEYLOG|",
+        "screenshot"
+      ],
+      "encoded_or_config_artifacts": [
+        "ENC_CONFIG byte array in Plugx/plugx_config.h.",
+        "ENC_RUNTIME_PROFILE XOR blob in Plugx/plugx_main.cpp.",
+        "PLUGX_CONFIG structure with magic, beacon interval, port, C2 server, and campaign identifier fields.",
+        "ShellcodeEntry stub and ShellcodeSize in plugx_shellcode.c."
+      ],
+      "resources_or_embedded_data": [
+        "No external resource file is present; the shellcode relationship is represented by the checked-in plugx_shellcode.c stub."
+      ],
+      "imports_and_runtime_clues": [
+        "Native Win32 C++ sample using WinSock, GDI, keyboard state polling, temp-file logging, and Run-key persistence.",
+        "Execution pivots through DllMain-style logic even when launched as an EXE."
+      ],
+      "relationship_reference": {
+        "related_files": [
+          "Plugx/plugx_main.cpp",
+          "Plugx/plugx_shellcode.c",
+          "Plugx/plugx_config.h"
+        ],
+        "config_files": [
+          "Plugx/plugx_config.h"
+        ],
+        "dropped_or_generated_artifacts": [
+          "Registry Run value Windows Security Monitor.",
+          "Hidden temp log file named system.cache.",
+          "plugx_filemgr.txt staging file in the temp directory when the file-manager plugin path is exercised.",
+          "In-memory screenshot buffer sent over the beacon socket when commanded."
+        ],
+        "loader_payload_helper_relationships": [
+          "plugx_main.cpp drives persistence, runtime-profile decode, keylogging, screenshot capture, plugin dispatch, beaconing, and DllMain/WinMain entry paths.",
+          "plugx_shellcode.c provides the deterministic embedded shellcode stub used by ExecutePlugXShellcode().",
+          "plugx_config.h defines the encrypted configuration structure and registry constants."
+        ]
+      },
+      "reporting_reference": {
+        "executive_summary_points": [
+          "The sample is better framed as a PlugX-style RAT / sideloading simulation than as a pure standalone downloader.",
+          "Persistence is a Run value named Windows Security Monitor.",
+          "Static anchors include system.cache, the XOR runtime-profile blob, and the PLUGX heartbeat / plugin structures.",
+          "The shellcode path is intentionally stubbed for portability and should be reported as such rather than overclaimed as a full implant."
+        ],
+        "expected_functionality_sections": [
+          "persistence",
+          "config decryption",
+          "shellcode / staged execution",
+          "keylogging",
+          "screen capture",
+          "C2 beaconing",
+          "DLL sideloading relationship"
+        ],
+        "detection_opportunities": [
+          "Run-key persistence with value name Windows Security Monitor.",
+          "Hidden temp-file writes to system.cache.",
+          "Custom outbound TCP beacons with the PLUX / 0x504C5558 heartbeat header.",
+          "Simultaneous keyboard polling and screenshot capture logic."
+        ]
+      },
+      "optional_detection_reference": {
+        "candidate_yara_features": [
+          "Windows Security Monitor",
+          "system.cache",
+          "PLUGIN_KEYLOG|",
+          "Global\\PlugXSim_001"
+        ],
+        "candidate_sigma_behaviors": [
+          "Registry Run-key creation with value name Windows Security Monitor.",
+          "Hidden temp-file creation or append to system.cache.",
+          "Repeated outbound TCP beacons carrying a PLUX-style header."
+        ]
+      },
+      "grounding": [
+        {
+          "file": "Plugx/plugx_main.cpp",
+          "symbol": "InstallPersistence",
+          "supports": [
+            "Run-key persistence"
+          ]
+        },
+        {
+          "file": "Plugx/plugx_main.cpp",
+          "symbol": "DecryptConfig",
+          "supports": [
+            "encrypted config structure"
+          ]
+        },
+        {
+          "file": "Plugx/plugx_main.cpp",
+          "symbol": "LoadRuntimeProfile",
+          "supports": [
+            "XOR runtime profile",
+            "decoded C2 list / mutex / campaign"
+          ]
+        },
+        {
+          "file": "Plugx/plugx_main.cpp",
+          "symbol": "ExecutePlugXShellcode",
+          "supports": [
+            "shellcode allocation/execution path"
+          ]
+        },
+        {
+          "file": "Plugx/plugx_main.cpp",
+          "symbol": "KeyloggerThread",
+          "supports": [
+            "hidden temp log file",
+            "keystroke capture"
+          ]
+        },
+        {
+          "file": "Plugx/plugx_main.cpp",
+          "symbol": "CaptureScreen",
+          "supports": [
+            "screenshot logic"
+          ]
+        },
+        {
+          "file": "Plugx/plugx_main.cpp",
+          "symbol": "C2Beacon",
+          "supports": [
+            "PLUX heartbeat protocol",
+            "socket C2 path"
+          ]
+        },
+        {
+          "file": "Plugx/plugx_main.cpp",
+          "symbol": "DispatchPluginCommand",
+          "supports": [
+            "plugin dispatch table"
+          ]
+        },
+        {
+          "file": "Plugx/plugx_shellcode.c",
+          "symbol": "ShellcodeEntry",
+          "supports": [
+            "deterministic shellcode stub"
+          ]
+        }
+      ]
+    }
+  ]
+}

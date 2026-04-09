@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -16,6 +17,10 @@ import requests
 
 class InferenceBackendError(RuntimeError):
     pass
+
+
+_HTTP_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+_HTTP_RETRY_BACKOFF_SECONDS = (1.0, 3.0, 6.0)
 
 
 def _env_text(name: str) -> str:
@@ -83,6 +88,56 @@ def parse_jsonish_object(text: str) -> Dict[str, Any]:
         except Exception:
             pass
     raise InferenceBackendError("model output did not contain a parseable JSON object")
+
+
+def _retry_backoff_sec(attempt_index: int) -> float:
+    if attempt_index < len(_HTTP_RETRY_BACKOFF_SECONDS):
+        return float(_HTTP_RETRY_BACKOFF_SECONDS[attempt_index])
+    last = float(_HTTP_RETRY_BACKOFF_SECONDS[-1])
+    growth = 2 ** max(0, attempt_index - len(_HTTP_RETRY_BACKOFF_SECONDS) + 1)
+    return float(min(10.0, last * growth))
+
+
+def _should_retry_response(response: requests.Response) -> bool:
+    return int(getattr(response, "status_code", 0) or 0) in _HTTP_RETRY_STATUS_CODES
+
+
+def _post_json_with_retry(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    payload: Dict[str, Any],
+    timeout_sec: int,
+    max_attempts: int = 4,
+) -> requests.Response:
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=max(1, int(timeout_sec)),
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                raise InferenceBackendError(
+                    f"request failed after {attempt} attempt(s): {type(exc).__name__}: {exc}"
+                ) from exc
+            time.sleep(_retry_backoff_sec(attempt - 1))
+            continue
+
+        if response.ok or not _should_retry_response(response) or attempt >= max_attempts:
+            return response
+
+        time.sleep(_retry_backoff_sec(attempt - 1))
+
+    if last_error is not None:
+        raise InferenceBackendError(
+            f"request failed after {max_attempts} attempt(s): {type(last_error).__name__}: {last_error}"
+        ) from last_error
+    raise InferenceBackendError("request failed without a response")
 
 
 @dataclass
@@ -169,11 +224,11 @@ class OpenAICompatibleBackend(InferenceBackend):
         if resolved.system_prompt:
             payload["messages"].append({"role": "system", "content": resolved.system_prompt})
         payload["messages"].append({"role": "user", "content": resolved.prompt})
-        response = requests.post(
+        response = _post_json_with_retry(
             resolved.endpoint_url,
             headers=headers,
-            json=payload,
-            timeout=max(1, int(resolved.timeout_sec)),
+            payload=payload,
+            timeout_sec=resolved.timeout_sec,
         )
         if not response.ok:
             raise InferenceBackendError(f"{response.status_code}: {response.text[:1000]}")
@@ -257,11 +312,11 @@ class HuggingFaceInferenceBackend(InferenceBackend):
                 "use_cache": False,
             },
         }
-        response = requests.post(
+        response = _post_json_with_retry(
             resolved.endpoint_url,
             headers=headers,
-            json=payload,
-            timeout=max(1, int(resolved.timeout_sec)),
+            payload=payload,
+            timeout_sec=resolved.timeout_sec,
         )
         if not response.ok:
             raise InferenceBackendError(f"{response.status_code}: {response.text[:1000]}")

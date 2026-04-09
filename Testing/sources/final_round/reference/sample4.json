@@ -1,0 +1,226 @@
+{
+  "sample_index": 4,
+  "final_filename": "sample4.exe",
+  "original_source_name": "WannaCry",
+  "family_label": "WannaCry simulation",
+  "platform": "windows",
+  "architecture": "x86_64",
+  "build_mode": "release",
+  "stripped": true,
+  "packed": true,
+  "source_files": [
+    "Wannacry/wannacry_main.cpp",
+    "Wannacry/wannacry_worm.cpp",
+    "Wannacry/wannacry_config.h"
+  ],
+  "artifact": {
+    "final_path": "output/sample4.exe",
+    "release_path": "release/wannacry_release.exe",
+    "stripped_path": "stripped/wannacry_release.exe",
+    "exists": null,
+    "sha256": null,
+    "size_bytes": null
+  },
+  "intended_simulation": "Ransomware-worm-style sample combining mutex / service persistence, resource extraction attempts, backup deletion, ransom-note display, and multithreaded SMB propagation logic.",
+  "major_observable_capabilities": [
+    "Killswitch-domain HTTP reachability check using WinINet before the main ransomware flow proceeds.",
+    "Single-instance mutex using Global\\MsWinZonesCacheCounterMutexA.",
+    "Service installation masquerading as Microsoft Security Center (2.0) Service with service name mssecsvc2.0.",
+    "Extraction attempts for @WanaDecryptor@.exe and related component resources into a hidden temp directory.",
+    "Backup-deletion command execution through vssadmin delete shadows and wmic shadowcopy delete.",
+    "Recursive candidate-file enumeration against the configured target-extension list before ransom-note display.",
+    "Ransom-note-style UI with embedded bitcoin addresses.",
+    "Multithreaded SMB port-445 scanning, random IP generation, and EternalBlue-like packet structure simulation."
+  ],
+  "important_limitations": [
+    "No .rc file or embedded resource binaries are checked in, so decryptor / cleanup extraction paths are structurally present but unbacked by repository artifacts.",
+    "The encryption logic itself is not implemented in the checked-in source.",
+    "The worm routine simulates exploit structure and returns success without implementing MS17-010 exploitation.",
+    "Enumeration currently counts candidate files but does not encrypt or rename them."
+  ],
+  "static_strings_expected": [
+    "Global\\MsWinZonesCacheCounterMutexA",
+    "mssecsvc2.0",
+    "Microsoft Security Center (2.0) Service",
+    "@WanaDecryptor@.exe",
+    "http://www.example-killswitch.com/",
+    "vssadmin delete shadows /all /quiet",
+    "wmic shadowcopy delete",
+    "Ooops, your files have been encrypted!",
+    "13AM4VW2dhxYgXeQepoHkHSQuy6NgaEb94"
+  ],
+  "encoded_or_config_artifacts": [
+    "Bitcoin address list in wannacry_config.h.",
+    "Target extension and excluded-path lists in wannacry_config.h.",
+    "Resource ID constants for encryptor, privilege escalation helper, cleanup helper, and language resources."
+  ],
+  "resources_or_embedded_data": [
+    "Resource IDs are defined in wannacry_config.h, but the repository does not include a resource script or embedded component binaries."
+  ],
+  "imports_and_runtime_clues": [
+    "Native Win32 C++ sample using service APIs, ShellExecuteW, WinSock SMB-style sockets, and multithreading.",
+    "The source now includes a WinINet killswitch check and recursive target-file enumeration, but still stops short of real encryption."
+  ],
+  "relationship_reference": {
+    "related_files": [
+      "Wannacry/wannacry_main.cpp",
+      "Wannacry/wannacry_worm.cpp",
+      "Wannacry/wannacry_config.h"
+    ],
+    "config_files": [
+      "Wannacry/wannacry_config.h"
+    ],
+    "dropped_or_generated_artifacts": [
+      "Hidden temp working directory named from GetTickCount().",
+      "@WanaDecryptor@.exe written into the temp directory if the expected resource exists.",
+      "Service registration under mssecsvc2.0."
+    ],
+    "loader_payload_helper_relationships": [
+      "wannacry_main.cpp handles mutex, service install, resource extraction, and ransom-note display.",
+      "wannacry_worm.cpp provides the SMB scan / exploit-structure loop."
+    ]
+  },
+  "reporting_reference": {
+    "executive_summary_points": [
+      "The sample combines ransomware presentation with worm-like SMB propagation behavior.",
+      "Persistence is handled through service installation rather than a Run key.",
+      "Backup deletion commands and ransom-note strings are strong static anchors.",
+      "Resource-based component extraction is intended but unsupported by any checked-in resource blob."
+    ],
+    "expected_functionality_sections": [
+      "mutex / single-instance control",
+      "service-based persistence",
+      "resource extraction and staging",
+      "backup deletion and ransom-note behavior",
+      "SMB propagation / exploit structure"
+    ],
+    "detection_opportunities": [
+      "Service creation for mssecsvc2.0 / Microsoft Security Center (2.0) Service.",
+      "WinINet GET to the placeholder killswitch domain.",
+      "Command execution containing vssadmin delete shadows /all /quiet or wmic shadowcopy delete.",
+      "Ransom-note strings and @WanaDecryptor@.exe path.",
+      "Aggressive outbound TCP 445 scanning."
+    ]
+  },
+  "optional_detection_reference": {
+    "candidate_yara_features": [
+      "Global\\MsWinZonesCacheCounterMutexA",
+      "mssecsvc2.0",
+      "@WanaDecryptor@.exe",
+      "vssadmin delete shadows /all /quiet",
+      "Ooops, your files have been encrypted!"
+    ],
+    "candidate_sigma_behaviors": [
+      "Service creation for mssecsvc2.0.",
+      "Execution of vssadmin delete shadows or wmic shadowcopy delete.",
+      "Repeated outbound connections to TCP 445 across many hosts."
+    ]
+  },
+  "judge_reference": {
+    "must_hit_anchors": [
+      "Killswitch-domain check to http://www.example-killswitch.com/ before the main ransomware / worm flow.",
+      "Single-instance mutex Global\\MsWinZonesCacheCounterMutexA and service-based persistence using mssecsvc2.0 / Microsoft Security Center (2.0) Service.",
+      "Backup-deletion command execution containing vssadmin delete shadows /all /quiet and wmic shadowcopy delete.",
+      "Ransomware presentation plus worm-like behavior grounded in @WanaDecryptor@.exe staging, EnumerateCandidateFiles(), StartWormPropagation(), or ExploitEternalBlue()."
+    ],
+    "high_confidence_artifacts": [
+      "Global\\MsWinZonesCacheCounterMutexA mutex.",
+      "mssecsvc2.0 service name and Microsoft Security Center (2.0) Service display name.",
+      "@WanaDecryptor@.exe component name.",
+      "http://www.example-killswitch.com/ killswitch URL.",
+      "vssadmin delete shadows /all /quiet and wmic shadowcopy delete command strings."
+    ],
+    "supported_behavior_claims": [
+      "Killswitch reachability gates execution.",
+      "Persistence is service-based rather than Run-key-based.",
+      "The sample models ransomware presentation, backup deletion, and resource extraction attempts.",
+      "The sample also models multithreaded SMB port-445 scanning and EternalBlue-like exploit structure.",
+      "Candidate-file enumeration is implemented before ransom-note display."
+    ],
+    "minimum_report_sections": [
+      "killswitch and mutex",
+      "service persistence",
+      "resource staging and backup deletion",
+      "ransomware presentation",
+      "SMB propagation"
+    ],
+    "limitations_to_respect": [
+      "No .rc file or embedded resource binaries are checked in, so decryptor / cleanup extraction paths are structurally present but unbacked by repository artifacts.",
+      "The encryption logic itself is not implemented in the checked-in source.",
+      "The worm routine simulates exploit structure and returns success without implementing MS17-010 exploitation.",
+      "Enumeration currently counts candidate files but does not encrypt or rename them."
+    ],
+    "do_not_overclaim": [
+      "Do not claim real file encryption or renaming behavior when the source only enumerates targets.",
+      "Do not claim an actual checked-in decryptor or resource blob exists in the repository.",
+      "Do not describe the SMB routine as a real EternalBlue exploit implementation."
+    ],
+    "common_failure_modes": [
+      "Describing the sample only as ransomware or only as a worm while missing the combined structure.",
+      "Ignoring the killswitch gate or service persistence.",
+      "Claiming actual encryption or embedded resource payloads that are not present."
+    ]
+  },
+  "grounding": [
+    {
+      "file": "Wannacry/wannacry_main.cpp",
+      "symbol": "WinMain",
+      "supports": [
+        "killswitch gate",
+        "mutex check",
+        "service install",
+        "ransom note"
+      ]
+    },
+    {
+      "file": "Wannacry/wannacry_main.cpp",
+      "symbol": "IsKillSwitchActivated",
+      "supports": [
+        "WinINet killswitch check"
+      ]
+    },
+    {
+      "file": "Wannacry/wannacry_main.cpp",
+      "symbol": "EnumerateCandidateFiles",
+      "supports": [
+        "target-extension recursion"
+      ]
+    },
+    {
+      "file": "Wannacry/wannacry_main.cpp",
+      "symbol": "ExtractAndRunComponents",
+      "supports": [
+        "resource extraction",
+        "backup deletion command"
+      ]
+    },
+    {
+      "file": "Wannacry/wannacry_main.cpp",
+      "symbol": "InstallService",
+      "supports": [
+        "service-based persistence"
+      ]
+    },
+    {
+      "file": "Wannacry/wannacry_worm.cpp",
+      "symbol": "IsSMBPortOpen",
+      "supports": [
+        "port 445 scan"
+      ]
+    },
+    {
+      "file": "Wannacry/wannacry_worm.cpp",
+      "symbol": "ExploitEternalBlue",
+      "supports": [
+        "EternalBlue-like packet structure simulation"
+      ]
+    },
+    {
+      "file": "Wannacry/wannacry_worm.cpp",
+      "symbol": "StartWormPropagation",
+      "supports": [
+        "multithreaded worm behavior"
+      ]
+    }
+  ]
+}

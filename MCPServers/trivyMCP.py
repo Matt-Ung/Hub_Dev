@@ -21,6 +21,12 @@ from typing import Any, Literal
 
 from fastmcp import FastMCP
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from artifact_paths import describe_tool_output_root, ensure_tool_output_root  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform.startswith("win")
@@ -73,13 +79,14 @@ def ensure_existing_path(path: str) -> str:
     return str(candidate)
 
 
-def run_command(argv: list[str], timeout_sec: int) -> subprocess.CompletedProcess[str]:
+def run_command(argv: list[str], timeout_sec: int, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
         capture_output=True,
         text=True,
         errors="replace",
         timeout=max(1, int(timeout_sec)),
+        env=env,
     )
 
 
@@ -168,6 +175,9 @@ def trivyScan(
         resolved_target = target
         if scan_type != "image":
             resolved_target = ensure_existing_path(target)
+        cache_dir = ensure_tool_output_root("trivy")
+        command_env = os.environ.copy()
+        command_env["TRIVY_CACHE_DIR"] = str(cache_dir)
 
         cmd = ["trivy", scan_type, resolved_target]
         if severity:
@@ -177,19 +187,20 @@ def trivyScan(
 
         mode = (output_mode or "json_compact").strip().lower()
         if mode == "text":
-            result = run_command(cmd, timeout_sec=timeout_sec)
+            result = run_command(cmd, timeout_sec=timeout_sec, env=command_env)
             return {
                 "ok": result.returncode == 0,
                 "rc": result.returncode,
                 "command": cmd,
                 "scan_type": scan_type,
                 "target": resolved_target,
+                "cache_dir": str(cache_dir),
                 "stdout": truncate_text(result.stdout or "", max_chars=16000),
                 "stderr": truncate_text(result.stderr or "", max_chars=4000),
             }
 
         cmd.extend(["--format", "json"])
-        result = run_command(cmd, timeout_sec=timeout_sec)
+        result = run_command(cmd, timeout_sec=timeout_sec, env=command_env)
         compact = _parse_trivy_compact(result.stdout or "")
         envelope: dict[str, Any] = {
             "ok": result.returncode == 0,
@@ -197,6 +208,7 @@ def trivyScan(
             "command": cmd,
             "scan_type": scan_type,
             "target": resolved_target,
+            "cache_dir": str(cache_dir),
             "stderr": truncate_text(result.stderr or "", max_chars=4000),
         }
         if mode == "json_full":
@@ -210,14 +222,19 @@ def trivyScan(
             envelope["result"] = compact
         return envelope
     except Exception as e:
+        logger.warning("trivyScan rejected request or failed to scan: %s", e)
         logger.exception("trivyScan failed")
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "cache_dir": describe_tool_output_root("trivy")}
 
 
 @mcp.tool()
 def trivyHelp(timeout_sec: int = 5) -> str:
     """Return `trivy --help` output."""
-    return run_help_command("trivy", timeout_sec=timeout_sec)
+    return (
+        run_help_command("trivy", timeout_sec=timeout_sec)
+        + "\n\n"
+        + f"Configured Trivy cache dir: {describe_tool_output_root('trivy')}"
+    )
 
 
 def main() -> None:
