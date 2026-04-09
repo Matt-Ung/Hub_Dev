@@ -1,3 +1,16 @@
+"""
+File: significance.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Compute exploratory statistical comparisons over experiment results.
+
+Summary:
+  This module runs the maintained permutation and sign-flip tests used by the
+  experiment report stack. It writes structured significance tables while
+  keeping the results clearly exploratory rather than confirmatory.
+"""
+
 from __future__ import annotations
 
 import csv

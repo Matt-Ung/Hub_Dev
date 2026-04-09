@@ -1,3 +1,18 @@
+"""
+File: artifacts.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Build, inspect, and resolve artifact-backed analysis bundles for the testing
+  harness.
+
+Summary:
+  This module owns the maintained bundle-preparation path. It computes bundle
+  freshness, runs headless Ghidra export and optional CLI enrichment, writes
+  automation payloads, and resolves derived analysis targets such as unpacked
+  UPX continuations used at run time.
+"""
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -5,13 +20,14 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 from .paths import BUNDLE_ROOT, CONFIG_ROOT, DEFAULT_SERVERS_MANIFEST, REPO_ROOT, ensure_dir, read_json, write_json
-from .samples import get_corpus_config, sample_slug
+from .samples import get_corpus_config, model_visible_sample_metadata, sample_slug
 from .subprocess_utils import normalize_timeout_sec, run_command, shorten_text, tool_available
 
 
@@ -320,6 +336,7 @@ def resolve_analyze_headless(ghidra_install_dir: str = "", ghidra_headless: str 
 
 
 def _build_automation_payload(identity: Dict[str, Any], ghidra_analysis: Dict[str, Any], sample_meta: Dict[str, Any], corpus_name: str) -> Dict[str, Any]:
+    visible_meta = model_visible_sample_metadata(sample_meta)
     program = ghidra_analysis.get("program") if isinstance(ghidra_analysis.get("program"), dict) else {}
     counts = ghidra_analysis.get("counts") if isinstance(ghidra_analysis.get("counts"), dict) else {}
     sections = list(ghidra_analysis.get("sections") or [])
@@ -349,7 +366,7 @@ def _build_automation_payload(identity: Dict[str, Any], ghidra_analysis: Dict[st
         "auto_analysis_failures": failures[:64],
         "analysis_token": "%s:%s" % (identity.get("sha256") or "", ghidra_analysis.get("generated_at_epoch") or ""),
         "program_info": {"program": program, "counts": counts},
-        "sample_manifest": sample_meta,
+        "sample_manifest": visible_meta,
     }
 
 
@@ -417,7 +434,7 @@ def _run_headless_export(
     if not keep_project:
         command.append("-deleteProject")
     launch_env: Dict[str, str] = {}
-    ghidra_java_home = str(os.environ.get("GHIDRA_JAVA_HOME") or os.environ.get("JAVA_HOME") or "").strip()
+    ghidra_java_home = _resolve_java_home()
     if ghidra_java_home:
         launch_env["JAVA_HOME"] = ghidra_java_home
     command_timeout = normalized_timeout + 60 if normalized_timeout is not None else None
@@ -436,6 +453,45 @@ def _run_headless_export(
     return result
 
 
+def _resolve_java_home() -> str:
+    configured = str(os.environ.get("GHIDRA_JAVA_HOME") or os.environ.get("JAVA_HOME") or "").strip()
+    if configured:
+        return configured
+    if sys.platform == "darwin":
+        try:
+            completed = subprocess.run(
+                ["/usr/libexec/java_home"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            detected = str(completed.stdout or "").strip()
+            if completed.returncode == 0 and detected:
+                return detected
+        except Exception:
+            return ""
+    return ""
+
+
+"""
+Function: prepare_bundle
+Inputs:
+  - corpus_name: logical corpus identifier that owns the sample.
+  - sample_path: built binary to package.
+  - sample_meta: manifest metadata for the sample.
+  - output_root / timeout_sec / analyze_headless / skip_cli_tools /
+    keep_project: bundle-preparation controls.
+Description:
+  Materialize one artifact-backed analysis bundle, reusing an existing bundle
+  only when it is both fresh and fully ready for analysis.
+Outputs:
+  Returns a dictionary describing the prepared bundle, freshness decision, and
+  captured tool outputs.
+Side Effects:
+  Writes bundle files, may run Ghidra headless export plus optional CLI tools,
+  and updates bundle manifest/readiness records on disk.
+"""
 def prepare_bundle(
     corpus_name: str,
     sample_path: Path,
@@ -450,7 +506,7 @@ def prepare_bundle(
     bundle_root = output_root or ensure_dir(BUNDLE_ROOT / corpus_name)
     bundle_dir = ensure_dir(bundle_root / sample_slug(sample_path))
     existing_readiness = inspect_bundle_dir(bundle_dir, sample_path=sample_path, analyze_headless=analyze_headless)
-    if bool(existing_readiness.get("fresh_for_analysis")):
+    if bool(existing_readiness.get("fresh_for_analysis")) and bool(existing_readiness.get("ready_for_analysis")):
         existing_manifest = read_json(bundle_dir / "bundle_manifest.json")
         result_record = dict(existing_manifest)
         result_record["sample"] = sample_path.name
@@ -502,7 +558,25 @@ def prepare_bundle(
     write_json(bundle_dir / "bundle_manifest.json", result_record)
     return result_record
 
-
+"""
+Function: resolve_analysis_bundle
+Inputs:
+  - bundle_dir: original prepared bundle directory for the packed-or-plain sample.
+  - prefer_upx_unpacked: when true, attempt UPX detect -> unpack -> derived bundle.
+  - timeout_sec / ghidra_install_dir / ghidra_headless / skip_cli_tools / keep_project:
+    preparation knobs reused when materializing a derived unpacked bundle.
+Description:
+  Resolve the effective analysis bundle for one run. By default this is the
+  original prepared bundle. When `prefer_upx_unpacked` is enabled and the
+  original executable is recognized by UPX, this helper materializes a
+  derived unpacked bundle and returns it as the effective target.
+Outputs:
+  Returns a dictionary containing the effective bundle dir, manifest,
+  automation payload, and structured analysis-target provenance.
+Side Effects:
+  May run `upx -t`, `upx -d`, `analyzeHeadless`, and optional CLI tools to
+  create a derived unpacked bundle under `<bundle_dir>/derived/`.
+"""
 def resolve_analysis_bundle(
     bundle_dir: Path,
     *,
@@ -513,25 +587,6 @@ def resolve_analysis_bundle(
     skip_cli_tools: bool = False,
     keep_project: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Function: resolve_analysis_bundle
-    Inputs:
-      - bundle_dir: original prepared bundle directory for the packed-or-plain sample.
-      - prefer_upx_unpacked: when true, attempt UPX detect -> unpack -> derived bundle.
-      - timeout_sec / ghidra_install_dir / ghidra_headless / skip_cli_tools / keep_project:
-        preparation knobs reused when materializing a derived unpacked bundle.
-    Description:
-      Resolve the effective analysis bundle for one run. By default this is the
-      original prepared bundle. When `prefer_upx_unpacked` is enabled and the
-      original executable is recognized by UPX, this helper materializes a
-      derived unpacked bundle and returns it as the effective target.
-    Outputs:
-      Returns a dictionary containing the effective bundle dir, manifest,
-      automation payload, and structured analysis-target provenance.
-    Side Effects:
-      May run `upx -t`, `upx -d`, `analyzeHeadless`, and optional CLI tools to
-      create a derived unpacked bundle under `<bundle_dir>/derived/`.
-    """
     bundle_dir = bundle_dir.resolve()
     bundle_manifest_path = bundle_dir / "bundle_manifest.json"
     automation_payload_path = bundle_dir / "automation_payload.json"
@@ -687,6 +742,23 @@ def resolve_analysis_bundle(
         return result
 
 
+"""
+Function: prepare_corpus_bundles
+Inputs:
+  - corpus_name: logical corpus identifier.
+  - sample_paths: concrete built binaries to prepare.
+  - manifest_lookup: normalized manifest metadata keyed by sample name.
+  - output_root / timeout_sec / ghidra_install_dir / ghidra_headless /
+    skip_cli_tools / keep_project: preparation controls.
+Description:
+  Prepare bundles for every selected sample, then compute one corpus-level
+  readiness summary for later doctor and preflight checks.
+Outputs:
+  Returns a summary dictionary containing per-sample preparation results plus
+  corpus-level readiness fields.
+Side Effects:
+  Creates or refreshes bundle directories under `Testing/generated/bundles`.
+"""
 def prepare_corpus_bundles(
     corpus_name: str,
     sample_paths: List[Path],
@@ -764,6 +836,19 @@ def inspect_bundle_dir(bundle_dir: Path, *, sample_path: Path | None = None, ana
     if isinstance(freshness, dict):
         result["freshness_status"] = freshness.get("status")
         result["stale_reasons"] = list(freshness.get("stale_reasons") or [])
+    bundle_manifest_path = bundle_dir / "bundle_manifest.json"
+    if bundle_manifest_path.exists():
+        try:
+            bundle_manifest = read_json(bundle_manifest_path)
+        except Exception:
+            bundle_manifest = {}
+        ghidra_headless = bundle_manifest.get("ghidra_headless") if isinstance(bundle_manifest.get("ghidra_headless"), dict) else {}
+        ghidra_error = str(ghidra_headless.get("error") or "").strip()
+        ghidra_stderr = str(ghidra_headless.get("stderr") or "").strip()
+        if ghidra_error:
+            result["ghidra_error"] = ghidra_error
+        if ghidra_stderr:
+            result["ghidra_stderr"] = ghidra_stderr
     return result
 
 
@@ -919,6 +1004,8 @@ def tool_name_to_server_guess(tool_name: str) -> str:
         return "flareflossmcp"
     if "hash" in name:
         return "hashdbmcp"
+    if "ssdeep" in name or "fuzzy" in name:
+        return "ssdeepmcp"
     if "string" in name:
         return "stringmcp"
     if "binwalk" in name:

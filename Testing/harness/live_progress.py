@@ -1,15 +1,15 @@
 """
 File: live_progress.py
 Author: Matt-Ung
-Last Updated: 2026-04-01
+Last Updated: 2026-04-08
 Purpose:
   Serve the lightweight live progress monitor for active experiment sweeps.
 
 Summary:
-  This module reads the experiment run catalog, per-run live-status files, and
-  streamed child logs to power the developer-facing monitor UI. It exists to
-  make sweep execution understandable in real time without requiring a heavier
-  dashboard service or post-run artifact inspection.
+  This module reads the new canonical experiment-local results layout,
+  including `run_path` catalog entries, per-run live-status files, and
+  `cases/<sample>/<task>/` artifacts, to power the active monitor UI. Legacy
+  result trees are handled by the archive-only viewer instead.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from .paths import REPO_ROOT, ensure_dir, read_json
-from .samples import sample_slug
+from .result_store import task_case_dir, task_cases_root, task_log_path
 
 
 _INDEX_HTML = """<!doctype html>
@@ -787,6 +787,7 @@ _INDEX_HTML = """<!doctype html>
       if (!selectedRunId || !runs.some((entry) => entry.run_id === selectedRunId)) {
         const preferredRun =
           runs.find((entry) => String(entry.status) === "running") ||
+          runs.find((entry) => String(entry.status) === "in_progress") ||
           runs.find((entry) => String(entry.status) === "pending") ||
           runs[0];
         selectedRunId = (preferredRun || {}).run_id || "";
@@ -845,6 +846,7 @@ _INDEX_HTML = """<!doctype html>
         const counts = entry.counts || {};
         const countRow = [
           renderCountChip("running", counts.running, "running"),
+          renderCountChip("in progress", counts.in_progress, "in_progress"),
           renderCountChip("pending", counts.pending, "pending"),
           renderCountChip("completed", counts.completed, "completed"),
           renderCountChip("failed", counts.failed, "failed"),
@@ -1282,15 +1284,51 @@ def _task_entries_for_sample(live_status: Dict[str, Any], sample_name: str) -> L
 
 def _classify_task_status(task_status: str) -> str:
     text = str(task_status or "").strip().lower()
-    if text == "running":
+    if text in {"running", "retrying"}:
         return "running"
-    if not text or text in {"pending", "not started", "not_started"} or text.startswith("not_run_"):
+    if not text or text in {"pending", "not started", "not_started"}:
         return "pending"
+    if text.startswith("not_run_"):
+        return "skipped"
     if text in {"failed", "analysis_error", "worker_assignment_failed", "validator_blocked"} or text.startswith("failed_"):
         return "failed"
     if text in {"skipped", "not_applicable"}:
         return "skipped"
     return "completed"
+
+
+def _normalize_run_status(status: str) -> str:
+    text = str(status or "").strip().lower()
+    if text in {"running", "completed", "completed_budget_exceeded", "budget_exceeded", "failed", "skipped", "pending"}:
+        return text
+    if text in {"preflight_failed", "analysis_error", "worker_assignment_failed"} or text.startswith("failed_"):
+        return "failed"
+    if text in {"not_started", "queued"}:
+        return "pending"
+    return "pending"
+
+
+def _run_status_bucket(status: str) -> str:
+    text = _normalize_run_status(status)
+    if text in {"completed", "completed_budget_exceeded", "budget_exceeded"}:
+        return "completed"
+    if text == "running":
+        return "running"
+    if text == "failed":
+        return "failed"
+    if text == "skipped":
+        return "skipped"
+    return "pending"
+
+
+def _effective_run_status(row: Dict[str, Any], live_status: Dict[str, Any]) -> str:
+    live_value = str(live_status.get("status") or "").strip()
+    if live_value:
+        return _normalize_run_status(live_value)
+    row_value = str(row.get("status") or "").strip()
+    if row_value:
+        return _normalize_run_status(row_value)
+    return "completed" if bool(row.get("ok")) else "pending"
 
 
 def _resolve_scope_samples_and_tasks(
@@ -1337,13 +1375,16 @@ def _resolve_scope_samples_and_tasks(
 def _rollup_executable_status(status_counts: Dict[str, int]) -> str:
     pending = int(status_counts.get("pending") or 0)
     running = int(status_counts.get("running") or 0)
+    in_progress = int(status_counts.get("in_progress") or 0)
     completed = int(status_counts.get("completed") or 0)
     failed = int(status_counts.get("failed") or 0)
     skipped = int(status_counts.get("skipped") or 0)
-    total = pending + running + completed + failed + skipped
+    total = pending + running + in_progress + completed + failed + skipped
     finished = completed + failed + skipped
     if running > 0:
         return "running"
+    if in_progress > 0:
+        return "in_progress"
     if total and finished > 0 and pending > 0:
         return "in_progress"
     if total and pending == 0:
@@ -1358,7 +1399,7 @@ def _summarize_executable_run_row(
     live_status: Dict[str, Any],
     sample_name: str,
 ) -> Dict[str, Any]:
-    effective_run_status = str(live_status.get("status") or row.get("status") or "pending").strip().lower() or "pending"
+    effective_run_status = _effective_run_status(row, live_status)
     current_sample = str(live_status.get("current_sample") or row.get("current_sample") or "").strip()
     current_task_id = str(live_status.get("current_task_id") or row.get("current_task_id") or "").strip()
     phase = str(live_status.get("current_phase") or row.get("current_phase") or row.get("stage") or "not started").strip() or "not started"
@@ -1383,6 +1424,10 @@ def _summarize_executable_run_row(
                 sample_status = "skipped"
             else:
                 sample_status = "completed"
+        elif finished_count > 0:
+            sample_status = "in_progress"
+        elif effective_run_status in {"completed", "completed_budget_exceeded", "budget_exceeded", "failed"}:
+            sample_status = "in_progress"
         else:
             sample_status = "pending"
 
@@ -1452,7 +1497,7 @@ def _build_executable_hierarchy(
     executables: List[Dict[str, Any]] = []
     for sample_name in selected_samples:
         run_rows: List[Dict[str, Any]] = []
-        status_counts = {"pending": 0, "running": 0, "completed": 0, "failed": 0, "skipped": 0}
+        status_counts = {"pending": 0, "running": 0, "in_progress": 0, "completed": 0, "failed": 0, "skipped": 0}
         for row in runs:
             run_row = _summarize_executable_run_row(
                 row,
@@ -1488,7 +1533,14 @@ def _sample_dir_for_task(run_dir: Path | None, sample_task_id: str) -> Path | No
     sample_name, task_id = _split_sample_task_id(sample_task_id)
     if not sample_name or not task_id:
         return None
-    return run_dir / "samples" / f"{sample_slug(sample_name)}__{task_id}"
+    return task_case_dir(run_dir, sample_name, task_id)
+
+
+def _resolve_active_catalog_run_dir(experiment_root: Path, entry: Dict[str, Any]) -> Path | None:
+    run_path = str((entry or {}).get("run_path") or "").strip()
+    if not run_path:
+        return None
+    return (Path(experiment_root) / run_path).resolve()
 
 
 def _pick_sample_task_id_for_sample(run_dir: Path | None, live_status: Dict[str, Any], sample_name: str) -> str:
@@ -1523,10 +1575,14 @@ def _pick_sample_task_id_for_sample(run_dir: Path | None, live_status: Dict[str,
     if run_dir is not None and run_dir.exists():
         latest_path: Path | None = None
         latest_mtime = -1.0
-        for path in (run_dir / "samples").glob(f"{sample_slug(target_sample)}__*/record.json"):
+        search_root = task_cases_root(run_dir)
+        for path in search_root.glob(f"{target_sample}/*/record.json") if search_root.exists() else []:
             try:
                 mtime = path.stat().st_mtime
             except Exception:
+                continue
+            record = _safe_json(path)
+            if str(record.get("sample") or "").strip() != target_sample:
                 continue
             if mtime >= latest_mtime:
                 latest_mtime = mtime
@@ -1558,7 +1614,8 @@ def _select_sample_task_id(
     if current_sample and current_task_id:
         return f"{current_sample}::{current_task_id}"
     if run_dir is not None and run_dir.exists():
-        latest_record, _ = _latest_json_by_name(run_dir / "samples", "record.json")
+        search_root = task_cases_root(run_dir)
+        latest_record, _ = _latest_json_by_name(search_root, "record.json")
         latest_sample_task_id = str(latest_record.get("sample_task_id") or "").strip()
         if latest_sample_task_id:
             return latest_sample_task_id
@@ -1668,7 +1725,6 @@ def _summarize_run_output(
         query = str(record.get("task_query") or agent_payload.get("query") or "").strip()
         final_report = str(agent_payload.get("final_report") or "").strip()
         failure_reason = str(metrics.get("failure_reason") or agent_payload.get("failure_reason") or agent_payload.get("error") or "").strip()
-        status_log = str(agent_payload.get("status_log") or "").strip()
         lines = []
         if selected_task.get("sample_task_id"):
             lines.append(f"sample_task_id: {selected_task['sample_task_id']}")
@@ -1680,8 +1736,6 @@ def _summarize_run_output(
             lines.extend(["", "agent final output:", final_report])
         if failure_reason:
             lines.extend(["", "failure_reason:", failure_reason])
-        if status_log:
-            lines.extend(["", "status_log:", status_log])
         text = "\n".join(lines).strip() if lines else _build_pending_output_text(live_status, label=label).strip()
         source_path = agent_path or record_path
         meta_parts = []
@@ -1954,7 +2008,8 @@ def _summarize_judge(run_dir: Path, sample_task_id: str = "") -> Dict[str, Any]:
     judge_path = task_artifacts.get("judge_path")
     if judge_payload:
         return _summarize_judge_payload(judge_payload, judge_path, sample_task_id=sample_task_id)
-    judge_payload, judge_path = _latest_json_by_name(run_dir / "samples", "judge_result.json")
+    search_root = task_cases_root(run_dir)
+    judge_payload, judge_path = _latest_json_by_name(search_root, "judge_result.json")
     return _summarize_judge_payload(judge_payload, judge_path, sample_task_id=sample_task_id)
 
 
@@ -1991,39 +2046,37 @@ def _build_executable_overview(
         )
     return {"focus_sample": focus_sample, "cards": cards, "meta": meta}
 
-
+"""
+Function: build_live_view_index
+Inputs:
+  - live_view_dir: directory where the monitor assets should live.
+Description:
+  Ensure the live-view directory exists and write the static HTML index
+  served by the monitor.
+Outputs:
+  Returns the path to the generated `index.html` file.
+Side Effects:
+  Creates the live-view directory and writes the UI HTML asset.
+"""
 def build_live_view_index(live_view_dir: Path) -> Path:
-    """
-    Function: build_live_view_index
-    Inputs:
-      - live_view_dir: directory where the monitor assets should live.
-    Description:
-      Ensure the live-view directory exists and write the static HTML index
-      served by the monitor.
-    Outputs:
-      Returns the path to the generated `index.html` file.
-    Side Effects:
-      Creates the live-view directory and writes the UI HTML asset.
-    """
     ensure_dir(live_view_dir)
     index_path = live_view_dir / "index.html"
     index_path.write_text(_INDEX_HTML, encoding="utf-8")
     return index_path
 
-
+"""
+Function: load_live_view_state
+Inputs:
+  - experiment_root: root directory for one experiment sweep.
+Description:
+  Load and summarize the experiment-level run catalog for the live monitor,
+  including the status rollup and queue rows shown in the sidebar.
+Outputs:
+  Returns the JSON-serializable state payload served to the monitor UI.
+Side Effects:
+  Reads experiment artifacts from disk.
+"""
 def load_live_view_state(experiment_root: Path) -> Dict[str, Any]:
-    """
-    Function: load_live_view_state
-    Inputs:
-      - experiment_root: root directory for one experiment sweep.
-    Description:
-      Load and summarize the experiment-level run catalog for the live monitor,
-      including the status rollup and queue rows shown in the sidebar.
-    Outputs:
-      Returns the JSON-serializable state payload served to the monitor UI.
-    Side Effects:
-      Reads experiment artifacts from disk.
-    """
     manifest = _safe_json(experiment_root / "experiment_manifest.json")
     catalog = _safe_json(experiment_root / "run_catalog.json")
     preflight = _safe_json(experiment_root / "preflight.json")
@@ -2036,7 +2089,7 @@ def load_live_view_state(experiment_root: Path) -> Dict[str, Any]:
             continue
         entry = dict(raw_entry)
         run_id = str(entry.get("run_id") or "").strip()
-        run_dir = Path(str(entry.get("run_dir") or "")).expanduser() if entry.get("run_dir") else None
+        run_dir = _resolve_active_catalog_run_dir(experiment_root, entry)
         live_status = _safe_json(run_dir / "live_status.json") if run_dir and run_dir.exists() else {}
         run_live_statuses[run_id] = live_status
         if live_status:
@@ -2044,10 +2097,8 @@ def load_live_view_state(experiment_root: Path) -> Dict[str, Any]:
             entry["current_phase"] = str(live_status.get("current_phase") or entry.get("current_phase") or "")
             entry["current_sample"] = str(live_status.get("current_sample") or entry.get("current_sample") or "")
             entry["current_task_id"] = str(live_status.get("current_task_id") or entry.get("current_task_id") or "")
-        status = str(entry.get("status") or ("completed" if entry.get("ok") else "pending")).strip().lower() or "pending"
-        if status not in counts:
-            counts[status] = 0
-        counts[status] += 1
+        status = _effective_run_status(entry, live_status)
+        counts[_run_status_bucket(status)] += 1
         entry["status"] = status
         entry["run_id"] = run_id
         runs.append(entry)
@@ -2065,32 +2116,31 @@ def load_live_view_state(experiment_root: Path) -> Dict[str, Any]:
         "executables": _build_executable_hierarchy(manifest, runs, run_live_statuses),
     }
 
-
+"""
+Function: load_live_view_detail
+Inputs:
+  - experiment_root: root directory for one experiment sweep.
+  - run_id: child run identifier selected in the monitor UI.
+Description:
+  Gather the richer per-run detail shown in the monitor, including live
+  status, output summaries, judge summaries, logs, and pipeline progress.
+Outputs:
+  Returns the JSON-serializable detail payload for the requested run.
+Side Effects:
+  Reads per-run artifacts and streamed child logs from disk.
+"""
 def load_live_view_detail(
     experiment_root: Path,
     run_id: str,
     sample_task_id: str = "",
     sample_name: str = "",
 ) -> Dict[str, Any]:
-    """
-    Function: load_live_view_detail
-    Inputs:
-      - experiment_root: root directory for one experiment sweep.
-      - run_id: child run identifier selected in the monitor UI.
-    Description:
-      Gather the richer per-run detail shown in the monitor, including live
-      status, output summaries, judge summaries, logs, and pipeline progress.
-    Outputs:
-      Returns the JSON-serializable detail payload for the requested run.
-    Side Effects:
-      Reads per-run artifacts and streamed child logs from disk.
-    """
     state = load_live_view_state(experiment_root)
     runs = [row for row in (state.get("runs") or []) if str(row.get("run_id") or "") == str(run_id or "")]
     run_entry = runs[0] if runs else {}
     baseline_entry = _select_comparison_baseline_entry(state.get("runs") or [], run_entry)
-    run_dir = Path(str(run_entry.get("run_dir") or "")).expanduser() if run_entry.get("run_dir") else None
-    baseline_dir = Path(str(baseline_entry.get("run_dir") or "")).expanduser() if baseline_entry.get("run_dir") else None
+    run_dir = _resolve_active_catalog_run_dir(experiment_root, run_entry)
+    baseline_dir = _resolve_active_catalog_run_dir(experiment_root, baseline_entry)
     log_path = Path(str(run_entry.get("log_path") or "")).expanduser() if run_entry.get("log_path") else None
     live_status = _safe_json(run_dir / "live_status.json") if run_dir and run_dir.exists() else {}
     run_manifest = _safe_json(run_dir / "run_manifest.json") if run_dir and run_dir.exists() else {}
@@ -2108,6 +2158,16 @@ def load_live_view_detail(
     selected_task_record = selected_task_artifacts.get("record") if isinstance(selected_task_artifacts.get("record"), dict) else {}
     selected_task = _selected_task_meta(selected_sample_task_id, live_status, selected_task_record)
     focused_sample = str(selected_task.get("sample") or focused_sample or "").strip()
+    selected_task_log_path = None
+    selected_task_log_text = ""
+    if run_dir and run_dir.exists() and selected_task.get("sample") and selected_task.get("task_id"):
+        candidate = task_log_path(run_dir, str(selected_task.get("sample") or ""), str(selected_task.get("task_id") or ""))
+        if candidate.exists():
+            selected_task_log_path = candidate
+            selected_task_log_text = _safe_text(candidate)
+    agent_status_log_text = ""
+    if isinstance(selected_task_artifacts.get("agent"), dict):
+        agent_status_log_text = str((selected_task_artifacts.get("agent") or {}).get("status_log") or "").strip()
     return {
         "run_id": str(run_entry.get("run_id") or ""),
         "run_log": run_log,
@@ -2142,9 +2202,22 @@ def load_live_view_detail(
             else {"text": "Judge output not available yet.", "path": ""}
         ),
         "server_status": {
-            "text": run_log or "Server status not available yet.\n",
-            "meta": f"Live log stream • {log_path.name}" if log_path and log_path.exists() else "Waiting for live log stream.",
-            "path": str(log_path) if log_path else "",
+            "text": (
+                selected_task_log_text
+                or run_log
+                or (agent_status_log_text + ("\n" if agent_status_log_text and not agent_status_log_text.endswith("\n") else ""))
+                or "Server status not available yet.\n"
+            ),
+            "meta": (
+                f"Task log • {selected_task.get('sample_task_id') or ''}"
+                if selected_task_log_path is not None
+                else f"Live log stream • {log_path.name}"
+                if log_path and log_path.exists()
+                else "Agent status log"
+                if agent_status_log_text
+                else "Waiting for live log stream."
+            ),
+            "path": str(selected_task_log_path) if selected_task_log_path is not None else str(log_path) if log_path else "",
         },
         "pipeline_progress": _build_pipeline_progress(
             run_entry=run_entry,

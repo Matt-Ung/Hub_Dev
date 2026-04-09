@@ -133,5 +133,8 @@ Testing/results/browser/
 Testing/results/catalog/
 Testing/results/doctor/
 Testing/results/experiments/
-Testing/results/lineages/
+Testing/results/preflight/
 Testing/results/runs/
+# Archived legacy result trees remain local-only. They are inspectable through
+# the archive viewer but are not treated as active repo outputs.
+Testing/archive/results_legacy/

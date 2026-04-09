@@ -1,16 +1,14 @@
 """
 File: results_browser.py
 Author: Matt-Ung
-Last Updated: 2026-04-02
+Last Updated: 2026-04-08
 Purpose:
   Serve a browser-oriented viewer for completed or in-progress experiment runs.
 
 Summary:
-  This module reuses the live monitor's executable/run/detail loaders so past
-  and current experiment directories can be browsed through the same mental
-  model. It adds an experiment selector, a lightweight artifact server for
-  charts and generated HTML pages, and a bottom visual gallery to support
-  post-run analysis.
+  This module serves the active results browser for the current canonical
+  experiment layout under `Testing/results/experiments/`. Legacy archived
+  experiment trees are handled by the dedicated archive browser instead.
 """
 
 from __future__ import annotations
@@ -890,6 +888,14 @@ _BROWSER_HTML = """<!doctype html>
             <div class="table-wrap" id="analysis-task-movers"></div>
           </div>
 
+          <div class="surface">
+            <div class="title">
+              <h3>Tool Redundancy Hotspots</h3>
+              <div class="sub" id="analysis-redundancy-meta">Repeated or near-equivalent tool calls that may indicate low-value rework.</div>
+            </div>
+            <div class="table-wrap" id="analysis-redundancy-table"></div>
+          </div>
+
           <div id="analysis-chart-groups"></div>
 
           <div class="surface">
@@ -1296,6 +1302,20 @@ _BROWSER_HTML = """<!doctype html>
           value: String(analysis.chart_count || 0),
           subvalue: `${analysis.task_page_count || 0} task comparison page(s) • ${(analysis.variable_families || []).join(", ") || "no variant families"}`,
         },
+        {
+          label: "Most Redundant Variant",
+          value: ((analysis.most_redundant_variant || {}).display_label) || "No repeats yet",
+          subvalue: analysis.most_redundant_variant
+            ? `${formatNumber(analysis.most_redundant_variant.mean_tool_semantic_duplicate_calls, 2)} repeated calls • rate ${formatNumber(analysis.most_redundant_variant.mean_tool_semantic_duplicate_rate, 2)}`
+            : "No semantic duplicate-call data available yet",
+        },
+        {
+          label: "Worst Redundant Task",
+          value: ((analysis.most_redundant_task || {}).sample_task_id) || "No hotspots yet",
+          subvalue: analysis.most_redundant_task
+            ? `${analysis.most_redundant_task.display_label} • ${formatNumber(analysis.most_redundant_task.tool_semantic_duplicate_calls, 2)} repeated calls`
+            : "Task-level redundancy hotspots not available yet",
+        },
       ];
 
       document.getElementById("analysis-summary").innerHTML = summaryCards.map((card) => `
@@ -1308,7 +1328,7 @@ _BROWSER_HTML = """<!doctype html>
 
       const variantRows = (analysis.variant_rows || []);
       document.getElementById("analysis-table-meta").textContent =
-        "Rows are aggregated by configuration across repetitions. Score and success plots use the same variant-level grouping.";
+        "Rows are aggregated by configuration across repetitions. Score, success, and redundancy metrics use the same variant-level grouping.";
       if (!variantRows.length) {
         document.getElementById("analysis-table").innerHTML = `<div class="column-empty">No aggregate comparison rows are available for this experiment yet.</div>`;
       } else {
@@ -1319,6 +1339,8 @@ _BROWSER_HTML = """<!doctype html>
             <td>${formatNumber(row.overall_score_mean, 2)}</td>
             <td>${formatSigned(row.score_delta, 2)}</td>
             <td>${formatNumber(row.task_success_rate, 2)}</td>
+            <td>${formatNumber(row.mean_tool_semantic_duplicate_calls, 2)}</td>
+            <td>${formatNumber(row.mean_tool_semantic_duplicate_rate, 2)}</td>
             <td>${formatNumber(row.overall_score_stddev, 2)}</td>
             <td>${escapeHtml(`${row.completed_repetitions || 0}/${row.planned_repetitions || 0}`)}</td>
           </tr>
@@ -1332,6 +1354,8 @@ _BROWSER_HTML = """<!doctype html>
                 <th>Mean score</th>
                 <th>Score delta</th>
                 <th>Task success</th>
+                <th>Repeated calls</th>
+                <th>Repeat rate</th>
                 <th>Score sd</th>
                 <th>Repetitions</th>
               </tr>
@@ -1343,6 +1367,7 @@ _BROWSER_HTML = """<!doctype html>
 
       const selectedSample = selectedExecutable || "";
       const taskRows = (analysis.task_spotlights || []);
+      const redundancyRows = (analysis.redundancy_hotspots || []);
       const taskMatrixColumns = (analysis.task_matrix_columns || []);
       const taskMatrixRows = (analysis.task_matrix_rows || []);
       document.getElementById("analysis-task-meta").textContent = selectedSample
@@ -1384,6 +1409,39 @@ _BROWSER_HTML = """<!doctype html>
           <table>
             <thead>
               <tr>${headerCells}</tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      }
+
+      document.getElementById("analysis-redundancy-meta").textContent = selectedSample
+        ? "Experiment-wide redundancy hotspots. The executable selection does not filter this table so repeated-call patterns remain directly comparable."
+        : "Experiment-wide hotspots showing repeated tool usage across sample-tasks.";
+      if (!redundancyRows.length) {
+        document.getElementById("analysis-redundancy-table").innerHTML = `<div class="column-empty">No repeated or near-equivalent tool-call hotspots were detected for this experiment yet.</div>`;
+      } else {
+        const rows = redundancyRows.map((row) => `
+          <tr>
+            <td>${escapeHtml(row.sample || "")}</td>
+            <td>${escapeHtml(row.task_name || row.task_id || row.sample_task_id || "")}</td>
+            <td>${escapeHtml(row.display_label || row.variant_id || "")}</td>
+            <td>${formatNumber(row.tool_semantic_duplicate_calls, 2)}</td>
+            <td>${formatNumber(row.tool_semantic_duplicate_rate, 2)}</td>
+            <td>${escapeHtml(row.tool_most_redundant_target || "—")}</td>
+          </tr>
+        `).join("");
+        document.getElementById("analysis-redundancy-table").innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>Executable</th>
+                <th>Task</th>
+                <th>Configuration</th>
+                <th>Repeated calls</th>
+                <th>Repeat rate</th>
+                <th>Top repeated target</th>
+              </tr>
             </thead>
             <tbody>${rows}</tbody>
           </table>
@@ -1470,6 +1528,26 @@ _BROWSER_HTML = """<!doctype html>
             <h4>Repetition Variance</h4>
             <div class="sub">Standard deviation of score across repetitions for each configuration.</div>
             <div class="bar-list">${varianceRows}</div>
+          </div>
+        `);
+
+        const redundancyRows = variantRowsForCharts.map((row) => {
+          const repeatedCalls = numericValue(row.mean_tool_semantic_duplicate_calls);
+          const rate = numericValue(row.mean_tool_semantic_duplicate_rate);
+          const width = clampPercent((Math.min(repeatedCalls || 0, 10) / 10) * 100);
+          return `
+            <div class="bar-row">
+              <div class="bar-label">${escapeHtml(row.display_label || row.variant_id || "")}</div>
+              <div class="bar-track"><div class="bar-fill variance" style="width:${width}%;"></div></div>
+              <div class="bar-value">${formatNumber(repeatedCalls, 2)} (${formatNumber(rate, 2)})</div>
+            </div>
+          `;
+        }).join("");
+        fallbackCharts.push(`
+          <div class="fallback-chart">
+            <h4>Repeated Tool Calls</h4>
+            <div class="sub">Mean semantic duplicate-call count per configuration, with duplicate rate in parentheses.</div>
+            <div class="bar-list">${redundancyRows}</div>
           </div>
         `);
       }
@@ -2179,6 +2257,10 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
                 "score_delta": _as_float(row.get("score_delta")),
                 "task_success_rate": _as_float(row.get("task_success_rate")),
                 "task_success_delta": _as_float(row.get("task_success_delta")),
+                "mean_tool_exact_duplicate_calls": _as_float(row.get("mean_tool_exact_duplicate_calls")),
+                "mean_tool_semantic_duplicate_calls": _as_float(row.get("mean_tool_semantic_duplicate_calls")),
+                "mean_tool_exact_duplicate_rate": _as_float(row.get("mean_tool_exact_duplicate_rate")),
+                "mean_tool_semantic_duplicate_rate": _as_float(row.get("mean_tool_semantic_duplicate_rate")),
                 "analysis_failure_rate": _as_float(row.get("analysis_failure_rate")),
                 "completed_repetitions": _as_int(row.get("completed_repetitions")),
                 "planned_repetitions": _as_int(row.get("planned_repetitions")),
@@ -2204,8 +2286,20 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
         key=lambda row: float(row.get("overall_score_stddev") or 0.0),
         default=None,
     )
+    most_redundant_variant = max(
+        [
+            row for row in non_baseline_variants
+            if row.get("mean_tool_semantic_duplicate_calls") is not None or row.get("mean_tool_semantic_duplicate_rate") is not None
+        ],
+        key=lambda row: (
+            float(row.get("mean_tool_semantic_duplicate_calls") or 0.0),
+            float(row.get("mean_tool_semantic_duplicate_rate") or 0.0),
+        ),
+        default=None,
+    )
 
     task_spotlights = []
+    redundancy_hotspots = []
     task_matrix_map: Dict[str, Dict[str, Any]] = {}
     for row in task_rows:
         score_delta = _as_float(row.get("score_delta"))
@@ -2239,9 +2333,9 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
                 "task_success_rate": _as_float(row.get("task_success_rate")),
             }
         if score_delta is None:
-            continue
-        task_spotlights.append(
-            {
+            score_row = None
+        else:
+            score_row = {
                 "display_label": display_label,
                 "sample": str(row.get("sample") or ""),
                 "task_id": str(row.get("task_id") or ""),
@@ -2252,10 +2346,36 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
                 "score_delta": score_delta,
                 "task_success_rate": _as_float(row.get("task_success_rate")),
             }
-        )
+            task_spotlights.append(score_row)
+        semantic_duplicate_calls = _as_float(row.get("tool_semantic_duplicate_calls"))
+        semantic_duplicate_rate = _as_float(row.get("tool_semantic_duplicate_rate"))
+        if semantic_duplicate_calls is not None or semantic_duplicate_rate is not None:
+            redundancy_hotspots.append(
+                {
+                    "variant_id": variant_id,
+                    "display_label": display_label,
+                    "sample": str(row.get("sample") or ""),
+                    "task_id": str(row.get("task_id") or ""),
+                    "task_name": str(row.get("task_name") or row.get("task_id") or ""),
+                    "sample_task_id": sample_task_id,
+                    "tool_semantic_duplicate_calls": semantic_duplicate_calls,
+                    "tool_semantic_duplicate_rate": semantic_duplicate_rate,
+                    "tool_most_redundant_target": str(row.get("tool_most_redundant_target") or ""),
+                }
+            )
     task_spotlights = [row for row in task_spotlights if row.get("display_label") != "baseline"]
     task_spotlights.sort(key=lambda row: abs(float(row.get("score_delta") or 0.0)), reverse=True)
     widest_task_shift = task_spotlights[0] if task_spotlights else None
+    redundancy_hotspots = [row for row in redundancy_hotspots if row.get("display_label") != "baseline"]
+    redundancy_hotspots.sort(
+        key=lambda row: (
+            float(row.get("tool_semantic_duplicate_calls") or 0.0),
+            float(row.get("tool_semantic_duplicate_rate") or 0.0),
+            str(row.get("sample_task_id") or ""),
+        ),
+        reverse=True,
+    )
+    most_redundant_task = redundancy_hotspots[0] if redundancy_hotspots else None
     task_matrix_columns = [
         {
             "variant_id": str(row.get("variant_id") or ""),
@@ -2300,8 +2420,11 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
         "best_variant": best_variant,
         "highest_variance_variant": highest_variance,
         "widest_task_shift": widest_task_shift,
+        "most_redundant_variant": most_redundant_variant,
+        "most_redundant_task": most_redundant_task,
         "variant_rows": sorted_variants,
         "task_spotlights": task_spotlights[:10],
+        "redundancy_hotspots": redundancy_hotspots[:12],
         "task_matrix_columns": task_matrix_columns,
         "task_matrix_rows": task_matrix_rows,
         "chart_sections": chart_sections,

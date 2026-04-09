@@ -215,6 +215,40 @@ class UpxAnalysisTargetTests(unittest.TestCase):
 
         self.assertIn("upxmcp", manifest)
 
+    def test_artifact_manifest_includes_ssdeep_server_for_full_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bundle_dir = root / "bundle"
+            bundle_dir.mkdir(parents=True, exist_ok=True)
+            output_path = root / "servers.json"
+
+            build_artifact_servers_manifest(
+                bundle_dir,
+                output_path,
+                tool_profile="full",
+                analysis_target_kind="original",
+            )
+            manifest = read_json(output_path)
+
+        self.assertIn("ssdeepmcp", manifest)
+
+    def test_artifact_manifest_omits_ssdeep_server_for_core_static_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bundle_dir = root / "bundle"
+            bundle_dir.mkdir(parents=True, exist_ok=True)
+            output_path = root / "servers.json"
+
+            build_artifact_servers_manifest(
+                bundle_dir,
+                output_path,
+                tool_profile="core_static",
+                analysis_target_kind="original",
+            )
+            manifest = read_json(output_path)
+
+        self.assertNotIn("ssdeepmcp", manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

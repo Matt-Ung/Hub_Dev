@@ -6,7 +6,8 @@ Because JSON does not support comments, treat this file as the lightweight guide
 
 If you are extending the workflow/dashboard itself, start with
 [multi_agent_wf/extension_tutorial.md](../../multi_agent_wf/extension_tutorial.md)
-first, then return here to wire the new option into sweeps or launch presets.
+first, then return here to wire the new option into sweep configs or launch
+presets.
 
 ## File Roles
 
@@ -15,19 +16,38 @@ first, then return here to wire the new option into sweeps or launch presets.
   - the judge and reporting layers load this directly
 - `experiment_sweeps.json`
   - baseline plus one-variable-at-a-time sweep definition
-  - this is the source of truth for the default automated sweep
+  - used when you run `Testing/scripts/run_experiment_sweep.py` directly
+  - this is the maintained generic sweep config, not a named preset
 - `query_variants.json`
   - prompt wrappers such as `default`, `brief`, and `detailed`
 - `tool_profiles.json`
   - named MCP tool-availability profiles for ablations
 - `budget_guardrails.json`
   - launch-time token, cost, and spend ceilings
-- `launch_presets.json`
-  - named operational presets such as `sanity_core_slice_r1`, `budget_best_value_r1`, and `budget_best_value_r2`
+- `presets/`
+  - one JSON file per named operational preset
+  - this is the maintained preset surface used by
+    `Testing/scripts/run_launch_preset.py`
 - `model_cost_profiles.json`
   - local relative-cost and optional USD heuristics used for reporting
 - `prompts/binary_judge_prompt.md`
   - the judge prompt template used with the rubric
+
+## Presets Versus Sweep Configs
+
+There are now two distinct concepts:
+
+- `Testing/config/presets/*.json`
+  - predefined runnable presets
+  - each JSON file is one preset
+  - sweep presets are self-contained and include their own `baseline`,
+    `repetitions`, and `sweeps`
+- `Testing/config/experiment_sweeps.json`
+  - the generic direct-sweep config used when you invoke
+    `Testing/scripts/run_experiment_sweep.py` without a named preset
+
+This keeps named operational presets browsable in one folder while still
+preserving one generic sweep config for direct ad hoc experiment launches.
 
 ## Add A New Sweep Dimension
 
@@ -117,9 +137,10 @@ Budget naming note:
   - use these only when you intentionally want estimated-cost abort behavior
 - token ceilings and relative-cost-index ceilings remain hard guardrails when their abort flags are enabled
 
-Use [launch_presets.json](launch_presets.json) for named operational entry points, not for scientific sweep definitions.
+Use `Testing/config/presets/*.json` for named operational entry points, not
+for generic sweep definitions.
 
-Launch presets can now target either:
+A preset can target either:
 
 - `runner: "single_run"`
   - good for default baselines and targeted one-configuration comparisons
@@ -128,9 +149,10 @@ Launch presets can now target either:
     `force_model`
 - `runner: "sweep"`
   - good for one-variable-at-a-time studies or broad full-suite launches
-  - supports sweep-scoping fields such as `variables`, `repetitions`,
-    `samples`, `tasks`, `difficulty_filters`, and optional alternate
-    sweep config paths via `config`
+  - supports sweep-scoping fields such as `repetitions`, `samples`, `tasks`,
+    `difficulty_filters`, and the embedded `baseline`/`sweeps` plan
+  - for maintained presets, the preset file itself is the sweep config passed
+    to `run_experiment_sweep.py`
 
 If a preset should buffer child output by default when launched through
 `run_launch_preset.py`, set `quiet_child_output: true` in the preset entry.
@@ -138,3 +160,26 @@ If a preset should buffer child output by default when launched through
 Remember that `tasks` in a launch preset are global task-id filters across the
 selected samples. If you want a curated multi-sample scope, prefer unique
 focused task IDs instead of mixing many `default_analysis` selections.
+
+## Final-Round Evaluation Scaffold
+
+The repo now includes a runnable repo-local final-run scaffold:
+
+- [../sources/final_round/sample_manifest.json](../sources/final_round/sample_manifest.json)
+- [../sources/final_round/reference/](../sources/final_round/reference/)
+- [../sources/final_round/evaluation/README.md](../sources/final_round/evaluation/README.md)
+- [presets/thesis_final_eval_r3_100usd.json](presets/thesis_final_eval_r3_100usd.json)
+- launch preset name: `thesis_final_eval_r3_100usd`
+
+Important constraints:
+
+- runtime sample filenames are intentionally opaque, for example `sample1.exe`
+- evaluator-side family labels and reference material stay outside the model-visible runtime path
+- the active held-out preset is intentionally locked to a single blind
+  `default_analysis` task per sample so more of the budget can be spent on
+  configuration comparisons
+- the corpus is built from `Testing/sources/final_round/`, not staged from placeholder paths
+- source-grounded references already live under `Testing/sources/final_round/reference/`
+- the maintained judge consumes those checked-in JSON references as
+  evaluator-only grounding during scoring
+- this is a repo-local simulation corpus, not a live-malware transport mechanism

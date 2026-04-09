@@ -1,7 +1,7 @@
 """
 File: judge.py
 Author: Matt-Ung
-Last Updated: 2026-04-01
+Last Updated: 2026-04-08
 Purpose:
   Evaluate binary-analysis task outputs against the maintained judging rubric.
 
@@ -47,6 +47,7 @@ except ImportError:  # pragma: no cover - optional until runtime
     Agent = None  # type: ignore[assignment]
 
 from .paths import CONFIG_ROOT, PROMPTS_ROOT, REPO_ROOT, read_json, write_json
+from .samples import model_visible_sample_metadata
 from .costing import coerce_usage_snapshot, estimate_usage_cost
 
 
@@ -375,6 +376,79 @@ def _load_prompt_template() -> str:
     return (PROMPTS_ROOT / "binary_judge_prompt.md").read_text(encoding="utf-8")
 
 
+"""
+Function: _load_evaluator_reference
+Inputs:
+  - sample_meta: raw corpus-manifest metadata for the current evaluation case.
+Description:
+  Load the evaluator-only reference JSON for a sample when one is declared in
+  the manifest, then normalize it into the smaller ground-truth structure that
+  the judge prompt consumes.
+Outputs:
+  Returns a dictionary of evaluator reference fields. Returns an empty
+  dictionary when no checked-in reference exists or the file cannot be read.
+Side Effects:
+  Reads the per-sample evaluator reference JSON from disk.
+"""
+def _load_evaluator_reference(sample_meta: Dict[str, Any]) -> Dict[str, Any]:
+    reference_path = str(sample_meta.get("reference_json_path") or "").strip()
+    if not reference_path:
+        return {}
+
+    candidate = Path(reference_path)
+    if not candidate.is_absolute():
+        candidate = REPO_ROOT / candidate
+
+    try:
+        raw = read_json(candidate)
+    except Exception:
+        return {}
+
+    judge_reference = raw.get("judge_reference") if isinstance(raw.get("judge_reference"), dict) else {}
+    reporting_reference = raw.get("reporting_reference") if isinstance(raw.get("reporting_reference"), dict) else {}
+    grounding = raw.get("grounding") if isinstance(raw.get("grounding"), list) else []
+
+    def _as_list(value: Any) -> List[Any]:
+        return list(value) if isinstance(value, list) else []
+
+    return {
+        "sample_label": str(raw.get("family_label") or sample_meta.get("family_label") or "").strip(),
+        "intended_simulation": str(raw.get("intended_simulation") or "").strip(),
+        "must_hit_anchors": [str(item).strip() for item in _as_list(judge_reference.get("must_hit_anchors")) if str(item).strip()],
+        "high_confidence_artifacts": [
+            str(item).strip()
+            for item in _as_list(judge_reference.get("high_confidence_artifacts"))
+            if str(item).strip()
+        ],
+        "supported_behavior_claims": [
+            str(item).strip()
+            for item in _as_list(judge_reference.get("supported_behavior_claims"))
+            if str(item).strip()
+        ],
+        "minimum_report_sections": [
+            str(item).strip()
+            for item in _as_list(judge_reference.get("minimum_report_sections") or reporting_reference.get("expected_functionality_sections"))
+            if str(item).strip()
+        ],
+        "limitations_to_respect": [
+            str(item).strip()
+            for item in _as_list(judge_reference.get("limitations_to_respect") or raw.get("important_limitations"))
+            if str(item).strip()
+        ],
+        "do_not_overclaim": [
+            str(item).strip()
+            for item in _as_list(judge_reference.get("do_not_overclaim"))
+            if str(item).strip()
+        ],
+        "common_failure_modes": [
+            str(item).strip()
+            for item in _as_list(judge_reference.get("common_failure_modes"))
+            if str(item).strip()
+        ],
+        "grounding_examples": grounding[:8],
+    }
+
+
 def _build_judge_payload(
     sample_name: str,
     sample_meta: Dict[str, Any],
@@ -401,16 +475,19 @@ def _build_judge_payload(
       None.
     """
     prompt_template = _load_prompt_template()
+    judge_visible_sample_meta = model_visible_sample_metadata(sample_meta)
+    evaluator_reference = _load_evaluator_reference(sample_meta)
     payload = {
         "sample_name": sample_name,
-        "sample_metadata": sample_meta,
+        "sample_metadata": judge_visible_sample_meta,
         "task_metadata": task_meta,
         "reference_expectations": {
-            "expected_evidence": list(task_meta.get("expected_evidence") or sample_meta.get("expected_evidence") or []),
-            "acceptance_targets": list(task_meta.get("acceptance_targets") or sample_meta.get("acceptance_targets") or []),
-            "primary_techniques": list(sample_meta.get("primary_techniques") or []),
-            "target_tools": list(task_meta.get("target_tools") or sample_meta.get("target_tools") or []),
+            "expected_evidence": list(task_meta.get("expected_evidence") or judge_visible_sample_meta.get("expected_evidence") or []),
+            "acceptance_targets": list(task_meta.get("acceptance_targets") or judge_visible_sample_meta.get("acceptance_targets") or []),
+            "primary_techniques": list(judge_visible_sample_meta.get("primary_techniques") or []),
+            "target_tools": list(task_meta.get("target_tools") or judge_visible_sample_meta.get("target_tools") or []),
         },
+        "evaluator_reference": evaluator_reference,
         "bundle_context": {
             "identity": bundle_manifest.get("identity") or {},
             "ghidra_analysis_summary": bundle_manifest.get("ghidra_analysis_summary") or {},
@@ -434,7 +511,25 @@ def _build_judge_payload(
     }
     return prompt_template + "\n\nEvaluation payload:\n```json\n" + json.dumps(payload, indent=2, ensure_ascii=False) + "\n```"
 
-
+"""
+Function: judge_agent_result
+Inputs:
+  - sample_name / sample_meta / task_meta: manifest-derived identifiers and
+    expectations for the current evaluation case.
+  - bundle_manifest: prepared bundle metadata used as evidence context.
+  - agent_result: canonical `agent_result.json` payload for the case.
+  - judge_model: optional explicit judge model override.
+  - output_json: optional artifact path where the result should be written.
+Description:
+  Run the maintained judging workflow for one sample-task case, including
+  synthetic handling for non-results and rubric-based scoring for completed
+  agent outputs.
+Outputs:
+  Returns the canonical `judge_result.json` dictionary. When `output_json`
+  is provided, the same payload is also written to disk.
+Side Effects:
+  May call the configured judge model and may write the output artifact.
+"""
 def judge_agent_result(
     sample_name: str,
     sample_meta: Dict[str, Any],
@@ -445,25 +540,6 @@ def judge_agent_result(
     judge_model: str = "",
     output_json: Path | None = None,
 ) -> Dict[str, Any]:
-    """
-    Function: judge_agent_result
-    Inputs:
-      - sample_name / sample_meta / task_meta: manifest-derived identifiers and
-        expectations for the current evaluation case.
-      - bundle_manifest: prepared bundle metadata used as evidence context.
-      - agent_result: canonical `agent_result.json` payload for the case.
-      - judge_model: optional explicit judge model override.
-      - output_json: optional artifact path where the result should be written.
-    Description:
-      Run the maintained judging workflow for one sample-task case, including
-      synthetic handling for non-results and rubric-based scoring for completed
-      agent outputs.
-    Outputs:
-      Returns the canonical `judge_result.json` dictionary. When `output_json`
-      is provided, the same payload is also written to disk.
-    Side Effects:
-      May call the configured judge model and may write the output artifact.
-    """
     rubric = _load_rubric()
     model_id = _load_judge_model_id(judge_model)
     rubric_version = str(rubric.get("version") or "binary_judge_v1")

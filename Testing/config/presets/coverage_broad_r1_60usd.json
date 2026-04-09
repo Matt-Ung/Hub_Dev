@@ -1,0 +1,100 @@
+{
+  "schema_version": "launch_preset_v3",
+  "name": "coverage_broad_r1_60usd",
+  "description": "One-repetition broad-coverage experiment over the medium+hard experimental slice. Keeps only the highest-value broad comparison families so the run remains interpretable and affordable.",
+  "runner": "sweep",
+  "corpus": "experimental",
+  "samples": [
+    "maintenance_orchestrator_test.exe",
+    "maintenance_orchestrator_test_stripped.exe",
+    "callback_dispatch_test.exe",
+    "config_decoder_test.exe",
+    "signal_router_report_test.exe",
+    "stack_notice_scheduler_test.exe",
+    "multilayer_encode_test.exe",
+    "hash_dispatch_test.exe",
+    "hash_dispatch_test_stripped.exe",
+    "embedded_payload_test.exe",
+    "embedded_payload_test_upx.exe",
+    "branch_weave_snapshot_test.exe",
+    "branch_weave_snapshot_test_stripped.exe",
+    "anti_analysis_suite_test.exe"
+  ],
+  "difficulty_filters": [
+    "medium",
+    "hard"
+  ],
+  "repetitions": 1,
+  "label": "coverage-broad-r1-60usd",
+  "max_run_estimated_cost_usd": 2.5,
+  "max_experiment_relative_cost_index": 30000.0,
+  "max_experiment_estimated_cost_usd": 65.0,
+  "skip_visuals": false,
+  "recommended_judge_model": "openai:gpt-4o-mini",
+  "baseline": {
+    "corpus": "experimental",
+    "pipeline": "auto_triage",
+    "architecture": "balanced",
+    "query_variant": "default",
+    "subagent_profile": "default",
+    "worker_persona_profile": "default",
+    "worker_role_prompt_mode": "default",
+    "validator_review_level": "default",
+    "tool_profile": "full",
+    "model_profile": "repo_default",
+    "force_model": "",
+    "judge_mode": "agent"
+  },
+  "model_profiles": {
+    "repo_default": {
+      "description": "Use the repo defaults with no forced override.",
+      "force_model": ""
+    }
+  },
+  "sweeps": [
+    {
+      "variable": "query_verbosity",
+      "description": "Change only the task prompt/query detail level with a shorter-than-default query variant.",
+      "variants": [
+        {
+          "name": "brief",
+          "overrides": {
+            "query_variant": "brief"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "worker_subagents",
+      "description": "Reduce worker specialist breadth to a single generalist slot while leaving the rest of the workflow unchanged.",
+      "variants": [
+        {
+          "name": "single_generalist",
+          "overrides": {
+            "subagent_profile": "single_generalist"
+          }
+        }
+      ]
+    },
+    {
+      "variable": "worker_prompt_shape",
+      "description": "Compare the maintained default worker prompts against an evidence-first overlay and an empty worker-role condition while keeping worker breadth, tools, and pipeline constant.",
+      "variants": [
+        {
+          "name": "artifact_focused",
+          "overrides": {
+            "worker_persona_profile": "artifact_focused",
+            "worker_role_prompt_mode": "default"
+          }
+        },
+        {
+          "name": "empty",
+          "overrides": {
+            "worker_persona_profile": "default",
+            "worker_role_prompt_mode": "blank"
+          }
+        }
+      ]
+    }
+  ]
+}

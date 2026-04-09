@@ -26,7 +26,8 @@ from .experiment_sweep import materialize_experiment_outputs
 from .paths import RESULTS_ROOT, ensure_dir, read_json, slugify, write_json
 from .reporting import aggregate_records, write_markdown_report, write_summary_csv
 from .result_layout import build_run_output_layout
-from .samples import normalize_sample_task_key, sample_slug
+from .result_store import resolve_catalog_run_dir, resolve_task_case_dir
+from .samples import normalize_sample_task_key
 
 
 def _safe_json(path: Path) -> Dict[str, Any]:
@@ -111,7 +112,7 @@ def _load_recovery_sessions(experiment_root: Path, session_refs: Iterable[str]) 
 
 def _sample_dir_for_task(run_dir: Path, sample_task_id: str) -> Path:
     sample_name, task_id = str(sample_task_id or "").split("::", 1)
-    return run_dir / "samples" / f"{sample_slug(sample_name)}__{task_id}"
+    return resolve_task_case_dir(run_dir, sample_name, task_id)
 
 
 def _record_key(record: Dict[str, Any]) -> str:
@@ -287,7 +288,11 @@ def _emit_sample_artifacts(
         sample_task_id = _record_key(record)
         if not sample_task_id:
             continue
-        output_sample_dir = _sample_dir_for_task(output_run_dir, sample_task_id)
+        output_sample_dir = resolve_task_case_dir(
+            output_run_dir,
+            str(record.get("sample") or sample_task_id.split("::", 1)[0]),
+            str(record.get("task_id") or "default_analysis"),
+        )
         ensure_dir(output_sample_dir)
         source_dir = source_dirs.get(sample_task_id)
         copied_record = _copy_json_if_exists(source_dir / "record.json", output_sample_dir / "record.json") if source_dir else False
@@ -456,7 +461,7 @@ def plan_rebuilt_experiment(
     for entry in runs:
         run_id = str(entry.get("run_id") or "").strip()
         variant_id = str(entry.get("variant_id") or "").strip()
-        run_dir = Path(str(entry.get("run_dir") or "")).expanduser() if str(entry.get("run_dir") or "").strip() else None
+        run_dir = resolve_catalog_run_dir(experiment_root, entry) if (entry.get("run_dir") or entry.get("run_path")) else None
         applied = dict(replacements.get(run_id) or {})
         total_replacements += len(applied)
         run_plans.append(
@@ -537,7 +542,7 @@ def rebuild_experiment_from_recovery(
         if not isinstance(entry, dict):
             continue
         run_id = str(entry.get("run_id") or "").strip()
-        run_dir = Path(str(entry.get("run_dir") or "")).expanduser() if str(entry.get("run_dir") or "").strip() else None
+        run_dir = resolve_catalog_run_dir(experiment_root, entry) if (entry.get("run_dir") or entry.get("run_path")) else None
         output_run_dir = rebuild_runs_root / (slugify(run_id) or f"run-{len(repaired_run_entries) + 1:03d}")
         repaired_entry, run_summary = _materialize_repaired_run(
             output_run_dir=output_run_dir,

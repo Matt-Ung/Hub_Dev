@@ -38,8 +38,8 @@ PyYAML
 PyGithub
 
 # Testing infrastructure, launch doctor, and sweep visualization
-# (Testing/run_evaluation.py, Testing/run_experiment_sweep.py,
-#  Testing/run_launch_doctor.py, and Testing/harness/*)
+# (Testing/scripts/run_evaluation.py, Testing/scripts/run_experiment_sweep.py,
+#  Testing/scripts/run_launch_doctor.py, and Testing/harness/*)
 pandas>=1.5
 matplotlib>=3.7
 openpyxl>=3.1

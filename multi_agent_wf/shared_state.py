@@ -103,6 +103,7 @@ def _tool_call_entry(
         "tool_name": tool_name,
         "tool_call_id": tool_call_id,
         "args": _normalize_tool_args(args),
+        "event_at": datetime.now().isoformat(timespec="seconds"),
     }
     if source:
         entry["source"] = source
@@ -124,6 +125,7 @@ def _tool_result_entry(
         "tool_name": tool_name,
         "tool_call_id": tool_call_id,
         "content": _coerce_tool_return_text(content),
+        "event_at": datetime.now().isoformat(timespec="seconds"),
     }
     if source:
         entry["source"] = source

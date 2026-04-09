@@ -2,12 +2,22 @@
 
 This guide is for the active `multi_agent_wf` application.
 
-It is intentionally minimal:
+It is intentionally app-focused:
 
-- first get the Gradio app running
+- first satisfy your platform prerequisites
+- then get the Gradio app running
 - then enable optional capabilities such as live Ghidra, richer rule corpora, automation triggers, and the testing harness
 
-If you only want the evaluation harness, start with [Testing/START_HERE.md](Testing/START_HERE.md) instead.
+If you only want the evaluation harness, start with [Testing/docs/quickstart.md](Testing/docs/quickstart.md) instead.
+
+Before using this guide on a fresh machine, choose the correct platform setup
+doc:
+
+- [docs/setup/README.md](docs/setup/README.md)
+- [docs/setup/macos.md](docs/setup/macos.md)
+- [docs/setup/ubuntu_debian.md](docs/setup/ubuntu_debian.md)
+- [docs/setup/kali_linux.md](docs/setup/kali_linux.md)
+- [docs/setup/windows.md](docs/setup/windows.md)
 
 ## What `multi_agent_wf` Actually Is
 
@@ -90,6 +100,18 @@ python multi_agent_wf/main.py
 ```
 
 but `python -m multi_agent_wf.main` is the cleaner path.
+
+### 4. Verify the minimal app path
+
+Before troubleshooting optional tool integrations, verify the smallest possible
+path:
+
+```bash
+python -m multi_agent_wf.main
+```
+
+You should be able to load the Gradio page even if Ghidra, capa rules, YARA,
+and most reverse-engineering tools are not configured yet.
 
 ## Minimal Run Requirements vs Optional Capabilities
 
@@ -306,7 +328,7 @@ That usually happens when you expose the UI remotely but leave the automation ho
 
 Do not follow the whole app setup guide first. Use:
 
-- [Testing/START_HERE.md](Testing/START_HERE.md)
+- [Testing/docs/quickstart.md](Testing/docs/quickstart.md)
 - [Testing/README.md](Testing/README.md)
 
 ## Minimal Correct Command List

@@ -1,3 +1,17 @@
+"""
+File: output_comparison.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Build experiment-level task output comparison pages from canonical case
+  artifacts.
+
+Summary:
+  This module turns per-task case records into comparison tables and HTML
+  pages so evaluators can inspect representative outputs, scores, and model
+  commentary across configurations without digging through raw run trees.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -9,6 +23,7 @@ from statistics import median
 from typing import Any, Dict, Iterable, List, Tuple
 
 from .paths import ensure_dir, slugify, write_json
+from .result_store import resolve_task_case_dir
 
 
 def _write_rows_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
@@ -86,7 +101,7 @@ def _detail_row(entry: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]
     task_id = str(record.get("task_id") or "").strip()
     task_slug = f"{Path(sample).stem}__{task_id}" if sample and task_id else ""
     run_dir = Path(str(entry.get("run_dir") or "")).resolve() if entry.get("run_dir") else Path()
-    sample_dir = run_dir / "samples" / task_slug if task_slug and run_dir else Path()
+    sample_dir = resolve_task_case_dir(run_dir, sample, task_id) if task_slug and run_dir else Path()
     return {
         "variant_id": str(entry.get("variant_id") or ""),
         "variant_name": str(entry.get("variant_name") or ""),

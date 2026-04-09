@@ -1,42 +1,43 @@
 import unittest
 
 from Testing.harness.launch_checks import build_launch_preset_projection_report
-from Testing.harness.launch_presets import build_launch_preset_command, resolve_launch_preset
+from Testing.harness.launch_presets import (
+    available_launch_presets,
+    build_launch_preset_command,
+    resolve_launch_preset,
+)
 from Testing.harness.paths import repo_python_executable
 
 
 class LaunchPresetTests(unittest.TestCase):
-    def test_single_run_preset_includes_run_level_overrides(self) -> None:
+    def test_available_launch_presets_matches_curated_folder_set(self) -> None:
+        self.assertEqual(
+            available_launch_presets(),
+            [
+                "budget_best_value_r1",
+                "budget_best_value_r2",
+                "coverage_broad_r1_60usd",
+                "sanity_core_slice_r1",
+                "smoke_default_quick",
+                "sweep_decoder_depth_followups_r3",
+                "sweep_decoder_depth_r3",
+                "thesis_final_eval_r3_100usd",
+            ],
+        )
+
+    def test_smoke_preset_is_single_run_entrypoint(self) -> None:
         command = build_launch_preset_command(
-            "compare_minimal_architecture_decoder",
+            "smoke_default_quick",
             explicit_judge_model="openai:gpt-4o-mini",
         )
 
         self.assertEqual(command[0], repo_python_executable())
-        self.assertIn("Testing/run_evaluation.py", command)
+        self.assertIn("Testing/scripts/run_evaluation.py", command)
         self.assertIn("--sample", command)
-        self.assertIn("config_decoder_test.exe", command)
+        self.assertIn("basic_loops_test.exe", command)
         self.assertIn("--task", command)
-        self.assertIn("config_value_recovery", command)
-        self.assertIn("--architecture", command)
-        self.assertIn("minimal", command)
-        self.assertNotIn("--timeout-sec", command)
-
-    def test_full_suite_r1_preset_sets_single_repetition(self) -> None:
-        command = build_launch_preset_command(
-            "full_suite_default_r1",
-            explicit_judge_model="openai:gpt-4o-mini",
-        )
-
-        self.assertIn("Testing/run_experiment_sweep.py", command)
-        self.assertIn("--repetitions", command)
-        repetition_index = command.index("--repetitions")
-        self.assertEqual(command[repetition_index + 1], "1")
-
-    def test_quiet_alias_marks_wrapper_level_quiet_output(self) -> None:
-        preset = resolve_launch_preset("paid_narrow_pilot_quiet")
-
-        self.assertTrue(bool(preset.get("quiet_child_output")))
+        self.assertIn("default_analysis", command)
+        self.assertNotIn("--config", command)
 
     def test_budget_best_value_preset_skips_budget_flags_by_default(self) -> None:
         command = build_launch_preset_command(
@@ -71,8 +72,11 @@ class LaunchPresetTests(unittest.TestCase):
         self.assertIn("--repetitions", command)
         repetition_index = command.index("--repetitions")
         self.assertEqual(command[repetition_index + 1], "1")
+        self.assertIn("--config", command)
+        config_index = command.index("--config")
+        self.assertEqual(command[config_index + 1], "Testing/config/presets/budget_best_value_r1.json")
 
-    def test_broad_coverage_preset_includes_custom_config(self) -> None:
+    def test_coverage_broad_preset_uses_self_contained_preset_config(self) -> None:
         command = build_launch_preset_command(
             "coverage_broad_r1_60usd",
             explicit_judge_model="openai:gpt-4o-mini",
@@ -80,66 +84,21 @@ class LaunchPresetTests(unittest.TestCase):
 
         self.assertIn("--config", command)
         config_index = command.index("--config")
-        self.assertEqual(command[config_index + 1], "Testing/config/experiment_sweeps_broad_coverage_r1.json")
-        variables = [
-            command[index + 1]
-            for index, token in enumerate(command)
-            if token == "--variable" and index + 1 < len(command)
-        ]
-        self.assertEqual(variables, ["query_verbosity", "worker_subagents", "worker_prompt_shape"])
+        self.assertEqual(command[config_index + 1], "Testing/config/presets/coverage_broad_r1_60usd.json")
         difficulties = [
             command[index + 1]
             for index, token in enumerate(command)
             if token == "--difficulty-filter" and index + 1 < len(command)
         ]
         self.assertEqual(difficulties, ["medium", "hard"])
+        self.assertNotIn("--variable", command)
 
-    def test_broad_coverage_preset_projects_below_sixty_usd(self) -> None:
+    def test_coverage_broad_projection_stays_under_sixty_usd(self) -> None:
         report = build_launch_preset_projection_report("coverage_broad_r1_60usd")
 
         self.assertEqual(report["child_runs"], 5)
         self.assertEqual(report["tasks_per_child_run"], 23)
         self.assertLess(float(report["projection"]["projected_estimated_cost_usd"]), 60.0)
-
-    def test_sweep_architecture_focus_uses_worker_prompt_shape_family(self) -> None:
-        command = build_launch_preset_command(
-            "sweep_architecture_focus_r1",
-            explicit_judge_model="openai:gpt-4o-mini",
-        )
-
-        variables = [
-            command[index + 1]
-            for index, token in enumerate(command)
-            if token == "--variable" and index + 1 < len(command)
-        ]
-        self.assertIn("worker_prompt_shape", variables)
-        self.assertNotIn("worker_persona_prompt", variables)
-
-    def test_decoder_depth_stripped_r3_scopes_to_new_stripped_variant(self) -> None:
-        command = build_launch_preset_command(
-            "sweep_decoder_depth_stripped_r3",
-            explicit_judge_model="openai:gpt-4o-mini",
-        )
-
-        self.assertIn("Testing/run_experiment_sweep.py", command)
-        self.assertIn("config_decoder_test_stripped.exe", command)
-        self.assertIn("--repetitions", command)
-        repetition_index = command.index("--repetitions")
-        self.assertEqual(command[repetition_index + 1], "3")
-        tasks = [
-            command[index + 1]
-            for index, token in enumerate(command)
-            if token == "--task" and index + 1 < len(command)
-        ]
-        self.assertEqual(
-            tasks,
-            [
-                "default_analysis",
-                "config_value_recovery",
-                "decode_parser_flow_recovery",
-                "parser_validation_audit",
-            ],
-        )
 
     def test_decoder_depth_r3_combines_both_decoder_variants(self) -> None:
         command = build_launch_preset_command(
@@ -174,46 +133,31 @@ class LaunchPresetTests(unittest.TestCase):
                 "packing_decoder_triage",
             ],
         )
-        variables = [
-            command[index + 1]
-            for index, token in enumerate(command)
-            if token == "--variable" and index + 1 < len(command)
-        ]
-        self.assertEqual(variables, ["worker_subagents"])
+        self.assertIn("--config", command)
+        config_index = command.index("--config")
+        self.assertEqual(command[config_index + 1], "Testing/config/presets/sweep_decoder_depth_r3.json")
         self.assertIn("--prefer-unpacked-upx", command)
         self.assertIn("--repetitions", command)
         repetition_index = command.index("--repetitions")
         self.assertEqual(command[repetition_index + 1], "3")
 
-    def test_decoder_depth_followups_r3_uses_same_scope_with_new_families(self) -> None:
+    def test_decoder_depth_followups_r3_uses_self_contained_preset_config(self) -> None:
         command = build_launch_preset_command(
             "sweep_decoder_depth_followups_r3",
             explicit_judge_model="openai:gpt-4o-mini",
         )
 
-        samples = [
-            command[index + 1]
-            for index, token in enumerate(command)
-            if token == "--sample" and index + 1 < len(command)
-        ]
+        self.assertIn("--config", command)
+        config_index = command.index("--config")
+        self.assertEqual(
+            command[config_index + 1],
+            "Testing/config/presets/sweep_decoder_depth_followups_r3.json",
+        )
         tasks = [
             command[index + 1]
             for index, token in enumerate(command)
             if token == "--task" and index + 1 < len(command)
         ]
-        self.assertIn("--config", command)
-        config_index = command.index("--config")
-        self.assertEqual(
-            command[config_index + 1],
-            "Testing/config/experiment_sweeps_decoder_followups_r3.json",
-        )
-        self.assertEqual(
-            samples,
-            [
-                "config_decoder_test_stripped.exe",
-                "config_decoder_test_upx_stripped.exe",
-            ],
-        )
         self.assertEqual(
             tasks,
             [
@@ -224,8 +168,36 @@ class LaunchPresetTests(unittest.TestCase):
                 "packing_decoder_triage",
             ],
         )
-        self.assertNotIn("--variable", command)
+
+    def test_thesis_final_eval_preset_uses_final_round_corpus_and_self_config(self) -> None:
+        command = build_launch_preset_command(
+            "thesis_final_eval_r3_100usd",
+            explicit_judge_model="openai:gpt-4o-mini",
+        )
+
+        self.assertIn("Testing/scripts/run_experiment_sweep.py", command)
+        self.assertIn("--corpus", command)
+        corpus_index = command.index("--corpus")
+        self.assertEqual(command[corpus_index + 1], "final_round")
+        self.assertIn("--config", command)
+        config_index = command.index("--config")
+        self.assertEqual(command[config_index + 1], "Testing/config/presets/thesis_final_eval_r3_100usd.json")
         self.assertIn("--prefer-unpacked-upx", command)
+        self.assertIn("--task-failure-retries", command)
+        retries_index = command.index("--task-failure-retries")
+        self.assertEqual(command[retries_index + 1], "1")
+        tasks = [
+            command[index + 1]
+            for index, token in enumerate(command)
+            if token == "--task" and index + 1 < len(command)
+        ]
+        self.assertEqual(tasks, ["default_analysis"])
+
+        report = build_launch_preset_projection_report("thesis_final_eval_r3_100usd")
+        self.assertEqual(report["child_runs"], 24)
+        self.assertEqual(report["tasks_per_child_run"], 5)
+        self.assertAlmostEqual(float(report["projection"]["projected_estimated_cost_usd"]), 60.0)
+        self.assertNotIn("--variable", command)
         self.assertIn("--repetitions", command)
         repetition_index = command.index("--repetitions")
         self.assertEqual(command[repetition_index + 1], "3")
@@ -241,32 +213,13 @@ class LaunchPresetTests(unittest.TestCase):
         concurrency_index = command.index("--max-concurrent-repetitions")
         self.assertEqual(command[concurrency_index + 1], "3")
 
-    def test_decoder_depth_upx_stripped_r3_enables_unpacked_preference(self) -> None:
-        command = build_launch_preset_command(
-            "sweep_decoder_depth_upx_stripped_r3",
-            explicit_judge_model="openai:gpt-4o-mini",
-        )
+    def test_preset_file_name_matches_declared_name(self) -> None:
+        preset = resolve_launch_preset("thesis_final_eval_r3_100usd")
 
-        self.assertIn("config_decoder_test_upx_stripped.exe", command)
-        self.assertIn("--prefer-unpacked-upx", command)
-        self.assertIn("--repetitions", command)
-        repetition_index = command.index("--repetitions")
-        self.assertEqual(command[repetition_index + 1], "3")
-
-    def test_decoder_depth_upx_stripped_preset_declares_depth_scope(self) -> None:
-        preset = resolve_launch_preset("sweep_decoder_depth_upx_stripped_r3")
-
-        self.assertEqual(preset.get("repetitions"), 3)
-        self.assertTrue(bool(preset.get("prefer_upx_unpacked")))
+        self.assertEqual(preset.get("name"), "thesis_final_eval_r3_100usd")
         self.assertEqual(
-            preset.get("tasks"),
-            [
-                "default_analysis",
-                "packing_decoder_triage",
-                "config_value_recovery",
-                "decode_parser_flow_recovery",
-                "parser_validation_audit",
-            ],
+            preset.get("_preset_rel_path"),
+            "Testing/config/presets/thesis_final_eval_r3_100usd.json",
         )
 
 

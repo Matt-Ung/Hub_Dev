@@ -15,6 +15,12 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from artifact_paths import describe_tool_output_root, resolve_tool_output_path  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform.startswith("win")
@@ -67,9 +73,7 @@ def ensure_existing_path(path: str) -> str:
 
 
 def ensure_parent_directory(path: str) -> str:
-    candidate = Path(normalize_user_path(path))
-    if not candidate.is_absolute():
-        candidate = candidate.resolve()
+    candidate = resolve_tool_output_path("upx", normalize_user_path(path))
     candidate.parent.mkdir(parents=True, exist_ok=True)
     return str(candidate)
 
@@ -101,7 +105,11 @@ def run_help_command(binary: str, timeout_sec: int = 5) -> str:
 @mcp.tool()
 def upxHelp(timeout_sec: int = 5) -> str:
     """Return `upx --help` output."""
-    return run_help_command("upx", timeout_sec=timeout_sec)
+    return (
+        run_help_command("upx", timeout_sec=timeout_sec)
+        + "\n\n"
+        + f"Allowed unpack output root: {describe_tool_output_root('upx')}"
+    )
 
 
 @mcp.tool()
@@ -163,14 +171,16 @@ def upxUnpack(
             "command": cmd,
             "file_path": resolved_input,
             "output_path": str(output_candidate),
+            "allowed_output_root": describe_tool_output_root("upx"),
             "output_exists": output_exists,
             "stdout": stdout,
             "stderr": stderr,
             "error": "" if (result.returncode == 0 and output_exists) else truncate_text(stderr or stdout, max_chars=2000),
         }
     except Exception as e:
+        logger.warning("upxUnpack rejected request or failed to unpack: %s", e)
         logger.exception("upxUnpack failed")
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "allowed_output_root": describe_tool_output_root("upx")}
 
 
 def main() -> None:

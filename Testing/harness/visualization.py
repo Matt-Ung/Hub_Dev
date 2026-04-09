@@ -1,3 +1,17 @@
+"""
+File: visualization.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Generate the maintained chart suite for experiment reports and the results
+  browser.
+
+Summary:
+  This module turns experiment summaries into presentation-ready PNG charts
+  with a consistent accessible style. It is the plotting layer behind the
+  experiment refresh path and browser chart cards.
+"""
+
 from __future__ import annotations
 
 import json

@@ -1,0 +1,57 @@
+{
+  "schema_version": "launch_preset_v3",
+  "name": "sweep_decoder_depth_r3",
+  "description": "Combined decoder-depth study over the stripped and packed-stripped decoder samples. Uses the maintained task slate and tests only the single-generalist worker follow-up across three repetitions.",
+  "runner": "sweep",
+  "corpus": "experimental",
+  "samples": [
+    "config_decoder_test_stripped.exe",
+    "config_decoder_test_upx_stripped.exe"
+  ],
+  "tasks": [
+    "default_analysis",
+    "config_value_recovery",
+    "decode_parser_flow_recovery",
+    "parser_validation_audit",
+    "packing_decoder_triage"
+  ],
+  "repetitions": 3,
+  "label": "decoder-depth-r3",
+  "prefer_upx_unpacked": true,
+  "skip_visuals": false,
+  "recommended_judge_model": "openai:gpt-4o-mini",
+  "baseline": {
+    "corpus": "experimental",
+    "pipeline": "auto_triage",
+    "architecture": "balanced",
+    "query_variant": "default",
+    "subagent_profile": "default",
+    "worker_persona_profile": "default",
+    "worker_role_prompt_mode": "default",
+    "validator_review_level": "default",
+    "tool_profile": "full",
+    "model_profile": "repo_default",
+    "force_model": "",
+    "judge_mode": "agent"
+  },
+  "model_profiles": {
+    "repo_default": {
+      "description": "Use the repo defaults with no forced override.",
+      "force_model": ""
+    }
+  },
+  "sweeps": [
+    {
+      "variable": "worker_subagents",
+      "description": "Reduce worker specialist breadth to a single generalist slot while leaving the rest of the workflow unchanged.",
+      "variants": [
+        {
+          "name": "single_generalist",
+          "overrides": {
+            "subagent_profile": "single_generalist"
+          }
+        }
+      ]
+    }
+  ]
+}

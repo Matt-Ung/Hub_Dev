@@ -1,3 +1,16 @@
+"""
+File: doctor.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Provide the maintained launch-readiness doctor for the testing harness.
+
+Summary:
+  This module checks Python/runtime prerequisites, bundle readiness, judge
+  configuration, and projected experiment budget before paid runs. It is the
+  main operational preflight surface for contributors preparing real tests.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -16,6 +29,7 @@ from .launch_checks import (
 )
 from .launch_presets import available_launch_presets, resolve_launch_preset
 from .paths import RESULTS_ROOT, build_run_id, ensure_dir, write_json
+from .samples import get_corpus_config
 
 
 def _status_line(ok: bool, label: str, detail: str, *, warning: bool = False) -> str:
@@ -164,6 +178,7 @@ def _recommended_commands(
 ) -> Dict[str, str]:
     judge = str(judge_model or "openai:gpt-4o-mini").strip()
     py = str(python_executable or "python").strip() or "python"
+    corpus_cfg = get_corpus_config(corpus_name)
     broad_suffix = _build_doctor_selection_suffix(
         selected_samples=list(selected_samples or []),
         selected_tasks=list(selected_tasks or []),
@@ -171,37 +186,61 @@ def _recommended_commands(
         variable_filters=list(variable_filters or []),
         repetitions_override=repetitions_override,
     )
+    build_command = "make all-exes"
+    prepare_command = f"{py} Testing/scripts/prepare_bundles.py --corpus {corpus_name}"
+    if corpus_name == "final_round":
+        build_command = "make deepseek-final"
+    single_run_sample = "basic_loops_test.exe"
+    if corpus_name == "final_round":
+        single_run_sample = "sample1.exe"
+    elif selected_samples:
+        single_run_sample = str(next((item for item in selected_samples if str(item).strip()), single_run_sample))
     return {
         "install_deps": f"{py} -m pip install pydantic pydantic-ai matplotlib pandas",
-        "build_binaries": "make all-exes",
-        "prepare_bundles": f"{py} Testing/prepare_bundles.py --corpus {corpus_name}",
-        "bundle_doctor_only": f"{py} Testing/run_launch_doctor.py --corpus {corpus_name} --bundle-only{broad_suffix}",
+        "build_binaries": build_command,
+        "prepare_bundles": prepare_command,
+        "bundle_doctor_only": f"{py} Testing/scripts/run_launch_doctor.py --corpus {corpus_name} --bundle-only{broad_suffix}",
         "single_run_preflight": (
-            f"{py} Testing/run_evaluation.py "
+            f"{py} Testing/scripts/run_evaluation.py "
             f"--corpus {corpus_name} "
-            "--sample basic_loops_test.exe "
+            f"--sample {single_run_sample} "
             "--task default_analysis "
             f"--judge-model {judge} "
             "--skip-build --skip-prepare --preflight-only"
         ),
         "pilot_preflight": (
-            f"{py} Testing/run_launch_preset.py --preset {pilot_preset_name} "
+            f"{py} Testing/scripts/run_launch_preset.py --preset {pilot_preset_name} "
             f"--judge-model {judge} --preflight-only"
         ),
         "pilot_run": (
-            f"{py} Testing/run_launch_preset.py --preset {pilot_preset_name} "
+            f"{py} Testing/scripts/run_launch_preset.py --preset {pilot_preset_name} "
             f"--judge-model {judge}"
         ),
         "broad_preflight": (
-            f"{py} Testing/run_experiment_sweep.py --corpus {corpus_name} "
+            f"{py} Testing/scripts/run_experiment_sweep.py --corpus {corpus_name} "
             f"--judge-model {judge}{broad_suffix} --preflight-only"
         ),
     }
 
 
+"""
+Function: run_launch_doctor
+Inputs:
+  - argv: optional CLI-style argument list. When omitted, arguments are read
+    from the real command line.
+Description:
+  Run the maintained launch doctor, report environment and bundle readiness,
+  and print recommended next commands for the selected corpus or preset.
+Outputs:
+  Returns nothing. Prints JSON or human-readable status output and exits
+  non-zero when blocking checks fail.
+Side Effects:
+  Reads manifests, bundle state, environment variables, and launch config;
+  writes a doctor report under `Testing/results/doctor`.
+"""
 def run_launch_doctor(argv: List[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Launch-readiness doctor for the paid testing harness.")
-    parser.add_argument("--corpus", choices=["prototype", "experimental"], default="experimental")
+    parser.add_argument("--corpus", choices=["prototype", "experimental", "final_round"], default="experimental")
     parser.add_argument("--pilot-preset", default="sanity_core_slice_r1", help="Named launch preset to treat as the recommended first paid pilot")
     parser.add_argument("--judge-model", default="", help="Optional explicit judge model override for readiness checks")
     parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict the broad projection to")
@@ -236,6 +275,7 @@ def run_launch_doctor(argv: List[str] | None = None) -> None:
     effective_python = str(launch_env.get("preferred_python") or launch_env.get("current_python") or "")
     runtime_modules = check_python_modules(effective_python, budget_modules)
     visuals = check_python_modules(effective_python, visuals_modules)
+    corpus_cfg = get_corpus_config(args.corpus)
     mingw = check_command_available("x86_64-w64-mingw32-gcc")
 
     broad_budget = build_sweep_projection_report(
@@ -286,9 +326,13 @@ def run_launch_doctor(argv: List[str] | None = None) -> None:
             "name": "mingw_toolchain",
             "ok": bool(mingw.get("ok")),
             "detail": (
-                f"x86_64-w64-mingw32-gcc available at {mingw.get('path')}"
-                if mingw.get("ok")
-                else "missing x86_64-w64-mingw32-gcc; canonical corpus builds require MinGW-w64 PE output, and host-only *_gcc.exe builds are not the maintained full-experiment target"
+                "MinGW-w64 not required for the manual held-out corpus"
+                if mingw.get("skipped")
+                else (
+                    f"x86_64-w64-mingw32-gcc available at {mingw.get('path')}"
+                    if mingw.get("ok")
+                    else "missing x86_64-w64-mingw32-gcc; canonical corpus builds require MinGW-w64 PE output, and host-only *_gcc.exe builds are not the maintained full-experiment target"
+                )
             ),
         }
     )
@@ -324,11 +368,14 @@ def run_launch_doctor(argv: List[str] | None = None) -> None:
     checks.append(
         {
             "name": "ghidra_env",
-            "ok": bool(launch_env.get("ghidra_headless_set") or launch_env.get("ghidra_install_dir_set")) and bool(launch_env.get("ghidra_java_home_set")),
+            "ok": bool(launch_env.get("ghidra_headless_set") or launch_env.get("ghidra_install_dir_set")) and bool(launch_env.get("ghidra_java_home_available")),
             "detail": (
-                "GHIDRA_HEADLESS/GHIDRA_INSTALL_DIR and GHIDRA_JAVA_HOME are set"
-                if (launch_env.get("ghidra_headless_set") or launch_env.get("ghidra_install_dir_set")) and launch_env.get("ghidra_java_home_set")
-                else "missing one or more of GHIDRA_HEADLESS / GHIDRA_INSTALL_DIR / GHIDRA_JAVA_HOME"
+                (
+                    "GHIDRA_HEADLESS/GHIDRA_INSTALL_DIR is set and a Java home is available"
+                    + (" via environment" if launch_env.get("ghidra_java_home_set") else " via auto-detection")
+                )
+                if (launch_env.get("ghidra_headless_set") or launch_env.get("ghidra_install_dir_set")) and launch_env.get("ghidra_java_home_available")
+                else "missing one or more of GHIDRA_HEADLESS / GHIDRA_INSTALL_DIR / usable Java home"
             ),
         }
     )

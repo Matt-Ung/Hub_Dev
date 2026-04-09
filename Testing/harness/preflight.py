@@ -21,7 +21,7 @@ import importlib.util
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from .artifacts import inspect_corpus_bundles, load_tool_profiles, resolve_analyze_headless
+from .artifacts import inspect_corpus_bundles, load_tool_profiles, resolve_analyze_headless, _resolve_java_home
 from .judge import Agent, PYDANTIC_AVAILABLE
 from .paths import CONFIG_ROOT, PROMPTS_ROOT, REPO_ROOT, read_json
 from .query_variants import load_query_variants
@@ -217,7 +217,34 @@ def _module_available_in_python(python_executable: str, module_name: str) -> boo
     except Exception:
         return False
 
-
+"""
+Function: validate_run_configuration
+Inputs:
+  - corpus_name: logical corpus identifier for the requested run.
+  - sample_paths: built sample binaries currently available on disk.
+  - manifest: parsed sample manifest for the corpus.
+  - selected_samples / selected_task_ids / selected_task_keys /
+    selected_difficulties: optional CLI filters that narrow the intended
+    evaluation scope.
+  - pipeline / architecture / query_variant / worker_persona_profile /
+    worker_role_prompt_mode / validator_review_level / tool_profile /
+    prefer_upx_unpacked:
+    requested runtime knobs to verify.
+  - judge_mode / explicit_judge_model / forced_model / python_executable:
+    judge and environment settings that affect launch viability.
+  - bundle_root: optional bundle directory tree to inspect.
+  - require_ready_bundles: whether missing or stale bundles should be
+    treated as hard errors instead of informational warnings.
+Description:
+  Perform the shared readiness checks used before real evaluation work
+  starts. This includes config validation, task resolution, judge
+  prerequisites, and optional bundle-readiness inspection.
+Outputs:
+  Returns a structured result containing `ok`, `errors`, `warnings`,
+  resolved task scope, and optional bundle-readiness details.
+Side Effects:
+  Reads config files from disk and may inspect bundle directories.
+"""
 def validate_run_configuration(
     *,
     corpus_name: str,
@@ -244,34 +271,6 @@ def validate_run_configuration(
     bundle_root: Optional[Path] = None,
     require_ready_bundles: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Function: validate_run_configuration
-    Inputs:
-      - corpus_name: logical corpus identifier for the requested run.
-      - sample_paths: built sample binaries currently available on disk.
-      - manifest: parsed sample manifest for the corpus.
-      - selected_samples / selected_task_ids / selected_task_keys /
-        selected_difficulties: optional CLI filters that narrow the intended
-        evaluation scope.
-      - pipeline / architecture / query_variant / worker_persona_profile /
-        worker_role_prompt_mode / validator_review_level / tool_profile /
-        prefer_upx_unpacked:
-        requested runtime knobs to verify.
-      - judge_mode / explicit_judge_model / forced_model / python_executable:
-        judge and environment settings that affect launch viability.
-      - bundle_root: optional bundle directory tree to inspect.
-      - require_ready_bundles: whether missing or stale bundles should be
-        treated as hard errors instead of informational warnings.
-    Description:
-      Perform the shared readiness checks used before real evaluation work
-      starts. This includes config validation, task resolution, judge
-      prerequisites, and optional bundle-readiness inspection.
-    Outputs:
-      Returns a structured result containing `ok`, `errors`, `warnings`,
-      resolved task scope, and optional bundle-readiness details.
-    Side Effects:
-      Reads config files from disk and may inspect bundle directories.
-    """
     errors: List[str] = []
     warnings: List[str] = []
 
@@ -463,15 +462,25 @@ def validate_run_configuration(
             "judge_mode is disabled; runs will not produce rubric scores or valid baseline-vs-variant score comparisons."
         )
 
+    resolved_analyze_headless = resolve_analyze_headless(ghidra_install_dir, ghidra_headless)
     bundle_readiness: Dict[str, Any] | None = None
+    if resolved_analyze_headless is not None and not _resolve_java_home():
+        warnings.append(
+            "GHIDRA_JAVA_HOME/JAVA_HOME is not set and no auto-detected JDK was found. "
+            "Headless Ghidra export may fail non-interactively while preparing bundles."
+        )
     if require_ready_bundles and bundle_root is not None:
         bundle_readiness = inspect_corpus_bundles(corpus_name, sample_paths, output_root=bundle_root)
         if not bool(bundle_readiness.get("ready_for_analysis")):
-            missing_items = [
-                f"{item.get('sample')}: {', '.join(item.get('missing_required') or [])}"
-                for item in (bundle_readiness.get("results") or [])
-                if item.get("missing_required")
-            ]
+            missing_items = []
+            for item in (bundle_readiness.get("results") or []):
+                if not item.get("missing_required"):
+                    continue
+                ghidra_error = str(item.get("ghidra_error") or "").strip()
+                detail = f" (ghidra: {ghidra_error})" if ghidra_error else ""
+                missing_items.append(
+                    f"{item.get('sample')}: {', '.join(item.get('missing_required') or [])}{detail}"
+                )
             errors.append(
                 "Prepared bundles are missing required files: " + "; ".join(missing_items)
             )

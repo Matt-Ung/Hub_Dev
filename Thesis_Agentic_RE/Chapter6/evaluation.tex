@@ -30,6 +30,7 @@ The maintained binary benchmark uses an experimental corpus of authored executab
 \item \TODO{Describe the experimental corpus, including how many source programs, executable variants, and sample-task pairs were used for the final thesis experiments.}
 \item \TODO{Add a short table summarizing representative samples and the reasoning skills they are intended to stress.}
 \item \TODO{Explain why \texttt{config\_decoder\_test} became a centerpiece for deeper analysis.}
+\item \TODO{Explain how the final held-out malware-facing evaluation differs from the authored benchmark and why the two should not be conflated.}
 \end{itemize}
 
 \section{Single Runs, Sweeps, and Repetitions}
@@ -41,12 +42,84 @@ The harness supports both single-run evaluation and experiment sweeps. Maintaine
 \item Variant families change one configuration surface at a time.
 \item Some families insert local family baselines where a fair comparison requires it.
 \item Repetitions support stronger claims about stability and significance.
+\item The current repository artifacts include a repaired breadth sweep with one repetition per configuration and a decoder-depth follow-up with three repetitions per configuration.
 \end{itemize}
 
 \begin{itemize}
 \item \TODO{Explain why the broad sweep uses one-variable-at-a-time comparisons instead of a full factorial design.}
-\item \TODO{Document the final repetition counts used for the headline experiments and for the decoder depth study.}
+\item \TODO{Document the final repetition counts used for the headline experiments and for the decoder depth study. The current artifact set is asymmetric: the repaired broad sweep is descriptive because each configuration only has one repetition, whereas the decoder-depth combined experiment has three repetitions per configuration.}
 \item \TODO{Clarify how repaired experiments are handled when failed tasks are rerun and merged.}
+\item \TODO{Make explicit that repaired and merged experiments preserve raw run provenance, rather than replacing the original experiments in-place.}
+\end{itemize}
+
+For reproducibility, the maintained repository entry points for these development experiments are now the folder-based launch presets under \path{Testing/config/presets/}. The broad-coverage pilot discussed in this thesis corresponds to the preset \texttt{coverage\_broad\_r1\_60usd}. The repeated decoder-depth case study corresponds to \texttt{sweep\_decoder\_depth\_r3}, and the narrower follow-up depth suite corresponds to \texttt{sweep\_decoder\_depth\_followups\_r3}. A clean rerun begins by rebuilding and preparing the experimental corpus:
+
+\begin{verbatim}
+make all-exes
+python Testing/scripts/prepare_bundles.py --corpus experimental
+\end{verbatim}
+
+The maintained preflight and execution commands for the broad pilot are:
+
+\begin{verbatim}
+python Testing/scripts/run_launch_preset.py \
+  --preset coverage_broad_r1_60usd \
+  --judge-model openai:gpt-4o-mini \
+  --preflight-only
+
+python Testing/scripts/run_launch_preset.py \
+  --preset coverage_broad_r1_60usd \
+  --judge-model openai:gpt-4o-mini
+\end{verbatim}
+
+The maintained preflight and execution commands for the repeated decoder-depth suites are:
+
+\begin{verbatim}
+python Testing/scripts/run_launch_preset.py \
+  --preset sweep_decoder_depth_r3 \
+  --judge-model openai:gpt-4o-mini \
+  --preflight-only
+
+python Testing/scripts/run_launch_preset.py \
+  --preset sweep_decoder_depth_r3 \
+  --judge-model openai:gpt-4o-mini
+
+python Testing/scripts/run_launch_preset.py \
+  --preset sweep_decoder_depth_followups_r3 \
+  --judge-model openai:gpt-4o-mini \
+  --preflight-only
+
+python Testing/scripts/run_launch_preset.py \
+  --preset sweep_decoder_depth_followups_r3 \
+  --judge-model openai:gpt-4o-mini
+\end{verbatim}
+
+Preflight-only commands now write readiness artifacts under \path{Testing/results/preflight/}. Real launched experiments write their run catalogs, child runs, summaries, and figures under \path{Testing/results/experiments/<experiment\_id>/}. This separation is important because it keeps the experiment directory reserved for actual executed sweeps rather than planning scaffolds.
+
+\section{Broad Coverage and Final Held-Out Malware Evaluation}
+
+The methodology chapter should separate three evaluation roles:
+
+\begin{itemize}
+\item development and pilot runs on the authored benchmark, used to debug workflow behavior and identify promising interventions;
+\item broader malware-facing coverage checks, used as a realism test over manually supplied families; and
+\item the final held-out evaluation run, which should carry the main thesis-grade empirical claims.
+\end{itemize}
+
+The repository now includes a metadata-backed manual corpus scaffold for analyst-supplied malware families rather than a live malware corpus. This is important both for safety and for scientific clarity: the broad-coverage plan should be described as a broader realism check, while the final held-out run should be described as the main evaluation.
+
+\begin{itemize}
+\item The intended five-family set is Emotet, QakBot, TrickBot, WannaCry, and PlugX, but the repository stores only placeholder paths and evaluator-side metadata.
+\item The manual final-evaluation manifest uses neutral numbered runtime aliases, while family labels and gold-label pointers remain on the evaluator side.
+\item The current repository preset for this stage is a scaffold, not yet the completed final run. It exists to lock the intended evaluation structure before the analyst-supplied samples are inserted.
+\item The active final-run scaffold currently uses one blind default-analysis pass per sample, then spends the remaining budget on a wider comparison across worker breadth, prompt shape, tool surface, and architecture.
+\end{itemize}
+
+\begin{itemize}
+\item \TODO{Describe the manual final-evaluation manifest and explain why the repository stores metadata only, not binaries or fetch automation.}
+\item \TODO{Document the blind runtime alias policy and explain why family identity should not be exposed to the analysis agent during the run.}
+\item \TODO{Explain how broad-coverage pilot testing informs method development without being presented as proof of general effectiveness.}
+\item \TODO{State the criteria for promoting a configuration from benchmark-development runs into the final held-out malware evaluation.}
 \end{itemize}
 
 \section{Baselines and Experimental Variables}
@@ -67,7 +140,8 @@ The current harness exposes several variable families that can be studied empiri
 \begin{itemize}
 \item \TODO{Decide which of these families will be discussed in the thesis body versus moved to appendix material.}
 \item \TODO{Explain the rationale for the chosen baseline in the final experiments.}
-\item \TODO{Document the deeper \texttt{config\_decoder\_test} study separately from the broad sweep.}
+\item \TODO{Document the deeper \texttt{config\_decoder\_test} study separately from the broad sweep. The current repaired broad sweep suggests that the no-role worker-prompt condition and the single-generalist worker profile are the most interesting follow-up families, which is why the depth study focuses on those surfaces plus a validator-heavy pipeline comparison.}
+\item \TODO{Justify why the brief-query condition was not promoted into the decoder-depth follow-up despite a positive descriptive broad-sweep delta; the current interpretation is that it looked less mechanistically interesting than worker-prompt and worker-subagent effects.}
 \end{itemize}
 
 \section{Judging and Scoring}
@@ -78,12 +152,14 @@ Run outputs are judged with a structured binary-analysis rubric and converted in
 \item Per-task judge outputs preserve structured feedback and an overall score.
 \item Legacy pass or fail thresholds still exist, but sweep analysis should focus on score deltas, success rates, and error rates.
 \item The harness preserves analysis outcomes such as completed, analysis error, no result, judge error, and validator blocked.
+\item The final held-out evaluation scaffold also includes analyst-reviewed gold-label templates. These are intended to anchor evidence expectations and false-positive controls, not merely family attribution.
 \end{itemize}
 
 \begin{itemize}
 \item \TODO{Describe the rubric dimensions used by the judge and justify why they align with reverse-engineering quality.}
-\item \TODO{Explain whether human spot-checking was used to validate judge outputs.}
+\item \TODO{Explain whether human spot-checking was used to validate judge outputs and how analyst-reviewed gold labels were incorporated in the final held-out run.}
 \item \TODO{Discuss the difference between completed-but-weak analyses and infrastructure failures.}
+\item \TODO{Document the final held-out weighting policy: evidence recovery, capability inference, reasoning quality, false-positive control, and optional low-weight family attribution.}
 \end{itemize}
 
 \section{Statistical Treatment and Comparison Strategy}
@@ -94,10 +170,12 @@ The final thesis should not report only descriptive movement. The harness suppor
 \item Replicate-level comparison when repeated runs exist.
 \item Paired-task comparison across matched sample-task pairs.
 \item Reporting of score deltas, task success deltas, and significance outputs where supported.
+\item Explicit distinction between descriptive one-off sweep results and repeated experiments that can support stronger stability claims.
 \end{itemize}
 
 \begin{itemize}
-\item \TODO{State the statistical tests actually used in the final thesis and justify their assumptions.}
+\item \TODO{State the statistical tests actually used in the final thesis and justify their assumptions. In particular, explain that the repaired broad sweep should be reported descriptively because it has one repetition per configuration, while the decoder-depth combined experiment can support limited repeated-trial summaries.}
 \item \TODO{Document how missing or recovered tasks are treated in the analysis set.}
-\item \TODO{Explain what level of evidence is sufficient for claims in the results chapter.}
+\item \TODO{Explain what level of evidence is sufficient for claims in the results chapter. The current artifact set supports stronger claims about the decoder-depth study than about the one-repetition broad sweep.}
+\item \TODO{Describe how validator-blocked outcomes are separated from infrastructure failures and why collapsing them into a single failure rate would be misleading.}
 \end{itemize}

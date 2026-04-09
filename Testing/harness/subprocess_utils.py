@@ -1,3 +1,17 @@
+"""
+File: subprocess_utils.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Provide the shared subprocess execution helpers used by testing scripts and
+  harness modules.
+
+Summary:
+  This module standardizes command execution, timeout handling, optional
+  streaming capture, and heartbeat output so the maintained harness launches
+  child tools and wrapper scripts consistently.
+"""
+
 from __future__ import annotations
 
 import queue
@@ -27,6 +41,22 @@ def normalize_timeout_sec(timeout_sec: int | None) -> int | None:
     return normalized
 
 
+"""
+Function: run_command
+Inputs:
+  - argv: subprocess command as an argument vector.
+  - cwd / timeout_sec / env / stream_output / stream_prefix /
+    stream_heartbeat_sec / stream_capture_path: execution controls.
+Description:
+  Run one child process either in buffered mode or in streaming mode with
+  optional log capture and heartbeat output.
+Outputs:
+  Returns a structured dictionary containing return code, captured stdout,
+  stderr, and any execution error details.
+Side Effects:
+  Launches a subprocess, may stream output to stderr, and may write captured
+  output to `stream_capture_path`.
+"""
 def run_command(
     argv: List[str],
     *,

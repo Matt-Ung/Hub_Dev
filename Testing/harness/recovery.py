@@ -24,12 +24,12 @@ from typing import Any, Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .paths import REPO_ROOT, ensure_dir, read_json, repo_python_executable, slugify, write_json
+from .result_store import iter_record_paths as iter_case_record_paths, resolve_catalog_run_dir, resolve_task_case_dir
 from .samples import (
     build_evaluation_tasks,
     list_sample_binaries,
     load_sample_manifest,
     normalize_sample_task_key,
-    sample_slug,
     sample_task_key,
 )
 from .subprocess_utils import run_command
@@ -91,14 +91,11 @@ def _normalize_sample_task_id(value: str) -> str:
 
 
 def _task_dir_for_sample_task(run_dir: Path, sample_name: str, task_id: str) -> Path:
-    return run_dir / "samples" / f"{sample_slug(sample_name)}__{str(task_id or '').strip()}"
+    return resolve_task_case_dir(run_dir, sample_name, task_id)
 
 
 def _iter_record_paths(run_dir: Path) -> List[Path]:
-    samples_dir = run_dir / "samples"
-    if not samples_dir.exists():
-        return []
-    return sorted(samples_dir.glob("*/record.json"))
+    return list(iter_case_record_paths(run_dir))
 
 
 def _fallback_run_manifest(
@@ -440,22 +437,26 @@ def build_recovery_command(
     inspection: Dict[str, Any],
     *,
     session_id: str,
+    session_dir: Path,
     task_failure_retries: int = 0,
 ) -> Dict[str, Any]:
     run_manifest = dict(inspection.get("run_manifest") or {})
     retry_tasks = list(inspection.get("retryable_tasks") or [])
     original_run_id = str(inspection.get("run_id") or run_manifest.get("run_id") or "run").strip() or "run"
     recovery_run_id = _recovery_run_id(original_run_id, session_id)
+    recovery_run_dir = ensure_dir(session_dir / "runs" / recovery_run_id)
     retry_exact_keys = [str(task.get("sample_task_id") or "").strip() for task in retry_tasks if str(task.get("sample_task_id") or "").strip()]
     retry_samples = list(dict.fromkeys(str(task.get("sample") or "").strip() for task in retry_tasks if str(task.get("sample") or "").strip()))
 
     command: List[str] = [
         repo_python_executable(),
-        "Testing/run_evaluation.py",
+        "Testing/scripts/run_evaluation.py",
         "--corpus",
         str(run_manifest.get("corpus") or "experimental"),
         "--run-id",
         recovery_run_id,
+        "--run-root",
+        str(recovery_run_dir),
         "--label",
         f"recovery-{original_run_id}",
         "--pipeline",
@@ -529,6 +530,7 @@ def build_recovery_command(
 
     return {
         "recovery_run_id": recovery_run_id,
+        "recovery_run_dir": str(recovery_run_dir),
         "retry_samples": retry_samples,
         "retry_exact_keys": retry_exact_keys,
         "command": command,
@@ -544,7 +546,7 @@ def _target_scope(target_path: Path) -> Tuple[str, List[Tuple[Path, Dict[str, An
         for entry in (catalog.get("runs") or []):
             if not isinstance(entry, dict):
                 continue
-            run_dir = Path(str(entry.get("run_dir") or "")).expanduser()
+            run_dir = resolve_catalog_run_dir(target, entry)
             runs.append((run_dir, dict(entry), experiment_manifest))
         return "experiment", runs
     if (target / "run_manifest.json").exists():
@@ -613,6 +615,7 @@ def execute_recovery_plan(
         command_payload = build_recovery_command(
             inspection,
             session_id=session_id,
+            session_dir=session_dir,
             task_failure_retries=max(0, int(task_failure_retries or 0)),
         )
         inspection["recovery_command"] = command_payload

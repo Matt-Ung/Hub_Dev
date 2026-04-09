@@ -39,7 +39,8 @@ class LiveProgressTests(unittest.TestCase):
     def test_live_view_state_reads_live_status_stage_updates(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             experiment_root = Path(temp_dir) / "experiment"
-            run_dir = experiment_root / "runs" / "run-001"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
             run_dir.mkdir(parents=True)
             (experiment_root / "experiment_manifest.json").write_text(
                 json.dumps({"corpus": "experimental"}),
@@ -51,7 +52,7 @@ class LiveProgressTests(unittest.TestCase):
                         "runs": [
                             {
                                 "run_id": "run-001",
-                                "run_dir": str(run_dir),
+                                "run_path": run_path,
                                 "status": "running",
                                 "display_label": "baseline",
                                 "ok": None,
@@ -85,21 +86,66 @@ class LiveProgressTests(unittest.TestCase):
         self.assertEqual(state["executables"][0]["sample"], "config_decoder_test.exe")
         self.assertEqual(state["executables"][0]["status"], "running")
 
+    def test_live_view_state_prefers_terminal_live_status_over_stale_catalog_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            experiment_root = Path(temp_dir) / "experiment"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
+            run_dir.mkdir(parents=True)
+            (experiment_root / "experiment_manifest.json").write_text(
+                json.dumps({"corpus": "experimental"}),
+                encoding="utf-8",
+            )
+            (experiment_root / "run_catalog.json").write_text(
+                json.dumps(
+                    {
+                        "runs": [
+                            {
+                                "run_id": "run-001",
+                                "run_path": run_path,
+                                "status": "running",
+                                "display_label": "baseline",
+                                "ok": None,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "live_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "completed_budget_exceeded",
+                        "stage": "completed",
+                        "current_phase": "completed",
+                        "tasks": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = load_live_view_state(experiment_root)
+
+        self.assertEqual(state["runs"][0]["status"], "completed_budget_exceeded")
+        self.assertEqual(state["summary"]["completed"], 1)
+        self.assertEqual(state["summary"]["running"], 0)
+
     def test_launch_preset_can_forward_live_view_flag(self) -> None:
         command = build_launch_preset_command(
-            "paid_narrow_pilot",
+            "sanity_core_slice_r1",
             explicit_judge_model="openai:gpt-4o-mini",
             live_view=True,
         )
 
-        self.assertIn("Testing/run_experiment_sweep.py", command)
+        self.assertIn("Testing/scripts/run_experiment_sweep.py", command)
         self.assertIn("--live-view", command)
 
     def test_live_view_detail_surfaces_run_output_and_pipeline_progress(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             experiment_root = Path(temp_dir) / "experiment"
-            run_dir = experiment_root / "runs" / "run-001"
-            sample_dir = run_dir / "samples" / "config_decoder_test__config_value_recovery"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
+            sample_dir = run_dir / "cases" / "config_decoder_test.exe" / "config_value_recovery"
             run_dir.mkdir(parents=True)
             sample_dir.mkdir(parents=True)
             log_path = experiment_root / "live_view" / "logs" / "run-001.log"
@@ -121,7 +167,7 @@ class LiveProgressTests(unittest.TestCase):
                         "runs": [
                             {
                                 "run_id": "run-001",
-                                "run_dir": str(run_dir),
+                                "run_path": run_path,
                                 "log_path": str(log_path),
                                 "status": "running",
                                 "display_label": "baseline",
@@ -234,19 +280,99 @@ class LiveProgressTests(unittest.TestCase):
         self.assertEqual(detail["pipeline_progress"]["stages"][0]["status"], "completed")
         self.assertIn("Stage started: planner", detail["server_status"]["text"])
 
+    def test_live_view_detail_keeps_agent_status_log_out_of_agent_output_panel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            experiment_root = Path(temp_dir) / "experiment"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
+            sample_dir = run_dir / "cases" / "config_decoder_test.exe" / "config_value_recovery"
+            run_dir.mkdir(parents=True)
+            sample_dir.mkdir(parents=True)
+
+            (experiment_root / "experiment_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "corpus": "experimental",
+                        "selected_samples": ["config_decoder_test.exe"],
+                        "selected_task_keys": ["config_decoder_test.exe::config_value_recovery"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (experiment_root / "run_catalog.json").write_text(
+                json.dumps(
+                    {
+                        "runs": [
+                            {
+                                "run_id": "run-001",
+                                "run_path": run_path,
+                                "status": "running",
+                                "display_label": "baseline",
+                                "pipeline": "auto_triage",
+                                "is_baseline": True,
+                                "ok": None,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps({"pipeline": "auto_triage", "judge_mode": "agent"}),
+                encoding="utf-8",
+            )
+            (run_dir / "live_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "stage": "analysis",
+                        "current_phase": "analysis",
+                        "current_sample": "config_decoder_test.exe",
+                        "current_task_id": "config_value_recovery",
+                        "tasks": [
+                            {
+                                "sample": "config_decoder_test.exe",
+                                "task_id": "config_value_recovery",
+                                "task_name": "Config Value Recovery",
+                                "sample_task_id": "config_decoder_test.exe::config_value_recovery",
+                                "status": "running",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (sample_dir / "agent_result.json").write_text(
+                json.dumps(
+                    {
+                        "status": "running",
+                        "query": "Recover the config strings.",
+                        "final_report": "Recovered config strings.",
+                        "status_log": "planner started\nvalidator waiting\n",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            detail = load_live_view_detail(experiment_root, "run-001")
+
+        self.assertNotIn("status_log:", detail["run_output"]["text"])
+        self.assertIn("planner started", detail["server_status"]["text"])
+        self.assertEqual(detail["server_status"]["meta"], "Agent status log")
+
     def test_live_view_detail_prefers_matching_family_baseline_for_selected_variant(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             experiment_root = Path(temp_dir) / "experiment"
-            global_baseline_dir = experiment_root / "runs" / "run-global-baseline-r2"
-            family_baseline_r1_dir = experiment_root / "runs" / "run-family-baseline-r1"
-            family_baseline_r2_dir = experiment_root / "runs" / "run-family-baseline-r2"
-            selected_run_dir = experiment_root / "runs" / "run-brief-r2"
+            global_baseline_dir = experiment_root / "runs" / "baseline" / "r002"
+            family_baseline_r1_dir = experiment_root / "runs" / "query_verbosity__baseline" / "r001"
+            family_baseline_r2_dir = experiment_root / "runs" / "query_verbosity__baseline" / "r002"
+            selected_run_dir = experiment_root / "runs" / "query_verbosity__brief" / "r002"
             for path in [global_baseline_dir, family_baseline_r1_dir, family_baseline_r2_dir, selected_run_dir]:
                 path.mkdir(parents=True)
-            selected_sample_dir = selected_run_dir / "samples" / "config_decoder_test__config_value_recovery"
-            global_baseline_sample_dir = global_baseline_dir / "samples" / "config_decoder_test__config_value_recovery"
-            family_baseline_r1_sample_dir = family_baseline_r1_dir / "samples" / "config_decoder_test__config_value_recovery"
-            family_baseline_r2_sample_dir = family_baseline_r2_dir / "samples" / "config_decoder_test__config_value_recovery"
+            selected_sample_dir = selected_run_dir / "cases" / "config_decoder_test.exe" / "config_value_recovery"
+            global_baseline_sample_dir = global_baseline_dir / "cases" / "config_decoder_test.exe" / "config_value_recovery"
+            family_baseline_r1_sample_dir = family_baseline_r1_dir / "cases" / "config_decoder_test.exe" / "config_value_recovery"
+            family_baseline_r2_sample_dir = family_baseline_r2_dir / "cases" / "config_decoder_test.exe" / "config_value_recovery"
             for path in [
                 selected_sample_dir,
                 global_baseline_sample_dir,
@@ -271,7 +397,7 @@ class LiveProgressTests(unittest.TestCase):
                         "runs": [
                             {
                                 "run_id": "run-global-baseline-r2",
-                                "run_dir": str(global_baseline_dir),
+                                "run_path": str(global_baseline_dir.relative_to(experiment_root)),
                                 "variant_id": "baseline",
                                 "replicate_index": 2,
                                 "display_label": "baseline",
@@ -281,7 +407,7 @@ class LiveProgressTests(unittest.TestCase):
                             },
                             {
                                 "run_id": "run-family-baseline-r1",
-                                "run_dir": str(family_baseline_r1_dir),
+                                "run_path": str(family_baseline_r1_dir.relative_to(experiment_root)),
                                 "variant_id": "query_verbosity__baseline",
                                 "replicate_index": 1,
                                 "display_label": "query_verbosity:baseline",
@@ -292,7 +418,7 @@ class LiveProgressTests(unittest.TestCase):
                             },
                             {
                                 "run_id": "run-family-baseline-r2",
-                                "run_dir": str(family_baseline_r2_dir),
+                                "run_path": str(family_baseline_r2_dir.relative_to(experiment_root)),
                                 "variant_id": "query_verbosity__baseline",
                                 "replicate_index": 2,
                                 "display_label": "query_verbosity:baseline",
@@ -303,7 +429,7 @@ class LiveProgressTests(unittest.TestCase):
                             },
                             {
                                 "run_id": "run-brief-r2",
-                                "run_dir": str(selected_run_dir),
+                                "run_path": str(selected_run_dir.relative_to(experiment_root)),
                                 "variant_id": "query_verbosity__brief",
                                 "replicate_index": 2,
                                 "display_label": "query_verbosity:brief",
@@ -432,7 +558,8 @@ class LiveProgressTests(unittest.TestCase):
     def test_live_view_detail_treats_budget_exceeded_terminal_state_as_non_pending(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             experiment_root = Path(temp_dir) / "experiment"
-            run_dir = experiment_root / "runs" / "run-001"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
             run_dir.mkdir(parents=True)
 
             (experiment_root / "experiment_manifest.json").write_text(
@@ -451,7 +578,7 @@ class LiveProgressTests(unittest.TestCase):
                         "runs": [
                             {
                                 "run_id": "run-001",
-                                "run_dir": str(run_dir),
+                                "run_path": run_path,
                                 "variant_id": "baseline",
                                 "display_label": "baseline",
                                 "pipeline": "auto_triage",
@@ -489,7 +616,8 @@ class LiveProgressTests(unittest.TestCase):
     def test_live_view_state_groups_runs_by_executable_using_executable_scoped_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             experiment_root = Path(temp_dir) / "experiment"
-            run_dir = experiment_root / "runs" / "run-001"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
             run_dir.mkdir(parents=True)
 
             (experiment_root / "experiment_manifest.json").write_text(
@@ -514,7 +642,7 @@ class LiveProgressTests(unittest.TestCase):
                         "runs": [
                             {
                                 "run_id": "run-001",
-                                "run_dir": str(run_dir),
+                                "run_path": run_path,
                                 "variant_id": "baseline",
                                 "display_label": "baseline",
                                 "pipeline": "auto_triage",
@@ -571,13 +699,47 @@ class LiveProgressTests(unittest.TestCase):
         self.assertEqual(inactive_card["runs"][0]["status"], "pending")
         self.assertIn("active on basic_loops_test.exe", inactive_card["runs"][0]["meta"])
 
+    def test_live_view_marks_partially_finished_executable_run_as_in_progress(self) -> None:
+        row = {
+            "run_id": "run-001",
+            "status": "running",
+            "display_label": "baseline",
+            "pipeline": "auto_triage",
+        }
+        live_status = {
+            "status": "running",
+            "current_sample": "other_sample.exe",
+            "current_task_id": "default_analysis",
+            "current_phase": "analysis",
+            "tasks": [
+                {
+                    "sample": "target_sample.exe",
+                    "task_id": "default_analysis",
+                    "sample_task_id": "target_sample.exe::default_analysis",
+                    "status": "completed",
+                },
+                {
+                    "sample": "target_sample.exe",
+                    "task_id": "config_value_recovery",
+                    "sample_task_id": "target_sample.exe::config_value_recovery",
+                    "status": "pending",
+                },
+            ],
+        }
+
+        run_row = live_progress._summarize_executable_run_row(row, live_status, "target_sample.exe")
+
+        self.assertEqual(run_row["status"], "in_progress")
+        self.assertIn("1/2 tasks finished", run_row["meta"])
+
     def test_live_view_detail_can_focus_on_selected_executable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             experiment_root = Path(temp_dir) / "experiment"
-            run_dir = experiment_root / "runs" / "run-001"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
             run_dir.mkdir(parents=True)
-            sample_a_dir = run_dir / "samples" / "basic_loops_test__default_analysis"
-            sample_b_dir = run_dir / "samples" / "maintenance_orchestrator_test__default_analysis"
+            sample_a_dir = run_dir / "cases" / "basic_loops_test.exe" / "default_analysis"
+            sample_b_dir = run_dir / "cases" / "maintenance_orchestrator_test.exe" / "default_analysis"
             sample_a_dir.mkdir(parents=True)
             sample_b_dir.mkdir(parents=True)
 
@@ -603,7 +765,7 @@ class LiveProgressTests(unittest.TestCase):
                         "runs": [
                             {
                                 "run_id": "run-001",
-                                "run_dir": str(run_dir),
+                                "run_path": run_path,
                                 "variant_id": "baseline",
                                 "display_label": "baseline",
                                 "pipeline": "auto_triage",

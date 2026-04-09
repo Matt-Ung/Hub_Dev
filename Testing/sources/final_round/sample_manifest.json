@@ -1,0 +1,340 @@
+{
+  "description": "Machine-readable metadata for the maintained final-round evaluation corpus. This is the active harness-facing manifest for the opaque sample1.exe..sample5.exe binaries built from the final_round source tree.",
+  "samples": [
+    {
+      "sample": "sample1.exe",
+      "sample_id": "sample1",
+      "difficulty": "hard",
+      "original_source_name": "Emotet",
+      "family_label": "Emotet simulation",
+      "reference_json_path": "Testing/sources/final_round/reference/sample1.json",
+      "reference_markdown_path": "Testing/sources/final_round/reference/sample1.md",
+      "primary_techniques": [
+        "anti-analysis gating",
+        "registry persistence",
+        "encoded configuration recovery",
+        "network staging",
+        "process injection"
+      ],
+      "expected_evidence": [
+        "Anti-analysis checks recovered before the main beacon / persistence flow.",
+        "Run-key persistence using Software\\Microsoft\\Windows\\CurrentVersion\\Run with value name SystemService.",
+        "Encoded configuration or C2 seed recovery tied to the WinHTTP beacon or injection path."
+      ],
+      "acceptance_targets": [
+        "Explain the anti-analysis, persistence, networking, and injection behaviors without overclaiming full real-world Emotet protocol coverage.",
+        "Anchor the report in concrete strings, config, registry, or function-level evidence.",
+        "Call out simplified or simulated behavior where the source intentionally stops short of a full loader."
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "stringmcp",
+        "flareflossmcp",
+        "CapaMCP",
+        "upxmcp",
+        "hashdbmcp",
+        "ssdeepmcp"
+      ],
+      "default_query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp",
+            "flareflossmcp",
+            "CapaMCP",
+            "upxmcp",
+            "hashdbmcp",
+            "ssdeepmcp"
+          ],
+          "expected_evidence": [
+            "Anti-analysis checks recovered before the main beacon / persistence flow.",
+            "Run-key persistence using Software\\Microsoft\\Windows\\CurrentVersion\\Run with value name SystemService.",
+            "Encoded configuration or C2 seed recovery tied to the WinHTTP beacon or injection path."
+          ],
+          "acceptance_targets": [
+            "Explain the anti-analysis, persistence, networking, and injection behaviors without overclaiming full real-world Emotet protocol coverage.",
+            "Anchor the report in concrete strings, config, registry, or function-level evidence.",
+            "Call out simplified or simulated behavior where the source intentionally stops short of a full loader."
+          ],
+          "tags": [
+            "blind_final_round",
+            "persistence",
+            "injection"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "sample2.exe",
+      "sample_id": "sample2",
+      "difficulty": "hard",
+      "original_source_name": "QakBot",
+      "family_label": "QakBot simulation",
+      "reference_json_path": "Testing/sources/final_round/reference/sample2.json",
+      "reference_markdown_path": "Testing/sources/final_round/reference/sample2.md",
+      "primary_techniques": [
+        "mode-driven execution",
+        "scheduled-task persistence",
+        "resource-backed payload staging",
+        "injection",
+        "named-pipe coordination"
+      ],
+      "expected_evidence": [
+        "Command-line mode branching rather than a single linear payload path.",
+        "Scheduled-task persistence masquerading as a Windows update task.",
+        "Resource-backed payload staging, injection into svchost.exe, or named-pipe / self-delete support logic."
+      ],
+      "acceptance_targets": [
+        "Describe the install / inject / pipe / self-delete structure without inventing missing resource data.",
+        "Identify the scheduled-task persistence and injected-process target from concrete anchors.",
+        "Explicitly note that the checked-in source lacks a backing resource blob for the staged payload."
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "stringmcp",
+        "flareflossmcp",
+        "CapaMCP",
+        "upxmcp",
+        "hashdbmcp",
+        "ssdeepmcp"
+      ],
+      "default_query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp",
+            "flareflossmcp",
+            "CapaMCP",
+            "upxmcp",
+            "hashdbmcp",
+            "ssdeepmcp"
+          ],
+          "expected_evidence": [
+            "Command-line mode branching rather than a single linear payload path.",
+            "Scheduled-task persistence masquerading as a Windows update task.",
+            "Resource-backed payload staging, injection into svchost.exe, or named-pipe / self-delete support logic."
+          ],
+          "acceptance_targets": [
+            "Describe the install / inject / pipe / self-delete structure without inventing missing resource data.",
+            "Identify the scheduled-task persistence and injected-process target from concrete anchors.",
+            "Explicitly note that the checked-in source lacks a backing resource blob for the staged payload."
+          ],
+          "tags": [
+            "blind_final_round",
+            "persistence",
+            "resource_staging"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "sample3.exe",
+      "sample_id": "sample3",
+      "difficulty": "hard",
+      "original_source_name": "TrickBot",
+      "family_label": "TrickBot simulation",
+      "reference_json_path": "Testing/sources/final_round/reference/sample3.json",
+      "reference_markdown_path": "Testing/sources/final_round/reference/sample3.md",
+      "primary_techniques": [
+        "anti-analysis",
+        "integrity checking",
+        "registry persistence",
+        "encrypted C2 recovery",
+        "post-exploitation staging"
+      ],
+      "expected_evidence": [
+        "Debugger or VM checks, including NTDLL .text integrity checking or similar anti-analysis logic.",
+        "Run-key persistence using a WindowsDefender-style value name.",
+        "Encrypted C2 seed recovery plus the HTTPS /ga/ beacon path or web-inject-style follow-on indicators."
+      ],
+      "acceptance_targets": [
+        "Explain the anti-analysis and persistence flow before the network / module path.",
+        "Tie networking claims to the encrypted server list or fixed beacon path instead of generic WinHTTP imports.",
+        "Treat browser-targeting or banking behavior as staged / simulated unless directly grounded in code or data."
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "stringmcp",
+        "flareflossmcp",
+        "CapaMCP",
+        "upxmcp",
+        "hashdbmcp",
+        "ssdeepmcp"
+      ],
+      "default_query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp",
+            "flareflossmcp",
+            "CapaMCP",
+            "upxmcp",
+            "hashdbmcp",
+            "ssdeepmcp"
+          ],
+          "expected_evidence": [
+            "Debugger or VM checks, including NTDLL .text integrity checking or similar anti-analysis logic.",
+            "Run-key persistence using a WindowsDefender-style value name.",
+            "Encrypted C2 seed recovery plus the HTTPS /ga/ beacon path or web-inject-style follow-on indicators."
+          ],
+          "acceptance_targets": [
+            "Explain the anti-analysis and persistence flow before the network / module path.",
+            "Tie networking claims to the encrypted server list or fixed beacon path instead of generic WinHTTP imports.",
+            "Treat browser-targeting or banking behavior as staged / simulated unless directly grounded in code or data."
+          ],
+          "tags": [
+            "blind_final_round",
+            "anti_analysis",
+            "networking"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "sample4.exe",
+      "sample_id": "sample4",
+      "difficulty": "hard",
+      "original_source_name": "WannaCry",
+      "family_label": "WannaCry simulation",
+      "reference_json_path": "Testing/sources/final_round/reference/sample4.json",
+      "reference_markdown_path": "Testing/sources/final_round/reference/sample4.md",
+      "primary_techniques": [
+        "killswitch gating",
+        "service persistence",
+        "worm-like SMB scanning",
+        "ransomware presentation",
+        "resource extraction"
+      ],
+      "expected_evidence": [
+        "Killswitch-domain check before the main ransomware / worm flow.",
+        "Service-based persistence with mssecsvc2.0 / Microsoft Security Center (2.0) style naming.",
+        "Ransom-note, backup-deletion, SMB propagation, or resource-extraction anchors described with any missing resource limitations called out."
+      ],
+      "acceptance_targets": [
+        "Explain both the ransomware presentation and the worm-like propagation logic.",
+        "Ground persistence and network-spread claims in concrete service, socket, or command-line evidence.",
+        "Explicitly state when component extraction is intended by the source but unsupported by missing checked-in resource blobs."
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "stringmcp",
+        "flareflossmcp",
+        "CapaMCP",
+        "upxmcp",
+        "hashdbmcp",
+        "ssdeepmcp"
+      ],
+      "default_query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp",
+            "flareflossmcp",
+            "CapaMCP",
+            "upxmcp",
+            "hashdbmcp",
+            "ssdeepmcp"
+          ],
+          "expected_evidence": [
+            "Killswitch-domain check before the main ransomware / worm flow.",
+            "Service-based persistence with mssecsvc2.0 / Microsoft Security Center (2.0) style naming.",
+            "Ransom-note, backup-deletion, SMB propagation, or resource-extraction anchors described with any missing resource limitations called out."
+          ],
+          "acceptance_targets": [
+            "Explain both the ransomware presentation and the worm-like propagation logic.",
+            "Ground persistence and network-spread claims in concrete service, socket, or command-line evidence.",
+            "Explicitly state when component extraction is intended by the source but unsupported by missing checked-in resource blobs."
+          ],
+          "tags": [
+            "blind_final_round",
+            "worming",
+            "service_persistence"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "sample5.exe",
+      "sample_id": "sample5",
+      "difficulty": "hard",
+      "original_source_name": "PlugX",
+      "family_label": "PlugX simulation",
+      "reference_json_path": "Testing/sources/final_round/reference/sample5.json",
+      "reference_markdown_path": "Testing/sources/final_round/reference/sample5.md",
+      "primary_techniques": [
+        "registry persistence",
+        "configuration decryption",
+        "runtime profile decoding",
+        "C2 heartbeat framing",
+        "plugin-style RAT behaviors"
+      ],
+      "expected_evidence": [
+        "Run-key persistence using Windows Security Monitor naming.",
+        "Decrypted configuration or XOR-decoded runtime profile supplying C2 endpoints, interval, or mutex data.",
+        "Heartbeat / plugin-dispatch behavior and the intentionally stubbed shellcode path reported accurately."
+      ],
+      "acceptance_targets": [
+        "Describe the sample as a PlugX-style RAT / sideloading simulation rather than a generic downloader.",
+        "Ground C2, mutex, and plugin claims in the decoded runtime profile or PLUGX heartbeat structures.",
+        "Explicitly note that the shellcode path is a portability stub and should not be overstated as a full implant."
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "stringmcp",
+        "flareflossmcp",
+        "CapaMCP",
+        "upxmcp",
+        "hashdbmcp",
+        "ssdeepmcp"
+      ],
+      "default_query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable as an unknown sample. Recover the main behaviors, concrete evidence anchors, anti-analysis or packing indicators, and any persistence, networking, or process-execution behavior while clearly separating supported findings from uncertainty.",
+          "target_tools": [
+            "ghidramcp",
+            "stringmcp",
+            "flareflossmcp",
+            "CapaMCP",
+            "upxmcp",
+            "hashdbmcp",
+            "ssdeepmcp"
+          ],
+          "expected_evidence": [
+            "Run-key persistence using Windows Security Monitor naming.",
+            "Decrypted configuration or XOR-decoded runtime profile supplying C2 endpoints, interval, or mutex data.",
+            "Heartbeat / plugin-dispatch behavior and the intentionally stubbed shellcode path reported accurately."
+          ],
+          "acceptance_targets": [
+            "Describe the sample as a PlugX-style RAT / sideloading simulation rather than a generic downloader.",
+            "Ground C2, mutex, and plugin claims in the decoded runtime profile or PLUGX heartbeat structures.",
+            "Explicitly note that the shellcode path is a portability stub and should not be overstated as a full implant."
+          ],
+          "tags": [
+            "blind_final_round",
+            "rat",
+            "config_recovery"
+          ]
+        }
+      ]
+    }
+  ]
+}

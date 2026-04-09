@@ -35,6 +35,22 @@ ARTIFACT_TYPE_DEFAULT_EXTENSIONS: Dict[str, str] = {
     "ghidra": "",
 }
 
+TOOL_OUTPUT_DEFAULTS: Dict[str, Path] = {
+    "binwalk": Path("reports") / "binwalk",
+    "gitleaks": Path("reports") / "gitleaks",
+    "upx": Path("reports") / "upx",
+    "binary_patch": Path("reports") / "binary_patch",
+    "trivy": Path("reports") / "trivy",
+}
+
+TOOL_OUTPUT_ENV_OVERRIDES: Dict[str, str] = {
+    "binwalk": "BINWALK_OUTPUT_DIR",
+    "gitleaks": "GITLEAKS_OUTPUT_DIR",
+    "upx": "UPX_OUTPUT_DIR",
+    "binary_patch": "BINARY_PATCH_OUTPUT_DIR",
+    "trivy": "TRIVY_CACHE_DIR",
+}
+
 _SAFE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -50,7 +66,19 @@ def _resolve_path(raw_path: str, *, base: Path) -> Path:
     candidate = Path(os.path.expandvars(os.path.expanduser(str(raw_path).strip())))
     if not candidate.is_absolute():
         candidate = base / candidate
-    return candidate.resolve()
+    return candidate.resolve(strict=False)
+
+
+def _ensure_within_root(candidate: Path, *, root: Path, label: str) -> Path:
+    resolved_root = Path(root).resolve(strict=False)
+    resolved_candidate = Path(candidate).resolve(strict=False)
+    try:
+        resolved_candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} must stay under the configured root {resolved_root}; got {resolved_candidate}"
+        ) from exc
+    return resolved_candidate
 
 
 def _sanitize_component(value: str, default: str) -> str:
@@ -70,16 +98,19 @@ def get_agent_artifact_root() -> Path:
     raw = str(os.environ.get("AGENT_ARTIFACT_DIR") or "").strip()
     if raw:
         return _resolve_path(raw, base=REPO_ROOT)
-    return DEFAULT_AGENT_ARTIFACT_DIR.resolve()
+    return DEFAULT_AGENT_ARTIFACT_DIR.resolve(strict=False)
 
 
 def get_agent_artifact_dir(artifact_type: str) -> Path:
     normalized = _normalize_artifact_type(artifact_type)
+    artifact_root = get_agent_artifact_root()
     override_env = ARTIFACT_TYPE_ENV_OVERRIDES[normalized]
     override_raw = str(os.environ.get(override_env) or "").strip()
     if override_raw:
-        return _resolve_path(override_raw, base=REPO_ROOT)
-    return (get_agent_artifact_root() / ARTIFACT_TYPE_DEFAULTS[normalized]).resolve()
+        candidate = _resolve_path(override_raw, base=artifact_root)
+        return _ensure_within_root(candidate, root=artifact_root, label=override_env)
+    candidate = artifact_root / ARTIFACT_TYPE_DEFAULTS[normalized]
+    return _ensure_within_root(candidate, root=artifact_root, label=f"{normalized} artifact directory")
 
 
 def ensure_agent_artifact_dir(artifact_type: str) -> Path:
@@ -97,9 +128,11 @@ def resolve_agent_artifact_path(
     subdir: str = "",
 ) -> Path:
     normalized = _normalize_artifact_type(artifact_type)
+    artifact_root = get_agent_artifact_root()
     directory = ensure_agent_artifact_dir(normalized)
     for part in _sanitize_subdir_parts(subdir):
         directory = directory / part
+    directory = _ensure_within_root(directory, root=artifact_root, label=f"{normalized} artifact subdir")
     directory.mkdir(parents=True, exist_ok=True)
 
     candidate = str(filename or "").strip()
@@ -119,7 +152,11 @@ def resolve_agent_artifact_path(
         extension = suffix
     if extension and not extension.startswith("."):
         extension = "." + extension
-    return (directory / f"{stem}{extension}").resolve()
+    return _ensure_within_root(
+        directory / f"{stem}{extension}",
+        root=artifact_root,
+        label=f"{normalized} artifact path",
+    )
 
 
 def list_agent_artifact_dirs() -> Dict[str, str]:
@@ -137,5 +174,47 @@ def get_base_yara_rules_dir() -> Path:
     if raw:
         return _resolve_path(raw, base=REPO_ROOT)
     if PREFERRED_YARA_RULES_DIR.exists():
-        return PREFERRED_YARA_RULES_DIR.resolve()
-    return LEGACY_YARA_RULES_DIR.resolve()
+        return PREFERRED_YARA_RULES_DIR.resolve(strict=False)
+    return LEGACY_YARA_RULES_DIR.resolve(strict=False)
+
+
+def _normalize_tool_name(tool_name: str) -> str:
+    normalized = str(tool_name or "").strip().lower()
+    if normalized not in TOOL_OUTPUT_DEFAULTS:
+        allowed = ", ".join(sorted(TOOL_OUTPUT_DEFAULTS))
+        raise ValueError(f"unknown tool output scope {tool_name!r}; expected one of: {allowed}")
+    return normalized
+
+
+def get_tool_output_root(tool_name: str) -> Path:
+    normalized = _normalize_tool_name(tool_name)
+    artifact_root = get_agent_artifact_root()
+    env_name = TOOL_OUTPUT_ENV_OVERRIDES[normalized]
+    raw = str(os.environ.get(env_name) or "").strip()
+    if raw:
+        candidate = _resolve_path(raw, base=artifact_root)
+        return _ensure_within_root(candidate, root=artifact_root, label=env_name)
+    candidate = artifact_root / TOOL_OUTPUT_DEFAULTS[normalized]
+    return _ensure_within_root(candidate, root=artifact_root, label=f"{normalized} output root")
+
+
+def ensure_tool_output_root(tool_name: str) -> Path:
+    directory = get_tool_output_root(tool_name)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def resolve_tool_output_path(tool_name: str, raw_path: str) -> Path:
+    value = str(raw_path or "").strip()
+    if not value:
+        raise ValueError("output_path is required")
+    root = ensure_tool_output_root(tool_name)
+    candidate = _resolve_path(value, base=root)
+    return _ensure_within_root(candidate, root=root, label=f"{tool_name} output path")
+
+
+def describe_tool_output_root(tool_name: str) -> str:
+    try:
+        return str(get_tool_output_root(tool_name))
+    except Exception as exc:
+        return f"<invalid configuration: {exc}>"

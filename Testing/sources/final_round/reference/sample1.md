@@ -1,0 +1,137 @@
+# sample1.exe Reference
+
+- Final filename: `sample1.exe`
+- Original source sample: `Emotet`
+- Family label (evaluator-side only): `Emotet simulation`
+- Platform / architecture: `windows` / `x86_64`
+- Build mode: `release`
+- Stripped: `true`
+- Packed: `true`
+- Final artifact path: `output/sample1.exe`
+- SHA256: populated after the final build if you add hashes manually
+
+## Intended Simulation
+Modular loader / downloader / injector with anti-analysis, registry persistence, RC4-style encoded configuration, API-hash scaffolding, module dispatch, and process-hollowing-style execution.
+
+## Major Observable Capabilities
+- Early anti-analysis checks using debugger detection, debugger-window enumeration, Toolhelp-based analyst-process enumeration, and timing-based VM heuristics.
+- Registry Run-key persistence under Software\Microsoft\Windows\CurrentVersion\Run with value name SystemService.
+- Encoded C2 seed list stored as DWORDs and decoded at runtime through the helper in Emotet/utils.cpp.
+- RC4-style embedded configuration blob that carries c2, sleep, campaign, and install metadata.
+- FNV-1a API-hash resolver over kernel32 exports, including forwarded export handling.
+- HTTP POST beaconing via WinHTTP to a fixed /mult/vermont/odbc path using campaign and install-path host-information fields.
+- Suspended-process injection flow targeting C:\Windows\System32\svchost.exe -k netsvcs.
+- Explicit recovered-module dispatch that stages spam / Outlook / credential / spreader-oriented follow-on behavior.
+
+## Important Limitations
+- The sample now decrypts an embedded config blob, but the network protocol remains simplified and does not implement full Emotet session-key exchange or protobuf handling.
+- Only three encoded C2 seeds are present in config.h.
+- Module handling is simulated through raw response buffering and injection rather than a full reflective DLL loader.
+
+## Judge-Facing Ground Truth
+### Must-Hit Anchors
+- Run-key persistence at `Software\Microsoft\Windows\CurrentVersion\Run` with value name `SystemService`.
+- Fixed WinHTTP request path `/mult/vermont/odbc` plus campaign/install metadata recovered from the embedded config.
+- Encoded C2 seed or RC4-style config recovery tied to `DecodeEmbeddedConfig()` or `ENCODED_C2_LIST`.
+- Suspended `svchost.exe -k netsvcs` target used by `InjectModule()`.
+
+### Supported High-Confidence Claims
+- Anti-analysis checks gate execution before persistence or networking.
+- User Run-key persistence is implemented.
+- WinHTTP POST beaconing with simplified campaign-bearing host information is implemented.
+- Remote-memory execution / process-hollowing-style injection into `svchost.exe` is implemented.
+- Recovered-module dispatch is staged, but module bodies are not fully realized.
+
+### Limitations To Respect
+- Do not treat the network logic as full real-world Emotet protocol coverage; the source does not implement session-key exchange or protobuf handling.
+- Only three encoded C2 seeds are present in `config.h`.
+- Module handling is simulated through response buffering and injection rather than a full reflective DLL loader.
+
+### Do Not Overclaim
+- Do not claim full real-world Emotet protocol handling, session-key exchange, or protobuf traffic.
+- Do not claim a full reflective DLL loader or fully implemented secondary module payloads.
+- Do not describe family attribution as runtime-visible ground truth; the final filename is intentionally opaque.
+
+## Static Analysis Reference
+### Strings / anchors
+- `Software\Microsoft\Windows\CurrentVersion\Run`
+- `SystemService`
+- `OllyDbg`
+- `WinDbgFrameClass`
+- `x64dbg`
+- `C:\Windows\System32\svchost.exe -k netsvcs`
+- `/mult/vermont/odbc`
+- `Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 10.0; Trident/4.0)`
+- `Software\Microsoft\Office\16.0\Outlook\Profiles`
+- `EmotetCampaign`
+
+### Encoded config / embedded data
+- ENCODED_C2_LIST DWORD array in Emotet/config.h.
+- EMOTET_RC4_KEY / EMOTET_ENC_CONFIG embedded config blob in Emotet/config.h.
+- XOR_KEY byte array in Emotet/config.h.
+- String decoder pattern, MBA decode helper, and FNV-1a API hash resolver in Emotet/utils.cpp.
+
+### Resources / embedded components
+- No .rc file or external resource payload is present in this source tree.
+
+### Imports / runtime clues
+- Native Win32 C++ sample using WinHTTP, registry APIs, process creation, thread-context manipulation, VirtualAllocEx, and WriteProcessMemory.
+- No .NET or script runtime is present in the source tree.
+
+## Relationship Reference
+### Related Files
+- Emotet/main.cpp
+- Emotet/utils.cpp
+- Emotet/config.h
+
+### Config Files
+- Emotet/config.h
+
+### Dropped Or Generated Artifacts
+- Registry Run value SystemService referencing the running executable path.
+
+### Loader Payload Helper Relationships
+- main.cpp drives persistence, C2 loop, recovered-module dispatch, and injection flow.
+- utils.cpp provides debugger / VM heuristics, analyst-process checks, RC4 config decode, and API-hash helpers.
+- config.h holds encoded constants and module IDs.
+
+## Reporting Reference
+### Executive Summary Points
+- Anti-analysis gates execution before persistence or networking.
+- Persistence is implemented through a user Run key named SystemService.
+- Networking logic uses WinHTTP POST traffic to a fixed Emotet-like path and stages a campaign-bearing host-information payload from decrypted config values.
+- The sample attempts process hollowing / remote-memory execution against svchost.exe.
+
+### Expected Functionality Sections
+- anti-analysis and sandbox evasion
+- persistence
+- C2 configuration and networking
+- process injection / module execution
+
+### Detection Opportunities
+- Registry Run-value creation with name SystemService.
+- Fixed path /mult/vermont/odbc in HTTP requests.
+- Debugger-window class strings and svchost.exe -k netsvcs command line.
+
+## Optional Detection Reference
+### Candidate Yara Features
+- SystemService
+- /mult/vermont/odbc
+- svchost.exe -k netsvcs
+- OllyDbg
+- WinDbgFrameClass
+- x64dbg
+
+### Candidate Sigma Behaviors
+- Registry Run-key creation for HKCU\Software\Microsoft\Windows\CurrentVersion\Run with value name SystemService.
+- Suspended-process creation followed by remote-memory write into svchost.exe.
+
+## Grounding
+- `Emotet/main.cpp` :: `WinMain` supports anti-analysis flow, registry persistence, C2 loop.
+- `Emotet/main.cpp` :: `DownloadModules` supports WinHTTP beacon, fixed POST path, response handling.
+- `Emotet/main.cpp` :: `DispatchRecoveredModules` supports module dispatch staging, secondary registry / event artifacts.
+- `Emotet/main.cpp` :: `InjectModule` supports remote process injection, suspended process creation.
+- `Emotet/utils.cpp` :: `DecodeEmbeddedConfig` supports RC4 config blob, campaign/install metadata.
+- `Emotet/utils.cpp` :: `ResolveKernel32ApiByHash` supports FNV-1a API-hash resolution.
+- `Emotet/utils.cpp` :: `IsDebuggerPresent_Emotet` supports debugger detection.
+- `Emotet/utils.cpp` :: `IsHypervisorOverhead` supports timing-based VM heuristic.

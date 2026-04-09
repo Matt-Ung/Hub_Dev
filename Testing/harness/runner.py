@@ -35,21 +35,28 @@ from .budgeting import (
     summarize_record_budget,
 )
 from .building import build_corpus
-from .lineage import compute_lineage_id, normalize_run_lineage_payload, refresh_lineage_index_for_run
-from .paths import BUNDLE_ROOT, RESULTS_ROOT, RUNS_ROOT, build_run_id, ensure_dir, read_json, write_json
+from .config_groups import compute_config_group_id, normalize_run_config_group_payload
+from .paths import BUNDLE_ROOT, build_run_id, ensure_dir, read_json, write_json
 from .preflight import validate_run_configuration
 from .query_variants import apply_query_variant
 from .result_layout import build_run_output_layout
+from .result_store import ensure_task_case_dir, run_log_path, run_logs_root, standalone_run_dir, task_log_path
 from .reporting import aggregate_records, build_sample_record, write_markdown_report, write_summary_csv
 from .samples import (
     build_evaluation_tasks,
     get_corpus_config,
     list_sample_binaries,
     load_sample_manifest,
+    model_visible_sample_metadata,
     normalize_sample_task_key,
     resolve_sample_metadata,
     sample_slug,
 )
+
+
+_RUN_LOG_LOCK = threading.Lock()
+_RUN_LOG_PATH: Path | None = None
+_CURRENT_TASK_LOG_PATH: Path | None = None
 
 
 def _parse_metadata(values: List[str]) -> Dict[str, str]:
@@ -59,7 +66,7 @@ def _parse_metadata(values: List[str]) -> Dict[str, str]:
       - values: CLI metadata fragments in `key=value` form.
     Description:
       Normalize optional run metadata flags into the dictionary stored in the
-      run manifest and lineage records.
+  run manifest and stable config-group metadata.
     Outputs:
       Returns a dictionary of parsed metadata entries. Malformed fragments are
       ignored instead of aborting the run.
@@ -90,7 +97,39 @@ def _emit_progress(message: str) -> None:
     Side Effects:
       Writes one line to stderr.
     """
-    print(f"[eval] {message}", file=sys.stderr, flush=True)
+    rendered = f"[eval] {message}"
+    print(rendered, file=sys.stderr, flush=True)
+    timestamped = time.strftime("%Y-%m-%d %H:%M:%S") + f" {rendered}\n"
+    with _RUN_LOG_LOCK:
+        if _RUN_LOG_PATH is not None:
+            ensure_dir(_RUN_LOG_PATH.parent)
+            with _RUN_LOG_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(timestamped)
+        if _CURRENT_TASK_LOG_PATH is not None:
+            ensure_dir(_CURRENT_TASK_LOG_PATH.parent)
+            with _CURRENT_TASK_LOG_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(timestamped)
+
+
+def _configure_run_logging(run_dir: Path) -> None:
+    global _RUN_LOG_PATH, _CURRENT_TASK_LOG_PATH
+    _RUN_LOG_PATH = run_log_path(run_dir)
+    _CURRENT_TASK_LOG_PATH = None
+    ensure_dir(run_logs_root(run_dir))
+    _RUN_LOG_PATH.write_text("", encoding="utf-8")
+
+
+def _set_task_log_context(run_dir: Path, sample_name: str, task_id: str) -> None:
+    global _CURRENT_TASK_LOG_PATH
+    _CURRENT_TASK_LOG_PATH = task_log_path(run_dir, sample_name, task_id)
+    ensure_dir(_CURRENT_TASK_LOG_PATH.parent)
+    if not _CURRENT_TASK_LOG_PATH.exists():
+        _CURRENT_TASK_LOG_PATH.write_text("", encoding="utf-8")
+
+
+def _clear_task_log_context() -> None:
+    global _CURRENT_TASK_LOG_PATH
+    _CURRENT_TASK_LOG_PATH = None
 
 
 def _write_live_status(run_dir: Path, payload: Dict[str, Any]) -> None:
@@ -229,26 +268,25 @@ def _heartbeat(message: str, interval_sec: int = 30):
         stop.set()
         thread.join(timeout=1)
 
-
+"""
+Function: main
+Inputs:
+  - argv: optional explicit argument list. When omitted, arguments are read
+    from the process command line.
+Description:
+  Execute the canonical single-run harness workflow: resolve scope, perform
+  preflight, run analysis and judging, aggregate records, and write the run
+  outputs used by later experiment comparison.
+Outputs:
+  Returns nothing. Exits with an error if required inputs are invalid or if
+  the run cannot be completed.
+Side Effects:
+  May build binaries, prepare bundles, invoke the runtime and judge models,
+  write run artifacts, and update live-progress state.
+"""
 def main(argv: List[str] | None = None) -> None:
-    """
-    Function: main
-    Inputs:
-      - argv: optional explicit argument list. When omitted, arguments are read
-        from the process command line.
-    Description:
-      Execute the canonical single-run harness workflow: resolve scope, perform
-      preflight, run analysis and judging, aggregate records, and write the run
-      outputs used by later experiment comparison.
-    Outputs:
-      Returns nothing. Exits with an error if required inputs are invalid or if
-      the run cannot be completed.
-    Side Effects:
-      May build binaries, prepare bundles, invoke the runtime and judge models,
-      write run artifacts, and update live-progress state.
-    """
     parser = argparse.ArgumentParser(description="Unified testing workflow: build -> prepare bundles -> run agent -> judge -> aggregate")
-    parser.add_argument("--corpus", choices=["prototype", "experimental"], default="experimental")
+    parser.add_argument("--corpus", choices=["prototype", "experimental", "final_round"], default="experimental")
     parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict to")
     parser.add_argument("--task", action="append", default=[], help="Optional task id(s) to restrict to when the sample manifest defines multiple evaluation tasks")
     parser.add_argument("--sample-task-key", action="append", default=[], help="Optional exact sample::task key(s) to restrict the run to, for example config_decoder_test::config_value_recovery or config_decoder_test.exe::config_value_recovery")
@@ -268,6 +306,7 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--force-model", default="", help="Optional model ID to force across the run")
     parser.add_argument("--label", default="", help="Optional short label for this run")
     parser.add_argument("--run-id", default="", help="Optional explicit run id override. Used by sweep live-view mode to create a predictable run directory.")
+    parser.add_argument("--run-root", default="", help="Optional explicit run directory. Sweep child runs use this to store raw outputs inside the experiment root.")
     parser.add_argument("--experiment-id", default="", help="Optional experiment sweep identifier")
     parser.add_argument("--variant-name", default="", help="Optional experiment variant name")
     parser.add_argument("--changed-variable", default="", help="Optional changed variable label for sweep runs")
@@ -301,8 +340,10 @@ def main(argv: List[str] | None = None) -> None:
     config = get_corpus_config(args.corpus)
     manifest = load_sample_manifest(args.corpus)
     run_id = str(args.run_id or "").strip() or build_run_id("eval", args.corpus, args.label)
-    run_dir = ensure_dir(RUNS_ROOT / run_id)
-    sample_root = ensure_dir(run_dir / "samples")
+    run_root_override = str(args.run_root or "").strip()
+    run_dir = ensure_dir(Path(run_root_override).expanduser().resolve()) if run_root_override else ensure_dir(standalone_run_dir(run_id))
+    ensure_dir(run_dir / "cases")
+    _configure_run_logging(run_dir)
 
     # Tutorial 5.3 in multi_agent_wf/extension_tutorial.md: mirror any new
     # env-driven workflow knob here so single runs and sweep child runs use the
@@ -316,8 +357,8 @@ def main(argv: List[str] | None = None) -> None:
         os.environ.pop("DEEP_FORCE_MODEL_ID", None)
 
     # This manifest becomes the source-of-truth for the run configuration, so
-    # later records, lineage state, and experiment summaries can all trace back
-    # to the exact same normalized knob set.
+    # later records and experiment summaries can all trace back to the exact
+    # same normalized knob set.
     run_metadata: Dict[str, Any] = {
         "run_id": run_id,
         "corpus": args.corpus,
@@ -337,6 +378,10 @@ def main(argv: List[str] | None = None) -> None:
         "judge_mode": args.judge_mode,
         "judge_model": str(args.judge_model or os.environ.get("EVAL_JUDGE_MODEL") or "").strip(),
         "label": args.label,
+        "storage_layout_version": "results_v2",
+        "run_root": str(run_dir),
+        "cases_root": str(run_dir / "cases"),
+        "logs_root": str(run_logs_root(run_dir)),
         "experiment_id": str(args.experiment_id or "").strip(),
         "variant_name": str(args.variant_name or "").strip(),
         "changed_variable": str(args.changed_variable or "").strip(),
@@ -351,8 +396,8 @@ def main(argv: List[str] | None = None) -> None:
         "selected_difficulties": args.difficulty_filter,
         "enable_budget_guardrails": bool(args.enable_budget_guardrails),
     }
-    run_metadata["config_lineage_id"] = compute_lineage_id(run_metadata)
-    run_metadata["config_lineage_key"] = normalize_run_lineage_payload(run_metadata)
+    run_metadata["config_lineage_id"] = compute_config_group_id(run_metadata)
+    run_metadata["config_lineage_key"] = normalize_run_config_group_payload(run_metadata)
     budget_config = resolve_budget_config(
         enable_budget_guardrails=bool(args.enable_budget_guardrails),
         max_run_input_tokens=args.max_run_input_tokens,
@@ -383,6 +428,7 @@ def main(argv: List[str] | None = None) -> None:
         "preflight_ok": None,
     }
     _write_live_status(run_dir, live_status)
+    _emit_progress(f"Run initialized at {run_dir}")
 
     build_record: Dict[str, Any] = {"skipped": True}
     live_status.update(
@@ -413,7 +459,7 @@ def main(argv: List[str] | None = None) -> None:
     run_metadata["selected_samples"] = selected_samples
     sample_paths = list_sample_binaries(args.corpus, selected=selected_samples, difficulty_filters=args.difficulty_filter, manifest=manifest)
     if not sample_paths:
-        raise SystemExit(f"No built sample binaries found for corpus={args.corpus} under {config.build_root}")
+        raise SystemExit(f"No built sample binaries found for corpus={args.corpus} under {config.binary_root}")
     evaluation_tasks = build_evaluation_tasks(
         args.corpus,
         sample_paths,
@@ -586,14 +632,14 @@ def main(argv: List[str] | None = None) -> None:
     for task_index, task in enumerate(evaluation_tasks, start=1):
         sample_path = task.sample_path
         slug = sample_slug(sample_path)
-        task_slug = f"{slug}__{task.task_id}"
-        sample_dir = ensure_dir(sample_root / task_slug)
+        sample_dir = ensure_task_case_dir(run_dir, sample_path.name, task.task_id)
         sample_meta = resolve_sample_metadata(args.corpus, sample_path.name, manifest=manifest)
+        visible_sample_meta = model_visible_sample_metadata(sample_meta)
         bundle_dir = bundle_root / slug
         bundle_manifest = read_json(bundle_dir / "bundle_manifest.json") if (bundle_dir / "bundle_manifest.json").exists() else {}
 
         base_query = str(args.query or "").strip() or str(task.query or "").strip()
-        effective_query = apply_query_variant(base_query, sample_meta, run_metadata["query_variant"])
+        effective_query = apply_query_variant(base_query, visible_sample_meta, run_metadata["query_variant"])
         live_status.update(
             {
                 "stage": "analysis",
@@ -607,6 +653,7 @@ def main(argv: List[str] | None = None) -> None:
         )
         live_status["tasks"][task_index - 1]["status"] = "running"
         _write_live_status(run_dir, live_status)
+        _set_task_log_context(run_dir, sample_path.name, task.task_id)
         _emit_progress(
             f"[{task_index}/{len(evaluation_tasks)}] Starting analysis for {sample_path.name} :: {task.task_id}"
         )
@@ -856,7 +903,9 @@ def main(argv: List[str] | None = None) -> None:
             )
             _write_live_status(run_dir, live_status)
             _emit_progress(progress_message)
+            _clear_task_log_context()
             break
+        _clear_task_log_context()
 
     live_status.update(
         {
@@ -878,14 +927,7 @@ def main(argv: List[str] | None = None) -> None:
     aggregate["budget_limit_reached"] = run_budget_triggered or not bool(run_budget_status.get("ok", True))
     aggregate["budget_warning_triggered"] = bool(run_budget_status.get("warnings"))
     write_json(run_dir / "aggregate.json", aggregate)
-    lineage_payload = refresh_lineage_index_for_run(
-        run_dir=run_dir,
-        run_manifest=run_metadata,
-        aggregate=aggregate,
-    )
     aggregate["config_lineage_id"] = run_metadata.get("config_lineage_id")
-    aggregate["config_lineage_path"] = str((RESULTS_ROOT / "lineages" / f"{run_metadata.get('config_lineage_id')}.json").resolve())
-    aggregate["config_lineage_run_count"] = lineage_payload.get("run_count")
     write_json(run_dir / "aggregate.json", aggregate)
     write_summary_csv(run_dir / "summary.csv", records, run_metadata)
     write_markdown_report(run_dir / "report.md", aggregate)

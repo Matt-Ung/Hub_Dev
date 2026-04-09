@@ -1,10 +1,24 @@
+"""
+File: launch_presets.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Resolve named operational presets into concrete harness commands.
+
+Summary:
+  This module loads folder-based preset definitions from
+  `Testing/config/presets/*.json`, validates preset lookups, and expands one
+  preset into the exact `run_evaluation.py` or `run_experiment_sweep.py`
+  command that will be executed.
+"""
+
 from __future__ import annotations
 
 import os
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .paths import CONFIG_ROOT, read_json, repo_python_executable
+from .paths import CONFIG_ROOT, REPO_ROOT, read_json, repo_python_executable
 
 
 _COMMON_FLAG_FIELDS: tuple[tuple[str, str], ...] = (
@@ -47,10 +61,43 @@ _EXPERIMENT_BUDGET_FLAG_FIELDS: tuple[tuple[str, str], ...] = (
 
 
 def load_launch_presets() -> Dict[str, Any]:
-    path = CONFIG_ROOT / "launch_presets.json"
-    if not path.exists():
-        return {"version": "launch_presets_v1", "presets": {}}
-    return read_json(path)
+    preset_dir = CONFIG_ROOT / "presets"
+    presets: Dict[str, Any] = {}
+    if not preset_dir.exists():
+        return {"version": "launch_presets_v3", "preset_dir": str(preset_dir), "presets": {}}
+    for path in sorted(preset_dir.glob("*.json")):
+        raw = read_json(path)
+        if not isinstance(raw, dict):
+            raise ValueError(f"Preset file {path} must contain a JSON object")
+        name = str(raw.get("name") or path.stem).strip()
+        if not name:
+            raise ValueError(f"Preset file {path} must define a non-empty preset name")
+        if name in presets:
+            raise ValueError(f"Duplicate launch preset name {name!r} in {path}")
+        preset = dict(raw)
+        preset["name"] = name
+        preset["_preset_path"] = str(path.resolve())
+        try:
+            preset_rel_path = str(path.resolve().relative_to(REPO_ROOT.resolve()))
+        except Exception:
+            preset_rel_path = str(path.resolve())
+        preset["_preset_rel_path"] = preset_rel_path
+        runner = str(preset.get("runner") or "sweep").strip().lower()
+        if (
+            runner == "sweep"
+            and not str(preset.get("config") or "").strip()
+            and isinstance(preset.get("baseline"), dict)
+            and isinstance(preset.get("sweeps"), list)
+        ):
+            # A sweep preset can use its own preset file as the sweep config
+            # because the sweep loader only consumes the run-planning fields.
+            preset["config"] = preset_rel_path
+        presets[name] = preset
+    return {
+        "version": "launch_presets_v3",
+        "preset_dir": str(preset_dir.resolve()),
+        "presets": presets,
+    }
 
 
 def resolve_launch_preset(name: str) -> Dict[str, Any]:
@@ -94,6 +141,22 @@ def _append_flag(command: List[str], flag: str, value: Any) -> None:
     command.extend([flag, str(value)])
 
 
+"""
+Function: build_launch_preset_command
+Inputs:
+  - preset_name: configured preset identifier from
+    `Testing/config/presets/*.json`.
+  - explicit_judge_model and the remaining keyword arguments: wrapper-level
+    overrides that should be applied when expanding the preset.
+Description:
+  Convert one launch preset plus any runtime overrides into the exact command
+  line that will launch the maintained single-run or sweep workflow.
+Outputs:
+  Returns the command as a list of argv strings.
+Side Effects:
+  Reads launch-preset config and environment variables to resolve the final
+  command shape.
+"""
 def build_launch_preset_command(
     preset_name: str,
     *,
@@ -113,9 +176,9 @@ def build_launch_preset_command(
     preset = resolve_launch_preset(preset_name)
     runner = str(preset.get("runner") or "sweep").strip().lower()
     if runner == "sweep":
-        script = "Testing/run_experiment_sweep.py"
+        script = "Testing/scripts/run_experiment_sweep.py"
     elif runner == "single_run":
-        script = "Testing/run_evaluation.py"
+        script = "Testing/scripts/run_evaluation.py"
     else:
         raise ValueError(f"Unsupported preset runner {runner!r} for preset {preset_name!r}")
 

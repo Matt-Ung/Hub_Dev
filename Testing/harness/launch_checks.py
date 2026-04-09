@@ -1,3 +1,17 @@
+"""
+File: launch_checks.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Compute reusable launch-readiness reports for the testing harness.
+
+Summary:
+  This module contains the machine-readable checks used by the launch doctor
+  and preset preflight paths. It inspects bundle completeness, projected sweep
+  scope, Python/module availability, and environment state without starting a
+  paid evaluation run.
+"""
+
 from __future__ import annotations
 
 import os
@@ -7,13 +21,13 @@ import site
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from .artifacts import inspect_corpus_bundles
+from .artifacts import _resolve_java_home, inspect_corpus_bundles
 from .budgeting import evaluate_projected_experiment_budget, project_experiment_budget, resolve_budget_config
 from .experiment_sweep import _build_run_plan, _load_experiment_config
 from .launch_presets import resolve_launch_preset
 from .paths import BUNDLE_ROOT, repo_python_executable
 from .preflight import _module_available_in_python
-from .samples import build_evaluation_tasks, list_sample_binaries, load_sample_manifest
+from .samples import build_evaluation_tasks, build_planned_evaluation_tasks, list_sample_binaries, load_sample_manifest
 
 
 def _projection_ceiling_comparison(projection: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
@@ -82,6 +96,22 @@ def _expected_sample_names(manifest: Dict[str, Any], selected_samples: Iterable[
     return selected
 
 
+"""
+Function: build_bundle_integrity_report
+Inputs:
+  - corpus_name: logical corpus identifier.
+  - selected_samples / selected_task_ids / selected_difficulties: optional
+    narrowing filters.
+  - bundle_root: optional explicit bundle root override.
+Description:
+  Compare the selected corpus scope against built binaries and prepared bundle
+  directories to determine whether the scope is ready and fresh for analysis.
+Outputs:
+  Returns a dictionary containing missing binaries, stale or incomplete bundle
+  details, task counts, and an overall readiness flag.
+Side Effects:
+  Reads corpus manifests, build outputs, and bundle directories from disk.
+"""
 def build_bundle_integrity_report(
     *,
     corpus_name: str,
@@ -104,6 +134,12 @@ def build_bundle_integrity_report(
         corpus_name,
         sample_paths,
         manifest=manifest,
+        selected_task_ids=selected_task_ids,
+        selected_difficulties=selected_difficulties,
+    ) if sample_paths else build_planned_evaluation_tasks(
+        corpus_name,
+        manifest=manifest,
+        selected_samples=selected_samples,
         selected_task_ids=selected_task_ids,
         selected_difficulties=selected_difficulties,
     )
@@ -154,6 +190,12 @@ def build_sweep_projection_report(
         corpus_name,
         sample_paths,
         manifest=manifest,
+        selected_task_ids=selected_task_ids,
+        selected_difficulties=selected_difficulties,
+    ) if sample_paths else build_planned_evaluation_tasks(
+        corpus_name,
+        manifest=manifest,
+        selected_samples=selected_samples,
         selected_task_ids=selected_task_ids,
         selected_difficulties=selected_difficulties,
     )
@@ -230,6 +272,20 @@ def build_launch_preset_projection_report(
     }
 
 
+"""
+Function: resolve_launch_environment
+Inputs:
+  - explicit_judge_model: optional judge-model override that should take
+    precedence over `EVAL_JUDGE_MODEL`.
+Description:
+  Snapshot the effective Python, model, and Ghidra-related environment that
+  the harness will use when launching real runs.
+Outputs:
+  Returns a dictionary describing interpreter selection, model settings, and
+  environment-variable availability.
+Side Effects:
+  Reads environment variables and local Python installation metadata.
+"""
 def resolve_launch_environment(explicit_judge_model: str = "") -> Dict[str, Any]:
     current_python = sys.executable
     preferred_python = repo_python_executable()
@@ -240,6 +296,7 @@ def resolve_launch_environment(explicit_judge_model: str = "") -> Dict[str, Any]
     judge_model = str(explicit_judge_model or os.environ.get("EVAL_JUDGE_MODEL") or "").strip()
     forced_model = str(os.environ.get("DEEP_FORCE_MODEL_ID") or "").strip()
     effective_agent_model = forced_model or agent_model
+    detected_java_home = _resolve_java_home()
     return {
         "current_python": current_python,
         "preferred_python": preferred_python,
@@ -260,4 +317,6 @@ def resolve_launch_environment(explicit_judge_model: str = "") -> Dict[str, Any]
         "ghidra_install_dir_set": bool(str(os.environ.get("GHIDRA_INSTALL_DIR") or "").strip()),
         "ghidra_headless_set": bool(str(os.environ.get("GHIDRA_HEADLESS") or "").strip()),
         "ghidra_java_home_set": bool(str(os.environ.get("GHIDRA_JAVA_HOME") or "").strip()),
+        "detected_java_home": detected_java_home,
+        "ghidra_java_home_available": bool(detected_java_home),
     }

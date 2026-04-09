@@ -35,11 +35,12 @@ from .budgeting import (
 )
 from .building import build_corpus
 from .live_progress import start_live_view_server
-from .lineage import compute_lineage_id, load_lineage_payload, normalize_run_lineage_payload, refresh_lineage_index_for_run
+from .config_groups import compute_config_group_id, normalize_run_config_group_payload
 from .output_comparison import build_task_output_comparisons
-from .paths import BUNDLE_ROOT, CONFIG_ROOT, REPO_ROOT, RESULTS_ROOT, build_run_id, ensure_dir, read_json, repo_python_executable, slugify, write_json
+from .paths import BUNDLE_ROOT, CONFIG_ROOT, PREFLIGHT_ROOT, REPO_ROOT, RESULTS_ROOT, build_run_id, ensure_dir, read_json, repo_python_executable, slugify, write_json
 from .preflight import _module_available_in_python, validate_run_configuration
 from .result_layout import build_experiment_output_layout
+from .result_store import experiment_run_dir, run_log_path
 from .reporting import aggregate_records
 from .significance import build_significance_outputs
 from .samples import build_evaluation_tasks, get_corpus_config, list_sample_binaries, load_sample_manifest
@@ -113,6 +114,61 @@ def _resolve_force_model(run_cfg: Dict[str, Any], model_profiles: Dict[str, Any]
     if isinstance(profile, dict):
         return str(profile.get("force_model") or "").strip()
     return ""
+
+
+def _build_config_group_summary_rows(successful_runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for entry in successful_runs:
+        run_manifest = entry.get("run_manifest") if isinstance(entry.get("run_manifest"), dict) else {}
+        if not run_manifest:
+            continue
+        config_group_id = str(run_manifest.get("config_lineage_id") or "").strip()
+        if not config_group_id:
+            config_group_id = compute_config_group_id(run_manifest)
+            run_manifest["config_lineage_id"] = config_group_id
+            run_manifest["config_lineage_key"] = normalize_run_config_group_payload(run_manifest)
+            run_dir = Path(str(entry.get("run_dir") or "")).resolve() if entry.get("run_dir") else None
+            if run_dir:
+                write_json(run_dir / "run_manifest.json", run_manifest)
+        if config_group_id:
+            grouped[config_group_id].append(entry)
+
+    rows: List[Dict[str, Any]] = []
+    for config_group_id, entries in sorted(grouped.items(), key=lambda item: item[0]):
+        first_manifest = entries[0].get("run_manifest") if isinstance(entries[0].get("run_manifest"), dict) else {}
+        config_group_key = normalize_run_config_group_payload(first_manifest)
+        records: List[Dict[str, Any]] = []
+        for entry in entries:
+            aggregate = entry.get("aggregate") if isinstance(entry.get("aggregate"), dict) else {}
+            records.extend(list(aggregate.get("records") or []))
+        if not records:
+            continue
+        config_group_metadata = dict(config_group_key)
+        config_group_metadata["config_lineage_id"] = config_group_id
+        config_group_metadata["config_group_run_count"] = len(entries)
+        config_group_aggregate = aggregate_records(config_group_metadata, records)
+        rows.append(
+            {
+                "config_lineage_id": config_group_id,
+                "run_count": len(entries),
+                "records_count": len(records),
+                "overall_score_mean": config_group_aggregate.get("overall_score_mean"),
+                "task_success_rate": config_group_aggregate.get("task_success_rate"),
+                "mean_relative_cost_index": config_group_aggregate.get("mean_relative_cost_index"),
+                "mean_total_duration_sec": config_group_aggregate.get("mean_total_duration_sec"),
+                "mean_task_wall_clock_duration_sec": config_group_aggregate.get("mean_task_wall_clock_duration_sec"),
+                "corpus": config_group_key.get("corpus"),
+                "pipeline": config_group_key.get("pipeline"),
+                "architecture": config_group_key.get("architecture"),
+                "query_variant": config_group_key.get("query_variant"),
+                "worker_persona_profile": config_group_key.get("worker_persona_profile"),
+                "worker_role_prompt_mode": config_group_key.get("worker_role_prompt_mode"),
+                "selected_samples": "; ".join(config_group_key.get("selected_samples") or []),
+                "selected_tasks": "; ".join(config_group_key.get("selected_tasks") or []),
+                "selected_difficulties": "; ".join(config_group_key.get("selected_difficulties") or []),
+            }
+        )
+    return rows
 
 
 def _build_run_plan(
@@ -212,6 +268,7 @@ def _parse_completion_payload(stdout: str) -> Dict[str, Any]:
 
 def _planned_run_instance(
     *,
+    experiment_root: Path | None = None,
     experiment_id: str,
     corpus_name: str,
     run_cfg: Dict[str, Any],
@@ -228,9 +285,11 @@ def _planned_run_instance(
         display_label = f"{changed_variable}:baseline"
     else:
         display_label = f"{changed_variable}:{variant_name}"
+    resolved_experiment_root = Path(experiment_root).expanduser() if experiment_root is not None else (RESULTS_ROOT / "experiments" / experiment_id)
     run_id = f"eval-{slugify(corpus_name)}-{slugify(experiment_id)}-{slugify(variant_id)}-r{int(repetition_index)}"
-    run_dir = RESULTS_ROOT / "runs" / run_id
-    log_path = live_logs_dir / f"{run_id}.log" if live_logs_dir is not None else None
+    run_dir = experiment_run_dir(resolved_experiment_root, variant_id, repetition_index)
+    log_path = run_log_path(run_dir)
+    run_path = str(run_dir.relative_to(resolved_experiment_root))
     return {
         "variant_id": variant_id,
         "variant_name": variant_name,
@@ -246,8 +305,10 @@ def _planned_run_instance(
         "ok": None,
         "run_id": run_id,
         "run_dir": str(run_dir),
+        "run_path": run_path,
         "live_status_path": str(run_dir / "live_status.json"),
-        "log_path": str(log_path) if log_path is not None else "",
+        "log_path": str(log_path),
+        "log_rel_path": str(log_path.relative_to(resolved_experiment_root)),
         "pipeline": str(run_cfg.get("pipeline") or ""),
         "architecture": str(run_cfg.get("architecture") or ""),
         "query_variant": str(run_cfg.get("query_variant") or ""),
@@ -285,6 +346,49 @@ def _write_rows_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+"""
+Function: _resolve_sweep_root
+Inputs:
+  - corpus_name: logical corpus name used for the sweep.
+  - label: optional researcher-supplied label suffix.
+  - resume_path: optional existing experiment directory or experiment id.
+  - preflight_only: whether the sweep should stop after readiness checks.
+Description:
+  Choose the root directory that will own this sweep's artifacts. Real runs
+  live under `Testing/results/experiments`, while `--preflight-only` writes
+  into `Testing/results/preflight` so planning scaffolds do not pollute the
+  active experiments folder.
+Outputs:
+  Returns the resolved root directory path for the sweep or preflight record.
+Side Effects:
+  Creates a new root directory when not resuming an existing sweep. Raises
+  `SystemExit` when the requested mode combination is invalid.
+"""
+def _resolve_sweep_root(
+    *,
+    corpus_name: str,
+    label: str = "",
+    resume_path: str = "",
+    preflight_only: bool = False,
+) -> Path:
+    normalized_resume = str(resume_path or "").strip()
+    if preflight_only and normalized_resume:
+        raise SystemExit(
+            "--resume cannot be combined with --preflight-only. "
+            "Preflight-only sweeps write to Testing/results/preflight and do not reuse experiment directories."
+        )
+    if normalized_resume:
+        resume_dir = Path(normalized_resume)
+        if not resume_dir.is_dir():
+            resume_dir = RESULTS_ROOT / "experiments" / normalized_resume
+        if not resume_dir.is_dir():
+            raise SystemExit(f"--resume target not found: {normalized_resume}")
+        return resume_dir
+    if preflight_only:
+        return ensure_dir(PREFLIGHT_ROOT / build_run_id("preflight", corpus_name, label))
+    return ensure_dir(RESULTS_ROOT / "experiments" / build_run_id("sweep", corpus_name, label))
 
 
 def _score_or_none(record: Dict[str, Any] | None) -> float | None:
@@ -358,6 +462,25 @@ def _rate_metric(records: List[Dict[str, Any]], path: str) -> float | None:
     return round(total / len(records), 3)
 
 
+def _string_metric_mode(records: List[Dict[str, Any]], path: str) -> str:
+    parts = path.split(".")
+    counts: Dict[str, int] = {}
+    for record in records:
+        value: Any = record
+        for part in parts:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(part)
+        text = str(value or "").strip()
+        if not text:
+            continue
+        counts[text] = counts.get(text, 0) + 1
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
 def _status_summary(records: List[Dict[str, Any]]) -> str:
     counts: Dict[str, int] = {}
     for record in records:
@@ -389,6 +512,13 @@ def _task_group_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "score": round(mean(score_values), 3) if score_values else None,
         "task_success_rate": _rate_metric(records, "metrics.task_success"),
         "relative_cost_index": _mean_metric(records, "metrics.total_relative_cost_index"),
+        "tool_calls_total": _mean_metric(records, "metrics.tool_calls_total"),
+        "tool_exact_duplicate_calls": _mean_metric(records, "metrics.tool_exact_duplicate_calls"),
+        "tool_semantic_duplicate_calls": _mean_metric(records, "metrics.tool_semantic_duplicate_calls"),
+        "tool_exact_duplicate_rate": _mean_metric(records, "metrics.tool_exact_duplicate_rate"),
+        "tool_semantic_duplicate_rate": _mean_metric(records, "metrics.tool_semantic_duplicate_rate"),
+        "tool_cache_hit_count": _mean_metric(records, "metrics.tool_cache_hit_count"),
+        "tool_most_redundant_target": _string_metric_mode(records, "metrics.tool_most_redundant_target"),
         "target_tool_hit_rate": _mean_metric(records, "metrics.target_tool_hit_rate"),
         "analysis_duration_sec": _mean_metric(records, "metrics.analysis_duration_sec"),
         "judge_duration_sec": _mean_metric(records, "metrics.judge_duration_sec"),
@@ -542,6 +672,10 @@ def _build_comparison_tables(
                     "mean_relative_cost_index": None,
                     "mean_relative_cost_index_stddev": None,
                     "mean_tool_calls": None,
+                    "mean_tool_exact_duplicate_calls": None,
+                    "mean_tool_semantic_duplicate_calls": None,
+                    "mean_tool_exact_duplicate_rate": None,
+                    "mean_tool_semantic_duplicate_rate": None,
                     "mean_target_tool_hit_rate": None,
                     "score_delta": None,
                     "task_success_delta": None,
@@ -598,6 +732,11 @@ def _build_comparison_tables(
             "mean_relative_cost_index": aggregate.get("mean_relative_cost_index"),
             "mean_relative_cost_index_stddev": round(pstdev(cost_series), 6) if len(cost_series) > 1 else (0.0 if cost_series else None),
             "mean_tool_calls": aggregate.get("mean_tool_calls"),
+            "mean_tool_exact_duplicate_calls": aggregate.get("mean_tool_exact_duplicate_calls"),
+            "mean_tool_semantic_duplicate_calls": aggregate.get("mean_tool_semantic_duplicate_calls"),
+            "mean_tool_exact_duplicate_rate": aggregate.get("mean_tool_exact_duplicate_rate"),
+            "mean_tool_semantic_duplicate_rate": aggregate.get("mean_tool_semantic_duplicate_rate"),
+            "mean_tool_cache_hit_count": aggregate.get("mean_tool_cache_hit_count"),
             "mean_target_tool_hit_rate": aggregate.get("mean_target_tool_hit_rate"),
             "mean_analysis_duration_sec": aggregate.get("mean_analysis_duration_sec"),
             "mean_judge_duration_sec": aggregate.get("mean_judge_duration_sec"),
@@ -721,6 +860,19 @@ def _build_comparison_tables(
                     ),
                     "relative_cost_index": current_summary.get("relative_cost_index"),
                     "baseline_relative_cost_index": baseline_summary.get("relative_cost_index"),
+                    "tool_calls_total": current_summary.get("tool_calls_total"),
+                    "baseline_tool_calls_total": baseline_summary.get("tool_calls_total"),
+                    "tool_semantic_duplicate_calls": current_summary.get("tool_semantic_duplicate_calls"),
+                    "baseline_tool_semantic_duplicate_calls": baseline_summary.get("tool_semantic_duplicate_calls"),
+                    "tool_semantic_duplicate_rate": current_summary.get("tool_semantic_duplicate_rate"),
+                    "baseline_tool_semantic_duplicate_rate": baseline_summary.get("tool_semantic_duplicate_rate"),
+                    "tool_most_redundant_target": current_summary.get("tool_most_redundant_target"),
+                    "baseline_tool_most_redundant_target": baseline_summary.get("tool_most_redundant_target"),
+                    "tool_semantic_duplicate_delta": (
+                        round(float(current_summary.get("tool_semantic_duplicate_calls") or 0.0) - float(baseline_summary.get("tool_semantic_duplicate_calls") or 0.0), 3)
+                        if current_summary.get("tool_semantic_duplicate_calls") is not None and baseline_summary.get("tool_semantic_duplicate_calls") is not None
+                        else None
+                    ),
                     "target_tool_hit_rate": current_summary.get("target_tool_hit_rate"),
                     "baseline_target_tool_hit_rate": baseline_summary.get("target_tool_hit_rate"),
                     "mean_analysis_duration_sec": current_summary.get("analysis_duration_sec"),
@@ -969,15 +1121,24 @@ def _build_experiment_report(
                 f"- Highest validator-blocked rate: `{most_blocked.get('display_label')}` "
                 f"(`{most_blocked.get('validator_blocked_rate')}`)"
             )
+        most_redundant = max(
+            highlight_pool,
+            key=lambda row: float(row.get("mean_tool_semantic_duplicate_calls") or 0.0),
+        ) if highlight_pool else None
+        if most_redundant and float(most_redundant.get("mean_tool_semantic_duplicate_calls") or 0.0) > 0.0:
+            lines.append(
+                f"- Highest repeated tool-call load: `{most_redundant.get('display_label')}` "
+                f"(`{most_redundant.get('mean_tool_semantic_duplicate_calls')}` mean repeated calls, rate `{most_redundant.get('mean_tool_semantic_duplicate_rate')}`)"
+            )
         lines.append("")
 
         lines.append("## Variant Summary")
         lines.append("")
-        lines.append("| Variant | Variable | Comparison Baseline | Replicates | Coverage | Mean Score | Score Delta | Success Rate | Scored Rate | Produced Result Rate | Synthetic Judge Rate | Validator Blocked Rate | Worker Failure Rate | Judge Error Rate | Cost Index |")
-        lines.append("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("| Variant | Variable | Comparison Baseline | Replicates | Coverage | Mean Score | Score Delta | Success Rate | Repeated Calls | Repeat Rate | Scored Rate | Produced Result Rate | Synthetic Judge Rate | Validator Blocked Rate | Worker Failure Rate | Judge Error Rate | Cost Index |")
+        lines.append("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for row in variant_rows:
             lines.append(
-                "| {label} | {variable} | {baseline} | {replicates} | {coverage} | {score} | {delta} | {success} | {scored} | {produced} | {synthetic} | {blocked} | {worker_failed} | {judge_error} | {cost} |".format(
+                "| {label} | {variable} | {baseline} | {replicates} | {coverage} | {score} | {delta} | {success} | {repeat_calls} | {repeat_rate} | {scored} | {produced} | {synthetic} | {blocked} | {worker_failed} | {judge_error} | {cost} |".format(
                     label=row.get("display_label", ""),
                     variable=row.get("changed_variable", "baseline") or "baseline",
                     baseline=row.get("comparison_baseline_label", "baseline") or "baseline",
@@ -986,6 +1147,8 @@ def _build_experiment_report(
                     score=row.get("overall_score_mean", ""),
                     delta=row.get("score_delta", ""),
                     success=row.get("task_success_rate", ""),
+                    repeat_calls=row.get("mean_tool_semantic_duplicate_calls", ""),
+                    repeat_rate=row.get("mean_tool_semantic_duplicate_rate", ""),
                     scored=row.get("scored_result_rate", ""),
                     produced=row.get("produced_result_rate", ""),
                     synthetic=row.get("synthetic_judge_rate", ""),
@@ -1010,19 +1173,38 @@ def _build_experiment_report(
 
     lines.append("## Drill-Down Artifacts")
     lines.append("")
-    lines.append("- Executable/config/task artifact view: `by_executable/<exe>/<config_lineage_id>/tasks/<task_id>/runs/run_###/`")
+    lines.append("- Canonical child runs: `runs/<variant_id>/r###/`")
+    lines.append("- Canonical task artifacts: `runs/<variant_id>/r###/cases/<sample>/<task>/`")
+    lines.append("- Flat case index: `case_index.csv`")
     lines.append("- Charts: `outputs/*.png`")
     lines.append("- Timing tables: `outputs/task_timing_individual.csv`, `outputs/task_timing_summary.csv`, `outputs/task_tag_timing_summary.csv`, and `outputs/variant_timing_summary.csv`")
     lines.append("- Per-task output comparisons: `outputs/task_output_comparisons/index.html`")
     lines.append("- Per-task comparison tables: `outputs/task_output_comparisons/task_variant_summary.csv` and `outputs/task_output_comparisons/all_rows.csv`")
     lines.append("- Statistical significance tables: `significance_overall.csv`, `significance_by_difficulty.csv`, `significance_by_task.csv`, and `variable_significance_summary.csv`")
-    lines.append("- Configuration lineage summary: `lineage_summary.csv`")
+    lines.append("- Config-group summary: `config_group_summary.csv`")
     lines.append("- Statistical summary note: `significance_report.md`")
     lines.append("")
 
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-
+"""
+Function: materialize_experiment_outputs
+Inputs:
+  - experiment_root: experiment directory that should receive aggregate
+    comparison outputs.
+  - experiment_manifest: canonical sweep manifest describing planned runs
+    and scope filters.
+  - run_entries: run catalog rows with attached manifests and aggregates.
+  - skip_visuals: when True, skip PNG chart generation.
+Description:
+  Rebuild the experiment-level CSV summaries, drill-down layouts, timing
+  tables, significance reports, and visualization artifacts from an
+  existing set of child-run results.
+Outputs:
+  Returns a compact payload describing coverage and written output scope.
+Side Effects:
+  Overwrites experiment-level summary files under `experiment_root`.
+"""
 def materialize_experiment_outputs(
     *,
     experiment_root: Path,
@@ -1030,24 +1212,6 @@ def materialize_experiment_outputs(
     run_entries: List[Dict[str, Any]],
     skip_visuals: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Function: materialize_experiment_outputs
-    Inputs:
-      - experiment_root: experiment directory that should receive aggregate
-        comparison outputs.
-      - experiment_manifest: canonical sweep manifest describing planned runs
-        and scope filters.
-      - run_entries: run catalog rows with attached manifests and aggregates.
-      - skip_visuals: when True, skip PNG chart generation.
-    Description:
-      Rebuild the experiment-level CSV summaries, drill-down layouts, timing
-      tables, significance reports, and visualization artifacts from an
-      existing set of child-run results.
-    Outputs:
-      Returns a compact payload describing coverage and written output scope.
-    Side Effects:
-      Overwrites experiment-level summary files under `experiment_root`.
-    """
     experiment_root = experiment_root.resolve()
     outputs_root = ensure_dir(experiment_root / "outputs")
     experiment_id = str(experiment_manifest.get("experiment_id") or experiment_root.name)
@@ -1146,7 +1310,7 @@ def materialize_experiment_outputs(
         "task_comparison": task_rows,
         "difficulty_summary": difficulty_rows,
         "technique_summary": technique_rows,
-        "lineage_summary": [],
+        "config_group_summary": [],
     }
     partial_comparison_payload = {
         "experiment_id": experiment_id,
@@ -1180,6 +1344,8 @@ def materialize_experiment_outputs(
             "replicate_index": entry.get("replicate_index", ""),
             "run_id": entry.get("run_id", ""),
             "run_dir": entry.get("run_dir", ""),
+            "run_path": entry.get("run_path", ""),
+            "log_rel_path": entry.get("log_rel_path", ""),
             "ok": entry.get("ok", False),
             "overall_score_mean": ((entry.get("aggregate") or {}).get("overall_score_mean") if isinstance(entry.get("aggregate"), dict) else None),
             "task_success_rate": ((entry.get("aggregate") or {}).get("task_success_rate") if isinstance(entry.get("aggregate"), dict) else None),
@@ -1200,57 +1366,10 @@ def materialize_experiment_outputs(
     ]
     _write_rows_csv(experiment_root / "run_catalog.csv", run_catalog_rows)
 
-    lineage_rows: List[Dict[str, Any]] = []
-    seen_lineages: set[str] = set()
-    for entry in successful_runs:
-        run_manifest = entry.get("run_manifest") if isinstance(entry.get("run_manifest"), dict) else {}
-        run_dir = Path(str(entry.get("run_dir") or "")).resolve() if entry.get("run_dir") else Path()
-        aggregate = entry.get("aggregate") if isinstance(entry.get("aggregate"), dict) else {}
-        lineage_id = str(run_manifest.get("config_lineage_id") or "").strip()
-        if not lineage_id and run_manifest and run_dir:
-            run_manifest["config_lineage_id"] = compute_lineage_id(run_manifest)
-            run_manifest["config_lineage_key"] = normalize_run_lineage_payload(run_manifest)
-            lineage_id = str(run_manifest.get("config_lineage_id") or "").strip()
-            write_json(run_dir / "run_manifest.json", run_manifest)
-            if aggregate:
-                refresh_lineage_index_for_run(
-                    run_dir=run_dir,
-                    run_manifest=run_manifest,
-                    aggregate=aggregate,
-                )
-        if not lineage_id or lineage_id in seen_lineages:
-            continue
-        seen_lineages.add(lineage_id)
-        lineage_payload = load_lineage_payload(lineage_id)
-        if not lineage_payload:
-            continue
-        lineage_aggregate = lineage_payload.get("aggregate") if isinstance(lineage_payload.get("aggregate"), dict) else {}
-        lineage_key = lineage_payload.get("config_lineage_key") if isinstance(lineage_payload.get("config_lineage_key"), dict) else {}
-        lineage_rows.append(
-            {
-                "config_lineage_id": lineage_id,
-                "path": str((RESULTS_ROOT / "lineages" / f"{lineage_id}.json").resolve()),
-                "run_count": lineage_payload.get("run_count"),
-                "records_count": lineage_payload.get("records_count"),
-                "overall_score_mean": lineage_aggregate.get("overall_score_mean"),
-                "task_success_rate": lineage_aggregate.get("task_success_rate"),
-                "mean_relative_cost_index": lineage_aggregate.get("mean_relative_cost_index"),
-                "mean_total_duration_sec": lineage_aggregate.get("mean_total_duration_sec"),
-                "mean_task_wall_clock_duration_sec": lineage_aggregate.get("mean_task_wall_clock_duration_sec"),
-                "corpus": lineage_key.get("corpus"),
-                "pipeline": lineage_key.get("pipeline"),
-                "architecture": lineage_key.get("architecture"),
-                "query_variant": lineage_key.get("query_variant"),
-                "worker_persona_profile": lineage_key.get("worker_persona_profile"),
-                "worker_role_prompt_mode": lineage_key.get("worker_role_prompt_mode"),
-                "selected_samples": "; ".join(lineage_key.get("selected_samples") or []),
-                "selected_tasks": "; ".join(lineage_key.get("selected_tasks") or []),
-                "selected_difficulties": "; ".join(lineage_key.get("selected_difficulties") or []),
-            }
-        )
-    _write_rows_csv(experiment_root / "lineage_summary.csv", lineage_rows)
-    comparison_payload["lineage_summary"] = lineage_rows
-    partial_comparison_payload["lineage_summary"] = lineage_rows
+    config_group_rows = _build_config_group_summary_rows(successful_runs)
+    _write_rows_csv(experiment_root / "config_group_summary.csv", config_group_rows)
+    comparison_payload["config_group_summary"] = config_group_rows
+    partial_comparison_payload["config_group_summary"] = config_group_rows
     write_json(experiment_root / "comparison.json", comparison_payload)
     write_json(experiment_root / "partial_comparison.json", partial_comparison_payload)
 
@@ -1460,27 +1579,26 @@ def _execute_child_run_specs(
                 if on_complete is not None and on_complete(spec, completed) is False:
                     allow_new_launches = False
 
-
+"""
+Function: run_experiment_sweep
+Inputs:
+  - argv: optional explicit argument list. When omitted, arguments are read
+    from the process command line.
+Description:
+  Execute the maintained experiment-sweep workflow: plan the baseline-first
+  run matrix, perform preflight, launch child evaluations, and aggregate the
+  experiment-level outputs.
+Outputs:
+  Returns nothing. Exits with an error when the experiment cannot be run or
+  when required child runs fail.
+Side Effects:
+  May build binaries, prepare bundles, launch many child processes, start
+  the live-view server, and write experiment artifacts under results/.
+"""
 def run_experiment_sweep(argv: List[str] | None = None) -> None:
-    """
-    Function: run_experiment_sweep
-    Inputs:
-      - argv: optional explicit argument list. When omitted, arguments are read
-        from the process command line.
-    Description:
-      Execute the maintained experiment-sweep workflow: plan the baseline-first
-      run matrix, perform preflight, launch child evaluations, and aggregate the
-      experiment-level outputs.
-    Outputs:
-      Returns nothing. Exits with an error when the experiment cannot be run or
-      when required child runs fail.
-    Side Effects:
-      May build binaries, prepare bundles, launch many child processes, start
-      the live-view server, and write experiment artifacts under results/.
-    """
     parser = argparse.ArgumentParser(description="Run a baseline + one-variable-at-a-time experiment sweep across the binary analysis corpus.")
     parser.add_argument("--config", default=str(CONFIG_ROOT / "experiment_sweeps.json"))
-    parser.add_argument("--corpus", choices=["prototype", "experimental"], default="")
+    parser.add_argument("--corpus", choices=["prototype", "experimental", "final_round"], default="")
     parser.add_argument("--sample", action="append", default=[], help="Optional sample filename(s) to restrict to")
     parser.add_argument("--task", action="append", default=[], help="Optional task id(s) to restrict to when sample manifests define multiple evaluation tasks")
     parser.add_argument("--difficulty-filter", action="append", default=[], help="Optional difficulty label(s) to restrict to, e.g. --difficulty-filter medium --difficulty-filter hard")
@@ -1537,31 +1655,27 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
         hard_max_experiment_estimated_cost_usd=args.hard_max_experiment_estimated_cost_usd,
     )
 
-    # --resume: reuse an existing experiment directory instead of creating a new one
-    resume_path = str(args.resume or "").strip()
+    # --resume reuses an existing experiment directory for real sweeps only.
+    sweep_root = _resolve_sweep_root(
+        corpus_name=corpus_name,
+        label=str(args.label or ""),
+        resume_path=str(args.resume or ""),
+        preflight_only=bool(args.preflight_only),
+    )
     prior_run_entries: List[Dict[str, Any]] = []
-    if resume_path:
-        resume_dir = Path(resume_path)
-        if not resume_dir.is_dir():
-            # Treat as experiment_id under RESULTS_ROOT/experiments
-            resume_dir = RESULTS_ROOT / "experiments" / resume_path
-        if not resume_dir.is_dir():
-            raise SystemExit(f"--resume target not found: {resume_path}")
-        catalog_path = resume_dir / "run_catalog.json"
+    if str(args.resume or "").strip():
+        catalog_path = sweep_root / "run_catalog.json"
         if catalog_path.exists():
             prior_catalog = read_json(catalog_path)
             prior_run_entries = [
                 entry for entry in (prior_catalog.get("runs") or [])
                 if entry.get("ok") and isinstance(entry.get("aggregate"), dict)
             ]
-        experiment_root = resume_dir
-    else:
-        experiment_root = ensure_dir(RESULTS_ROOT / "experiments" / build_run_id("sweep", corpus_name, args.label))
+    experiment_root = sweep_root
 
     experiment_id = experiment_root.name
-    outputs_root = ensure_dir(experiment_root / "outputs")
-    live_view_dir = ensure_dir(experiment_root / "live_view")
-    live_logs_dir = ensure_dir(live_view_dir / "logs")
+    outputs_root = ensure_dir(experiment_root / "outputs") if not args.preflight_only else (experiment_root / "outputs")
+    live_view_dir = ensure_dir(experiment_root / "live_view") if not args.preflight_only else (experiment_root / "live_view")
     live_view_server = None
     live_view_thread = None
     live_view_url = ""
@@ -1597,12 +1711,12 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
         for repetition_index in range(1, repetitions + 1):
             planned_instances.append(
                 _planned_run_instance(
+                    experiment_root=experiment_root,
                     experiment_id=experiment_id,
                     corpus_name=corpus_name,
                     run_cfg=effective_run_cfg,
                     repetition_index=repetition_index,
                     planned_repetitions=repetitions,
-                    live_logs_dir=live_logs_dir if args.live_view else None,
                 )
             )
 
@@ -1861,7 +1975,7 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
             label = f"{experiment_id}-{variant_id}-r{repetition_index + 1}"
             cmd = [
                 python_exec,
-                "Testing/run_evaluation.py",
+                "Testing/scripts/run_evaluation.py",
                 "--corpus",
                 corpus_name,
                 "--skip-build",
@@ -1888,6 +2002,8 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                 label,
                 "--run-id",
                 str(catalog_entry.get("run_id") or ""),
+                "--run-root",
+                str(catalog_entry.get("run_dir") or ""),
                 "--experiment-id",
                 experiment_id,
                 "--variant-name",
@@ -1960,7 +2076,7 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                     "stream_output": not args.quiet_child_output,
                     "stream_prefix": f"[{display_label} r{repetition_index + 1}/{repetitions}] ",
                     "stream_heartbeat_sec": 30,
-                    "stream_capture_path": str(catalog_entry.get("log_path") or "").strip(),
+                    "stream_capture_path": "",
                 }
             )
         if not child_specs:

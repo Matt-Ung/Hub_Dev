@@ -386,7 +386,11 @@ class RecoveryTests(unittest.TestCase):
             self.assertIn("--skip-prepare", command)
             self.assertIn("--meta", command)
             self.assertEqual(inspection["recovery_result"]["recovery_run_dir"], str(recovery_run_dir.resolve()))
-            build_payload = build_recovery_command(recorded["inspections"][0], session_id=recorded["session_id"])
+            build_payload = build_recovery_command(
+                recorded["inspections"][0],
+                session_id=recorded["session_id"],
+                session_dir=Path(recorded["session_dir"]),
+            )
             self.assertEqual(build_payload["retry_exact_keys"], ["hash_dispatch_test::default_analysis"])
 
     def test_execute_recovery_plan_can_launch_recovery_runs_concurrently(self) -> None:

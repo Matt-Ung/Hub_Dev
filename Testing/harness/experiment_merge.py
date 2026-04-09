@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 from .experiment_sweep import materialize_experiment_outputs
 from .paths import RESULTS_ROOT, read_json, slugify, write_json
+from .result_store import resolve_catalog_run_dir
 
 
 def _safe_json(path: Path) -> Dict[str, Any]:
@@ -80,7 +81,7 @@ def _load_run_entries(experiment_root: Path) -> List[Dict[str, Any]]:
         if not isinstance(raw_entry, dict):
             continue
         entry = dict(raw_entry)
-        run_dir = Path(str(entry.get("run_dir") or "")).expanduser()
+        run_dir = resolve_catalog_run_dir(experiment_root, entry)
         entry["run_dir"] = str(run_dir.resolve()) if run_dir.exists() else str(run_dir)
         entry["run_manifest"] = _safe_json(run_dir / "run_manifest.json")
         entry["aggregate"] = _safe_json(run_dir / "aggregate.json")

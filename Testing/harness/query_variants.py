@@ -1,3 +1,16 @@
+"""
+File: query_variants.py
+Author: Matt-Ung
+Last Updated: 2026-04-08
+Purpose:
+  Load and apply named query wrappers for manifest-backed evaluation tasks.
+
+Summary:
+  This module keeps prompt-wrapper variants declarative by loading
+  `Testing/config/query_variants.json` and applying the selected wrapper to a
+  base task query plus a small amount of sample metadata.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict

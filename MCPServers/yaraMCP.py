@@ -59,6 +59,7 @@ def _load_repo_dotenv() -> None:
 _load_repo_dotenv()
 
 from artifact_paths import (
+    ensure_agent_artifact_dir,
     get_base_yara_rules_dir,
     get_agent_artifact_dir,
     list_agent_artifact_dirs,
@@ -84,6 +85,12 @@ def _base_rules_dir() -> Path:
 
 def _generated_rules_dir() -> Path:
     return get_agent_artifact_dir("yara")
+
+
+def _generated_rules_tmp_dir() -> Path:
+    tmp_dir = ensure_agent_artifact_dir("yara") / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    return tmp_dir
 
 
 def truncate_text(text: str, max_chars: int = 12000) -> str:
@@ -178,7 +185,13 @@ def _iter_rule_files(rules_dir: Path) -> list[Path]:
 
 
 def _build_composite_rules_file(rule_paths: list[Path]) -> str:
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yar", delete=False, encoding="utf-8") as handle:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".yar",
+        delete=False,
+        encoding="utf-8",
+        dir=str(_generated_rules_tmp_dir()),
+    ) as handle:
         for path in rule_paths:
             handle.write(f"// source: {path}\n")
             handle.write(path.read_text(encoding="utf-8", errors="replace"))
@@ -259,10 +272,11 @@ def _validate_rule_text(rule_text: str, timeout_sec: int) -> dict[str, Any]:
     rule_temp: Optional[str] = None
     target_temp: Optional[str] = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yar", delete=False) as handle:
+        tmp_dir = _generated_rules_tmp_dir()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yar", delete=False, dir=str(tmp_dir)) as handle:
             handle.write(rule_text)
             rule_temp = handle.name
-        with tempfile.NamedTemporaryFile(mode="wb", suffix=".bin", delete=False) as handle:
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".bin", delete=False, dir=str(tmp_dir)) as handle:
             handle.write(b"")
             target_temp = handle.name
 
@@ -375,7 +389,7 @@ def yaraScanInline(
 
     temp_path: Optional[str] = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yar", delete=False) as handle:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yar", delete=False, dir=str(_generated_rules_tmp_dir())) as handle:
             handle.write(rule_text)
             temp_path = handle.name
         return _run_yara_scan(

@@ -1,0 +1,32 @@
+{
+  "sample1.exe": {
+    "original_source_name": "Emotet",
+    "family_label": "Emotet simulation",
+    "reference_json": "reference/sample1.json",
+    "reference_markdown": "reference/sample1.md"
+  },
+  "sample2.exe": {
+    "original_source_name": "QakBot",
+    "family_label": "QakBot simulation",
+    "reference_json": "reference/sample2.json",
+    "reference_markdown": "reference/sample2.md"
+  },
+  "sample3.exe": {
+    "original_source_name": "TrickBot",
+    "family_label": "TrickBot simulation",
+    "reference_json": "reference/sample3.json",
+    "reference_markdown": "reference/sample3.md"
+  },
+  "sample4.exe": {
+    "original_source_name": "WannaCry",
+    "family_label": "WannaCry simulation",
+    "reference_json": "reference/sample4.json",
+    "reference_markdown": "reference/sample4.md"
+  },
+  "sample5.exe": {
+    "original_source_name": "PlugX",
+    "family_label": "PlugX simulation",
+    "reference_json": "reference/sample5.json",
+    "reference_markdown": "reference/sample5.md"
+  }
+}

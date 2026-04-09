@@ -1,0 +1,784 @@
+{
+  "description": "Machine-readable metadata for the prototype regression corpus used by the Hub testing workflow. The manifest is the harness-facing source of truth for sample metadata, default tasks, expected evidence, and acceptance targets.",
+  "samples": [
+    {
+      "sample": "test.exe",
+      "difficulty": "easy",
+      "primary_techniques": [
+        "branch-heavy control flow",
+        "switch/jump table",
+        "integer decision logic"
+      ],
+      "expected_evidence": [
+        "structured branching",
+        "switch-like dispatch",
+        "input-to-output execution path"
+      ],
+      "acceptance_targets": [
+        "Explain the main branching structure and switch-style dispatch accurately",
+        "Identify the key helper functions or decision points and their roles",
+        "Treat the sample as baseline control-flow logic rather than an obfuscated or packed binary"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable and explain the high-level control flow, key functions, and the most important execution paths.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the high-level control flow, key functions, and the most important execution paths.",
+          "target_tools": [
+            "ghidramcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "structured branching",
+            "switch-like dispatch",
+            "input-to-output execution path"
+          ],
+          "acceptance_targets": [
+            "Explain the main branching structure and switch-style dispatch accurately",
+            "Identify the key helper functions or decision points and their roles",
+            "Treat the sample as baseline control-flow logic rather than an obfuscated or packed binary"
+          ],
+          "tags": [
+            "baseline",
+            "control_flow"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "floss_test.exe",
+      "difficulty": "easy",
+      "primary_techniques": [
+        "stack strings",
+        "XOR-decoded runtime strings",
+        "string recovery"
+      ],
+      "expected_evidence": [
+        "decoded command string",
+        "decoded URL string",
+        "kernel32-related string recovery"
+      ],
+      "acceptance_targets": [
+        "Recover the key decoded strings and explain how they are materialized",
+        "Describe the stack-string or XOR decode logic and the functions involved",
+        "Avoid unsupported claims about packing, persistence, or unrelated behavior"
+      ],
+      "target_tools": [
+        "flareflossmcp",
+        "stringmcp",
+        "ghidramcp"
+      ],
+      "default_query": "Analyze this executable and explain the string-obfuscation behavior, the most relevant decoded values, and the functions involved.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the string-obfuscation behavior, the most relevant decoded values, and the functions involved.",
+          "target_tools": [
+            "flareflossmcp",
+            "stringmcp",
+            "ghidramcp"
+          ],
+          "expected_evidence": [
+            "decoded command string",
+            "decoded URL string",
+            "kernel32-related string recovery"
+          ],
+          "acceptance_targets": [
+            "Recover the key decoded strings and explain how they are materialized",
+            "Describe the stack-string or XOR decode logic and the functions involved",
+            "Avoid unsupported claims about packing, persistence, or unrelated behavior"
+          ],
+          "tags": [
+            "strings",
+            "decoding"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "floss_test_02.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "stack strings",
+        "XOR-decoded runtime strings",
+        "alternate compiler layout"
+      ],
+      "expected_evidence": [
+        "decoded command string",
+        "decoded URL string",
+        "recovered string logic despite layout changes"
+      ],
+      "acceptance_targets": [
+        "Recover the main decoded strings despite the altered compiler layout",
+        "Explain the same string-recovery logic without overfitting to a specific layout",
+        "Avoid inventing a second obfuscation layer or unrelated behavior"
+      ],
+      "target_tools": [
+        "flareflossmcp",
+        "stringmcp",
+        "ghidramcp"
+      ],
+      "default_query": "Analyze this executable and explain the string-obfuscation behavior, the most relevant decoded values, and the functions involved.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the string-obfuscation behavior, the most relevant decoded values, and the functions involved.",
+          "target_tools": [
+            "flareflossmcp",
+            "stringmcp",
+            "ghidramcp"
+          ],
+          "expected_evidence": [
+            "decoded command string",
+            "decoded URL string",
+            "recovered string logic despite layout changes"
+          ],
+          "acceptance_targets": [
+            "Recover the main decoded strings despite the altered compiler layout",
+            "Explain the same string-recovery logic without overfitting to a specific layout",
+            "Avoid inventing a second obfuscation layer or unrelated behavior"
+          ],
+          "tags": [
+            "strings",
+            "decoding",
+            "layout_variant"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "floss_test_stripped.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "stripped symbols",
+        "stack strings",
+        "XOR-decoded runtime strings"
+      ],
+      "expected_evidence": [
+        "decoded strings without relying on symbol names",
+        "relevant recovery functions identified by behavior"
+      ],
+      "acceptance_targets": [
+        "Recover the string-obfuscation behavior without relying on symbol names",
+        "Report the most relevant decoded strings with high confidence",
+        "Identify the recovery logic from behavior and data flow rather than names"
+      ],
+      "target_tools": [
+        "flareflossmcp",
+        "stringmcp",
+        "ghidramcp"
+      ],
+      "default_query": "Analyze this executable and explain the string-obfuscation behavior and how the relevant functions can still be identified without symbols.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the string-obfuscation behavior and how the relevant functions can still be identified without symbols.",
+          "target_tools": [
+            "flareflossmcp",
+            "stringmcp",
+            "ghidramcp"
+          ],
+          "expected_evidence": [
+            "decoded strings without relying on symbol names",
+            "relevant recovery functions identified by behavior"
+          ],
+          "acceptance_targets": [
+            "Recover the string-obfuscation behavior without relying on symbol names",
+            "Report the most relevant decoded strings with high confidence",
+            "Identify the recovery logic from behavior and data flow rather than names"
+          ],
+          "tags": [
+            "strings",
+            "decoding",
+            "stripped"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "test_easy_stripped.exe",
+      "difficulty": "easy",
+      "primary_techniques": [
+        "stripped symbols",
+        "branch-heavy control flow",
+        "switch/jump table"
+      ],
+      "expected_evidence": [
+        "structured branching without relying on symbol names",
+        "switch-like dispatch",
+        "input-to-output execution path"
+      ],
+      "acceptance_targets": [
+        "Recover the main branching structure without relying on symbol names",
+        "Identify the switch-style dispatch and key execution path",
+        "Treat the sample as a stripped control-flow baseline, not an obfuscation case"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this stripped executable and explain the high-level control flow, the main branching logic, and how the core functions can still be identified without symbols.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this stripped executable and explain the high-level control flow, the main branching logic, and how the core functions can still be identified without symbols.",
+          "target_tools": [
+            "ghidramcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "structured branching without relying on symbol names",
+            "switch-like dispatch",
+            "input-to-output execution path"
+          ],
+          "acceptance_targets": [
+            "Recover the main branching structure without relying on symbol names",
+            "Identify the switch-style dispatch and key execution path",
+            "Treat the sample as a stripped control-flow baseline, not an obfuscation case"
+          ],
+          "tags": [
+            "baseline",
+            "control_flow",
+            "stripped"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "anti_debug_test.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "anti-debug APIs",
+        "timing checks",
+        "debugger detection"
+      ],
+      "expected_evidence": [
+        "IsDebuggerPresent",
+        "CheckRemoteDebuggerPresent",
+        "timing-based probe logic"
+      ],
+      "acceptance_targets": [
+        "Identify the anti-debug APIs and timing checks accurately",
+        "Explain how the checks influence execution",
+        "Avoid overstating the sample as implementing broader malicious behavior"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "CapaMCP",
+        "stringmcp"
+      ],
+      "default_query": "Analyze this executable and explain the anti-debug behavior, the APIs involved, and how the checks influence execution.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the anti-debug behavior, the APIs involved, and how the checks influence execution.",
+          "target_tools": [
+            "ghidramcp",
+            "CapaMCP",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "IsDebuggerPresent",
+            "CheckRemoteDebuggerPresent",
+            "timing-based probe logic"
+          ],
+          "acceptance_targets": [
+            "Identify the anti-debug APIs and timing checks accurately",
+            "Explain how the checks influence execution",
+            "Avoid overstating the sample as implementing broader malicious behavior"
+          ],
+          "tags": [
+            "anti_analysis",
+            "behavior"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "anti_debug_medium_stripped.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "stripped symbols",
+        "anti-debug APIs",
+        "timing checks",
+        "debugger detection"
+      ],
+      "expected_evidence": [
+        "IsDebuggerPresent",
+        "CheckRemoteDebuggerPresent",
+        "timing-based probe logic without relying on symbol names"
+      ],
+      "acceptance_targets": [
+        "Recover the anti-debug behavior without relying on symbol names",
+        "Identify the API-driven and timing-driven checks with control-flow support",
+        "Avoid unsupported claims beyond the observed debugger-detection logic"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "CapaMCP",
+        "stringmcp"
+      ],
+      "default_query": "Analyze this stripped executable and explain the anti-debug behavior, the APIs involved, and how the checks can still be recovered without symbol names.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this stripped executable and explain the anti-debug behavior, the APIs involved, and how the checks can still be recovered without symbol names.",
+          "target_tools": [
+            "ghidramcp",
+            "CapaMCP",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "IsDebuggerPresent",
+            "CheckRemoteDebuggerPresent",
+            "timing-based probe logic without relying on symbol names"
+          ],
+          "acceptance_targets": [
+            "Recover the anti-debug behavior without relying on symbol names",
+            "Identify the API-driven and timing-driven checks with control-flow support",
+            "Avoid unsupported claims beyond the observed debugger-detection logic"
+          ],
+          "tags": [
+            "anti_analysis",
+            "behavior",
+            "stripped"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "winapi_behavior_test.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "dynamic resolution",
+        "mutex creation",
+        "URL and registry references",
+        "WinAPI behavior"
+      ],
+      "expected_evidence": [
+        "GetProcAddress or runtime resolution",
+        "mutex behavior",
+        "registry or URL artifacts"
+      ],
+      "acceptance_targets": [
+        "Explain the main WinAPI interactions and dynamic resolution path",
+        "Identify the mutex and registry or URL artifacts with concrete support",
+        "Summarize the real program behavior without unsupported threat inflation"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "CapaMCP",
+        "stringmcp"
+      ],
+      "default_query": "Analyze this executable and summarize the program-level behavior, the key WinAPI interactions, and the most relevant functions.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and summarize the program-level behavior, the key WinAPI interactions, and the most relevant functions.",
+          "target_tools": [
+            "ghidramcp",
+            "CapaMCP",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "GetProcAddress or runtime resolution",
+            "mutex behavior",
+            "registry or URL artifacts"
+          ],
+          "acceptance_targets": [
+            "Explain the main WinAPI interactions and dynamic resolution path",
+            "Identify the mutex and registry or URL artifacts with concrete support",
+            "Summarize the real program behavior without unsupported threat inflation"
+          ],
+          "tags": [
+            "winapi",
+            "behavior"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "control_flow_flattened_test.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "flattened control flow",
+        "dispatcher/state-machine pattern",
+        "opaque-style branching"
+      ],
+      "expected_evidence": [
+        "dispatcher pattern",
+        "reconstructed execution path",
+        "state variable or flattened loop logic"
+      ],
+      "acceptance_targets": [
+        "Explain the flattened dispatcher or state-machine pattern clearly",
+        "Separate dispatcher scaffolding from the underlying real logic",
+        "Describe the main execution path without collapsing everything into generic obfuscation language"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable and explain the flattened control-flow pattern, the dispatcher, and the most relevant real logic.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the flattened control-flow pattern, the dispatcher, and the most relevant real logic.",
+          "target_tools": [
+            "ghidramcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "dispatcher pattern",
+            "reconstructed execution path",
+            "state variable or flattened loop logic"
+          ],
+          "acceptance_targets": [
+            "Explain the flattened dispatcher or state-machine pattern clearly",
+            "Separate dispatcher scaffolding from the underlying real logic",
+            "Describe the main execution path without collapsing everything into generic obfuscation language"
+          ],
+          "tags": [
+            "control_flow",
+            "hard"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "api_hash_resolver_test.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "API hashing",
+        "delayed import resolution",
+        "resolver logic"
+      ],
+      "expected_evidence": [
+        "hash algorithm clues",
+        "resolver function",
+        "likely API mapping"
+      ],
+      "acceptance_targets": [
+        "Identify the likely hashing strategy with concrete evidence",
+        "Locate the resolver logic and describe how it drives API recovery",
+        "Avoid claiming exact API mappings when only partial evidence is available"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "hashdbmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable and explain the API hash resolver, the likely hashing strategy, and the most relevant resolved functions.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the API hash resolver, the likely hashing strategy, and the most relevant resolved functions.",
+          "target_tools": [
+            "ghidramcp",
+            "hashdbmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "hash algorithm clues",
+            "resolver function",
+            "likely API mapping"
+          ],
+          "acceptance_targets": [
+            "Identify the likely hashing strategy with concrete evidence",
+            "Locate the resolver logic and describe how it drives API recovery",
+            "Avoid claiming exact API mappings when only partial evidence is available"
+          ],
+          "tags": [
+            "hashing",
+            "resolver"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "resource_blob_loader_test.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "embedded blob",
+        "staged decode path",
+        "resource loading"
+      ],
+      "expected_evidence": [
+        "payload container logic",
+        "decode routine",
+        "staged content extraction path"
+      ],
+      "acceptance_targets": [
+        "Explain the embedded blob or payload-container format",
+        "Describe the decode routine and staged extraction path accurately",
+        "Avoid inventing extra execution or network stages not supported by the binary"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "binwalkmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this executable and explain the embedded blob format, the decode path, and the main extraction behavior.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this executable and explain the embedded blob format, the decode path, and the main extraction behavior.",
+          "target_tools": [
+            "ghidramcp",
+            "binwalkmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "payload container logic",
+            "decode routine",
+            "staged content extraction path"
+          ],
+          "acceptance_targets": [
+            "Explain the embedded blob or payload-container format",
+            "Describe the decode routine and staged extraction path accurately",
+            "Avoid inventing extra execution or network stages not supported by the binary"
+          ],
+          "tags": [
+            "payload",
+            "blob"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "resource_blob_loader_hard_stripped.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "stripped symbols",
+        "embedded blob",
+        "staged decode path",
+        "resource loading"
+      ],
+      "expected_evidence": [
+        "payload container logic without relying on symbol names",
+        "decode routine",
+        "staged content extraction path"
+      ],
+      "acceptance_targets": [
+        "Recover the payload-container and decode behavior without relying on symbol names",
+        "Describe the staged extraction path from control and data flow",
+        "Avoid unsupported claims beyond the embedded-blob handling that can be demonstrated"
+      ],
+      "target_tools": [
+        "ghidramcp",
+        "binwalkmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this stripped executable and explain the embedded blob format, the decode path, and how the main extraction behavior can still be recovered without symbols.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this stripped executable and explain the embedded blob format, the decode path, and how the main extraction behavior can still be recovered without symbols.",
+          "target_tools": [
+            "ghidramcp",
+            "binwalkmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "payload container logic without relying on symbol names",
+            "decode routine",
+            "staged content extraction path"
+          ],
+          "acceptance_targets": [
+            "Recover the payload-container and decode behavior without relying on symbol names",
+            "Describe the staged extraction path from control and data flow",
+            "Avoid unsupported claims beyond the embedded-blob handling that can be demonstrated"
+          ],
+          "tags": [
+            "payload",
+            "blob",
+            "stripped"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "test_easy_upx.exe",
+      "difficulty": "easy",
+      "primary_techniques": [
+        "UPX packing",
+        "branch-heavy control flow",
+        "switch/jump table"
+      ],
+      "expected_evidence": [
+        "UPX packing indicators",
+        "successful or attempted unpacking",
+        "structured branching after unpacking"
+      ],
+      "acceptance_targets": [
+        "Determine that the sample is UPX-packed with concrete evidence",
+        "Explain the unpacking path or why post-pack analysis still succeeds",
+        "Summarize the underlying control flow after unpacking or equivalent recovery"
+      ],
+      "target_tools": [
+        "upxmcp",
+        "ghidramcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this UPX-packed executable, determine whether it is packed, explain how it can be unpacked, and summarize the high-level control flow after unpacking.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this UPX-packed executable, determine whether it is packed, explain how it can be unpacked, and summarize the high-level control flow after unpacking.",
+          "target_tools": [
+            "upxmcp",
+            "ghidramcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "UPX packing indicators",
+            "successful or attempted unpacking",
+            "structured branching after unpacking"
+          ],
+          "acceptance_targets": [
+            "Determine that the sample is UPX-packed with concrete evidence",
+            "Explain the unpacking path or why post-pack analysis still succeeds",
+            "Summarize the underlying control flow after unpacking or equivalent recovery"
+          ],
+          "tags": [
+            "packing",
+            "control_flow"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "anti_debug_medium_upx.exe",
+      "difficulty": "medium",
+      "primary_techniques": [
+        "UPX packing",
+        "anti-debug APIs",
+        "timing checks",
+        "debugger detection"
+      ],
+      "expected_evidence": [
+        "UPX packing indicators",
+        "successful or attempted unpacking",
+        "IsDebuggerPresent",
+        "CheckRemoteDebuggerPresent",
+        "timing-based probe logic"
+      ],
+      "acceptance_targets": [
+        "Determine that the sample is packed and describe the evidence",
+        "Recover the anti-debug APIs and timing logic after or despite unpacking",
+        "Separate packer behavior from the underlying debugger-detection logic"
+      ],
+      "target_tools": [
+        "upxmcp",
+        "ghidramcp",
+        "CapaMCP",
+        "stringmcp"
+      ],
+      "default_query": "Analyze this UPX-packed executable, determine whether it is packed, explain the unpacking path, and summarize the anti-debug behavior after unpacking.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this UPX-packed executable, determine whether it is packed, explain the unpacking path, and summarize the anti-debug behavior after unpacking.",
+          "target_tools": [
+            "upxmcp",
+            "ghidramcp",
+            "CapaMCP",
+            "stringmcp"
+          ],
+          "expected_evidence": [
+            "UPX packing indicators",
+            "successful or attempted unpacking",
+            "IsDebuggerPresent",
+            "CheckRemoteDebuggerPresent",
+            "timing-based probe logic"
+          ],
+          "acceptance_targets": [
+            "Determine that the sample is packed and describe the evidence",
+            "Recover the anti-debug APIs and timing logic after or despite unpacking",
+            "Separate packer behavior from the underlying debugger-detection logic"
+          ],
+          "tags": [
+            "packing",
+            "anti_analysis"
+          ]
+        }
+      ]
+    },
+    {
+      "sample": "resource_blob_loader_hard_upx.exe",
+      "difficulty": "hard",
+      "primary_techniques": [
+        "UPX packing",
+        "embedded blob",
+        "staged decode path",
+        "resource loading"
+      ],
+      "expected_evidence": [
+        "UPX packing indicators",
+        "successful or attempted unpacking",
+        "payload container logic",
+        "decode routine",
+        "staged content extraction path"
+      ],
+      "acceptance_targets": [
+        "Determine whether the binary is UPX-packed and explain the evidence",
+        "Separate the packer wrapper from the underlying blob-loader logic",
+        "Recover the embedded payload format and extraction path after or despite unpacking"
+      ],
+      "target_tools": [
+        "upxmcp",
+        "ghidramcp",
+        "binwalkmcp",
+        "CapaMCP"
+      ],
+      "default_query": "Analyze this UPX-packed executable, determine whether it is packed, explain the unpacking path, and describe the embedded blob format and staged extraction behavior after unpacking.",
+      "tasks": [
+        {
+          "task_id": "default_analysis",
+          "name": "Default Analysis",
+          "query": "Analyze this UPX-packed executable, determine whether it is packed, explain the unpacking path, and describe the embedded blob format and staged extraction behavior after unpacking.",
+          "target_tools": [
+            "upxmcp",
+            "ghidramcp",
+            "binwalkmcp",
+            "CapaMCP"
+          ],
+          "expected_evidence": [
+            "UPX packing indicators",
+            "successful or attempted unpacking",
+            "payload container logic",
+            "decode routine",
+            "staged content extraction path"
+          ],
+          "acceptance_targets": [
+            "Determine whether the binary is UPX-packed and explain the evidence",
+            "Separate the packer wrapper from the underlying blob-loader logic",
+            "Recover the embedded payload format and extraction path after or despite unpacking"
+          ],
+          "tags": [
+            "packing",
+            "payload"
+          ]
+        }
+      ]
+    }
+  ]
+}

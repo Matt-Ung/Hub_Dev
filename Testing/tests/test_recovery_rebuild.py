@@ -254,8 +254,7 @@ class RecoveryRebuildTests(unittest.TestCase):
             self.assertEqual(result["repaired_experiment_id"], "exp-001-repaired")
             self.assertTrue((repaired_root / "variant_summary.csv").exists())
             self.assertTrue((repaired_root / "outputs" / "task_output_comparisons" / "index.html").exists())
-            self.assertTrue((repaired_root / "by_executable" / "index.json").exists())
-            self.assertTrue((repaired_root / "by_executable" / sample).is_dir())
+            self.assertTrue((repaired_root / "case_index.json").exists())
 
             repaired_catalog = json.loads((repaired_root / "run_catalog.json").read_text())
             repaired_entry = repaired_catalog["runs"][0]
@@ -266,7 +265,7 @@ class RecoveryRebuildTests(unittest.TestCase):
             variant_summary = (repaired_root / "variant_summary.csv").read_text(encoding="utf-8")
             self.assertIn("82.0", variant_summary)
 
-            rebuilt_record_path = repaired_root / "rebuilt_runs" / "baseline-r1" / "samples" / f"{Path(sample).stem}__{task_id}" / "record.json"
+            rebuilt_record_path = repaired_root / "rebuilt_runs" / "baseline-r1" / "cases" / sample / task_id / "record.json"
             rebuilt_record = json.loads(rebuilt_record_path.read_text())
             self.assertEqual(rebuilt_record["metrics"]["analysis_status"], "completed")
 

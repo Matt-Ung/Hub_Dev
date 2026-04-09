@@ -1,0 +1,23 @@
+{
+  "description": "Optional analyst-review overlay for the active final-round corpus. Use this only if you want to record analyst confirmation or disputes against the checked-in source-grounded reference bundle.",
+  "required_fields": [
+    "sample",
+    "reference_json_path",
+    "review_status",
+    "analyst_confidence",
+    "confirmed_artifacts",
+    "confirmed_capabilities",
+    "excluded_claims",
+    "notes"
+  ],
+  "field_notes": {
+    "sample": "Opaque runtime filename such as sample1.exe.",
+    "reference_json_path": "Path to the checked-in source-grounded reference JSON for the sample.",
+    "review_status": "For example: unreviewed, reviewed_confirmed, reviewed_with_corrections.",
+    "analyst_confidence": "Human confidence in the overlay notes, for example low/medium/high.",
+    "confirmed_artifacts": "Concrete strings, config blocks, functions, registry paths, services, sockets, or other verified anchors.",
+    "confirmed_capabilities": "Behavior claims the analyst agrees are supported by the source and reference bundle.",
+    "excluded_claims": "Claims the model should not receive credit for without stronger evidence.",
+    "notes": "Any analyst commentary about ambiguities, simplifications, or deliberate simulation limits."
+  }
+}

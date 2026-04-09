@@ -23,13 +23,18 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from artifact_paths import describe_tool_output_root, ensure_tool_output_root, get_tool_output_root  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform.startswith("win")
 _DRIVE_RE = re.compile(r"^/([A-Za-z]):/")
 _MNT_RE = re.compile(r"^/mnt/([A-Za-z])/(.*)")
 
-DEFAULT_OUTPUT_DIR = Path(os.environ.get("GITLEAKS_OUTPUT_DIR", str(Path.cwd() / "MCPServers" / "gitleaks_output")))
 mcp = FastMCP(
     "gitleaks_mcp",
     instructions="MCP server that exposes structured gitleaks scanning tools.",
@@ -76,9 +81,15 @@ def ensure_existing_path(path: str) -> str:
 
 
 def ensure_directory(path: str | Path) -> str:
+    root = get_tool_output_root("gitleaks")
     candidate = Path(normalize_user_path(str(path)))
     if not candidate.is_absolute():
-        candidate = candidate.resolve()
+        candidate = root / candidate
+    candidate = candidate.resolve(strict=False)
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"gitleaks output must stay under {root}; got {candidate}") from exc
     candidate.mkdir(parents=True, exist_ok=True)
     return str(candidate)
 
@@ -148,7 +159,7 @@ def _run_gitleaks(target: str, no_git: bool, timeout_sec: int) -> dict[str, Any]
         return {"ok": False, "error": "gitleaks not found on PATH"}
 
     resolved_target = ensure_existing_path(target)
-    output_dir = Path(ensure_directory(DEFAULT_OUTPUT_DIR))
+    output_dir = Path(ensure_directory(get_tool_output_root("gitleaks")))
     report_path = output_dir / f"gitleaks_{uuid.uuid4().hex[:8]}.json"
 
     cmd = [
@@ -189,6 +200,7 @@ def _run_gitleaks(target: str, no_git: bool, timeout_sec: int) -> dict[str, Any]
         },
         "stdout": truncate_text(result.stdout or "", max_chars=8000),
         "stderr": truncate_text(result.stderr or "", max_chars=4000),
+        "allowed_output_root": describe_tool_output_root("gitleaks"),
     }
 
 
@@ -198,8 +210,9 @@ def gitleaksScan(target_path: str, no_git: bool = False, timeout_sec: int = 300)
     try:
         return _run_gitleaks(target_path, no_git=no_git, timeout_sec=timeout_sec)
     except Exception as e:
+        logger.warning("gitleaksScan rejected request or failed to scan: %s", e)
         logger.exception("gitleaksScan failed")
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "allowed_output_root": describe_tool_output_root("gitleaks")}
 
 
 @mcp.tool()
@@ -210,13 +223,15 @@ def gitleaksScanContent(content: str, timeout_sec: int = 120) -> dict[str, Any]:
 
     temp_path: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as handle:
+        temp_root = ensure_tool_output_root("gitleaks")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, dir=str(temp_root)) as handle:
             handle.write(content)
             temp_path = handle.name
         return _run_gitleaks(temp_path, no_git=True, timeout_sec=timeout_sec)
     except Exception as e:
+        logger.warning("gitleaksScanContent rejected request or failed to scan: %s", e)
         logger.exception("gitleaksScanContent failed")
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "allowed_output_root": describe_tool_output_root("gitleaks")}
     finally:
         if temp_path:
             try:
@@ -228,7 +243,11 @@ def gitleaksScanContent(content: str, timeout_sec: int = 120) -> dict[str, Any]:
 @mcp.tool()
 def gitleaksHelp(timeout_sec: int = 5) -> str:
     """Return `gitleaks --help` output."""
-    return run_help_command("gitleaks", timeout_sec=timeout_sec)
+    return (
+        run_help_command("gitleaks", timeout_sec=timeout_sec)
+        + "\n\n"
+        + f"Allowed report output root: {describe_tool_output_root('gitleaks')}"
+    )
 
 
 def main() -> None:

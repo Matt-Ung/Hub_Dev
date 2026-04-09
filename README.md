@@ -7,19 +7,24 @@ This repo has two active core development areas:
 
 If you are new to the repo, start with the section that matches your goal instead of exploring everything at once.
 
-## Where To Start
+## Start Here
 
-- App setup and runtime overview:
-  - [`SETUP_GUIDE.md`](SETUP_GUIDE.md)
-  - [`multi_agent_wf/README.md`](multi_agent_wf/README.md)
-- Testing harness quickstart and evaluation flow:
-  - [`Testing/START_HERE.md`](Testing/START_HERE.md) for the sanity sweep and recommended under-budget study
-  - [`Testing/README.md`](Testing/README.md)
-  - [`Testing/TESTING_PLAN.md`](Testing/TESTING_PLAN.md)
-- Workflow/dashboard extension guidance:
-  - [`multi_agent_wf/extension_tutorial.md`](multi_agent_wf/extension_tutorial.md)
-- Default runtime data-flow diagrams:
-  - [`docs/agent_run_dataflow.md`](docs/agent_run_dataflow.md)
+1. Choose your platform setup guide:
+   - [`docs/setup/README.md`](docs/setup/README.md)
+   - [`docs/setup/macos.md`](docs/setup/macos.md)
+   - [`docs/setup/ubuntu_debian.md`](docs/setup/ubuntu_debian.md)
+   - [`docs/setup/kali_linux.md`](docs/setup/kali_linux.md)
+   - [`docs/setup/windows.md`](docs/setup/windows.md)
+2. Pick your workflow:
+   - App runtime: [`SETUP_GUIDE.md`](SETUP_GUIDE.md), [`multi_agent_wf/README.md`](multi_agent_wf/README.md)
+   - Testing harness: [`Testing/docs/quickstart.md`](Testing/docs/quickstart.md), [`Testing/README.md`](Testing/README.md)
+3. Use deeper references only after the basic environment works:
+   - [`Testing/docs/evaluation_design.md`](Testing/docs/evaluation_design.md)
+   - [`multi_agent_wf/extension_tutorial.md`](multi_agent_wf/extension_tutorial.md)
+   - [`docs/agent_run_dataflow.md`](docs/agent_run_dataflow.md)
+
+The platform setup docs are the source of truth for fresh-machine installation.
+The quickstarts below assume your OS prerequisites are already satisfied.
 
 ## Repo Map
 
@@ -62,17 +67,18 @@ That means many files in `Testing/` exist to observe or compare the behavior of 
 
 ## Documentation Hierarchy
 
-The repo follows this documentation structure:
-
 1. Root overview:
    - [`README.md`](README.md)
-2. Subsystem overviews:
+2. Platform setup:
+   - [`docs/setup/README.md`](docs/setup/README.md)
+   - platform-specific setup guides under [`docs/setup/`](docs/setup)
+3. Subsystem overviews:
    - [`multi_agent_wf/README.md`](multi_agent_wf/README.md)
    - [`Testing/README.md`](Testing/README.md)
-3. Task-oriented quickstarts:
+4. Task-oriented quickstarts:
    - [`SETUP_GUIDE.md`](SETUP_GUIDE.md)
-   - [`Testing/START_HERE.md`](Testing/START_HERE.md)
-4. Deep-dive design and extension docs:
-   - [`Testing/TESTING_PLAN.md`](Testing/TESTING_PLAN.md)
+   - [`Testing/docs/quickstart.md`](Testing/docs/quickstart.md)
+5. Deep-dive design and extension docs:
+   - [`Testing/docs/evaluation_design.md`](Testing/docs/evaluation_design.md)
    - [`multi_agent_wf/extension_tutorial.md`](multi_agent_wf/extension_tutorial.md)
    - [`docs/agent_run_dataflow.md`](docs/agent_run_dataflow.md)

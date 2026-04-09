@@ -34,6 +34,7 @@ from .artifacts import (
 )
 from .costing import estimate_event_costs
 from .paths import REPO_ROOT, read_json, write_json
+from .tool_redundancy import normalize_tool_call_entries, summarize_tool_call_redundancy
 
 
 @contextlib.contextmanager
@@ -413,7 +414,30 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
         "failure_stage": "",
     }
 
-
+"""
+Function: run_agent_case
+Inputs:
+  - bundle_dir: prepared bundle directory for one sample binary.
+  - query: evaluation-task prompt to send into the runtime.
+  - pipeline: pipeline preset name for the agent runtime.
+  - architecture: worker architecture preset name for the runtime.
+  - validator_review_level: validator strictness label for validated pipelines.
+  - tool_profile: named tool-availability profile already reflected in the
+    artifact MCP manifest.
+  - output_json: optional path where the canonical agent result should be
+    written.
+Description:
+  Run one artifact-backed analysis case against the multi-agent workflow
+  runtime, capture the resulting report, tool usage, validation history,
+  and failure state, and normalize the result for judging/reporting.
+Outputs:
+  Returns the canonical `agent_result.json` dictionary for this sample-task
+  case. When `output_json` is provided, the same payload is written to disk.
+Side Effects:
+  Sets `MCP_SERVER_MANIFEST_PATH` for the duration of the run, imports the
+  runtime modules lazily, may execute the full analysis pipeline, and may
+  write the result artifact.
+"""
 def run_agent_case(
     bundle_dir: Path,
     *,
@@ -430,30 +454,6 @@ def run_agent_case(
     keep_project: bool = False,
     output_json: Path | None = None,
 ) -> Dict[str, Any]:
-    """
-    Function: run_agent_case
-    Inputs:
-      - bundle_dir: prepared bundle directory for one sample binary.
-      - query: evaluation-task prompt to send into the runtime.
-      - pipeline: pipeline preset name for the agent runtime.
-      - architecture: worker architecture preset name for the runtime.
-      - validator_review_level: validator strictness label for validated pipelines.
-      - tool_profile: named tool-availability profile already reflected in the
-        artifact MCP manifest.
-      - output_json: optional path where the canonical agent result should be
-        written.
-    Description:
-      Run one artifact-backed analysis case against the multi-agent workflow
-      runtime, capture the resulting report, tool usage, validation history,
-      and failure state, and normalize the result for judging/reporting.
-    Outputs:
-      Returns the canonical `agent_result.json` dictionary for this sample-task
-      case. When `output_json` is provided, the same payload is written to disk.
-    Side Effects:
-      Sets `MCP_SERVER_MANIFEST_PATH` for the duration of the run, imports the
-      runtime modules lazily, may execute the full analysis pipeline, and may
-      write the result artifact.
-    """
     # Normalize the bundle path once so every downstream artifact reference is
     # stable and absolute in logs and result payloads.
     bundle_dir = bundle_dir.resolve()
@@ -617,6 +617,11 @@ def run_agent_case(
                 report = run_deepagent_pipeline(runtime, effective_query, state)
                 shared = state.get("shared_state") or {}
                 parsed_tool_entries = parse_tool_log_sections(state.get("tool_log_sections") or {})
+                normalized_tool_calls = normalize_tool_call_entries(parsed_tool_entries)
+                tool_redundancy = summarize_tool_call_redundancy(
+                    parsed_tool_entries,
+                    normalized_calls=normalized_tool_calls,
+                )
                 model_usage_events = list(shared.get("model_usage_events") or [])
                 status_info = _derive_result_status(shared, report)
                 result.update(
@@ -642,6 +647,8 @@ def run_agent_case(
                         "ghidra_change_proposals": list(shared.get("ghidra_change_proposals") or []),
                         "generated_yara_rules": list(shared.get("generated_yara_rules") or []),
                         "tool_usage": summarize_tool_usage(parsed_tool_entries),
+                        "normalized_tool_calls": normalized_tool_calls,
+                        "tool_redundancy": tool_redundancy,
                         "model_usage": {
                             "totals": dict(shared.get("model_usage_totals") or {}),
                             "by_stage": dict(shared.get("model_usage_by_stage") or {}),

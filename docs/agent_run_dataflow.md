@@ -14,10 +14,8 @@ Editable sources:
 - [docs/diagrams/default_pipeline_overview.mmd](diagrams/default_pipeline_overview.mmd)
 - [docs/diagrams/default_pipeline_sequence.mmd](diagrams/default_pipeline_sequence.mmd)
 
-Rendered artifacts:
-
-- [docs/diagrams/default_pipeline_overview.svg](diagrams/default_pipeline_overview.svg)
-- [docs/diagrams/default_pipeline_sequence.svg](diagrams/default_pipeline_sequence.svg)
+The Mermaid blocks in this document and the `.mmd` source files above are the
+canonical diagrams. Rendered SVG exports are not maintained separately.
 
 ## Diagram 1. Runtime Default Pipeline Overview
 
@@ -140,12 +138,12 @@ sequenceDiagram
         Judge-->>Runner: judge_result<br/>{dimension_scores,<br/> overall_score_0_to_100, pass,<br/> unsupported_claims,<br/> missed_expected_points,<br/> strongest_points,<br/> technical_summary,<br/> writing_summary,<br/> confidence_0_to_1, cost_estimate}
         Runner->>Report: build_sample_record(...)
         Report-->>Runner: record<br/>{sample_task_id, task_query,<br/> difficulty, expected_evidence,<br/> acceptance_targets,<br/> metrics{analysis_status, judge_status,<br/> overall_score_0_to_100,<br/> task_success, tool_calls_total,<br/> total_duration_sec,<br/> task_wall_clock_duration_sec}}
-        Runner->>FS: write samples/sample_task_slug/<br/>agent_result.json,<br/>judge_result.json,<br/>record.json
+        Runner->>FS: write cases/sample/task/<br/>agent_result.json,<br/>judge_result.json,<br/>record.json
     end
 
     Runner->>Report: aggregate_records(run_metadata, records)<br/>build_run_output_layout(...)
     Report-->>Runner: aggregate + layout payload
-    Runner->>FS: write aggregate.json,<br/>summary.csv, report.md,<br/>result_layout.json,<br/>by_executable/exe_name/config_lineage_id/...
+    Runner->>FS: write aggregate.json,<br/>summary.csv, report.md,<br/>result_layout.json,<br/>case_index.json,<br/>logs/run.log
 ```
 
 Implementation map:
@@ -269,14 +267,15 @@ Gate shape:
   - `summary.csv`
   - `report.md`
   - `result_layout.json`
-  - `by_executable/<exe>/<config_lineage_id>/...`
+  - `case_index.json`
+  - `logs/run.log`
 
 ## Downstream Sweep Note
 
-If the run is launched by [`Testing/run_experiment_sweep.py`](../Testing/run_experiment_sweep.py), the sequence above becomes the child-run unit. The sweep layer then adds:
+If the run is launched by [`Testing/scripts/run_experiment_sweep.py`](../Testing/scripts/run_experiment_sweep.py), the sequence above becomes the child-run unit. The sweep layer then adds:
 
 - experiment-level `experiment_manifest.json`
-- one `run_dir` per configuration/replicate
+- experiment-local child runs under `runs/<variant_id>/r001/`, `r002/`, and so on
 - experiment-wide comparison outputs such as `comparison.json`, `variant_summary.csv`, significance tables, timing summaries, and `outputs/*.png`
 
 That sweep wrapper does not change the internal `run_deepagent_pipeline()` stage loop; it repeats it across configuration variants and replicates.

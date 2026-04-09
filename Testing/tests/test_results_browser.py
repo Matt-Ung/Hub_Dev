@@ -42,8 +42,9 @@ class ResultsBrowserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             results_root = Path(temp_dir) / "results"
             experiment_root = results_root / "experiments" / "sweep-experimental-20260402_000000-browser"
-            run_dir = results_root / "runs" / "run-001"
-            sample_dir = run_dir / "samples" / "config_decoder_test__config_value_recovery"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
+            sample_dir = run_dir / "cases" / "config_decoder_test.exe" / "config_value_recovery"
             outputs_root = experiment_root / "outputs"
             chart_path = outputs_root / "task_score_heatmap.png"
             task_pages_root = outputs_root / "task_output_comparisons" / "tasks"
@@ -73,7 +74,7 @@ class ResultsBrowserTests(unittest.TestCase):
                         "runs": [
                             {
                                 "run_id": "run-001",
-                                "run_dir": str(run_dir),
+                                "run_path": run_path,
                                 "variant_id": "baseline",
                                 "display_label": "baseline",
                                 "pipeline": "auto_triage",
@@ -185,7 +186,8 @@ class ResultsBrowserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             results_root = Path(temp_dir) / "results"
             experiment_root = results_root / "experiments" / "sweep-experimental-20260402_000000-analysis"
-            run_dir = results_root / "runs" / "run-001"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
             outputs_root = experiment_root / "outputs"
             experiment_root.mkdir(parents=True)
             run_dir.mkdir(parents=True)
@@ -211,7 +213,7 @@ class ResultsBrowserTests(unittest.TestCase):
                         "runs": [
                             {
                                 "run_id": "run-001",
-                                "run_dir": str(run_dir),
+                                "run_path": run_path,
                                 "variant_id": "baseline",
                                 "display_label": "baseline",
                                 "pipeline": "auto_triage",
@@ -235,10 +237,10 @@ class ResultsBrowserTests(unittest.TestCase):
             (experiment_root / "variant_summary.csv").write_text(
                 "\n".join(
                     [
-                        "variant_id,display_label,changed_variable,is_baseline,overall_score_mean,overall_score_stddev,score_delta,task_success_rate,task_success_delta,analysis_failure_rate,completed_repetitions,planned_repetitions,included_in_complete_aggregate",
-                        "baseline,baseline,baseline,True,70.0,1.5,,0.80,,0.00,3,3,True",
-                        "worker_subagents__single_generalist,worker_subagents:single_generalist,worker_subagents,False,76.0,2.1,6.0,0.84,0.04,0.00,3,3,True",
-                        "worker_prompt_shape__empty,worker_prompt_shape:empty,worker_prompt_shape,False,81.0,4.2,11.0,0.90,0.10,0.05,3,3,True",
+                        "variant_id,display_label,changed_variable,is_baseline,overall_score_mean,overall_score_stddev,score_delta,task_success_rate,task_success_delta,mean_tool_semantic_duplicate_calls,mean_tool_semantic_duplicate_rate,analysis_failure_rate,completed_repetitions,planned_repetitions,included_in_complete_aggregate",
+                        "baseline,baseline,baseline,True,70.0,1.5,,0.80,,1.0,0.10,0.00,3,3,True",
+                        "worker_subagents__single_generalist,worker_subagents:single_generalist,worker_subagents,False,76.0,2.1,6.0,0.84,0.04,2.5,0.18,0.00,3,3,True",
+                        "worker_prompt_shape__empty,worker_prompt_shape:empty,worker_prompt_shape,False,81.0,4.2,11.0,0.90,0.10,4.0,0.31,0.05,3,3,True",
                     ]
                 )
                 + "\n",
@@ -247,9 +249,9 @@ class ResultsBrowserTests(unittest.TestCase):
             (experiment_root / "task_comparison.csv").write_text(
                 "\n".join(
                     [
-                        "variant_id,display_label,changed_variable,sample,task_id,task_name,sample_task_id,score,baseline_score,score_delta,task_success_rate",
-                        "worker_subagents__single_generalist,worker_subagents:single_generalist,worker_subagents,config_decoder_test.exe,config_value_recovery,Config Value Recovery,config_decoder_test.exe::config_value_recovery,84.0,75.0,9.0,1.0",
-                        "worker_prompt_shape__empty,worker_prompt_shape:empty,worker_prompt_shape,config_decoder_test.exe,config_value_recovery,Config Value Recovery,config_decoder_test.exe::config_value_recovery,92.0,75.0,17.0,1.0",
+                        "variant_id,display_label,changed_variable,sample,task_id,task_name,sample_task_id,score,baseline_score,score_delta,task_success_rate,tool_semantic_duplicate_calls,tool_semantic_duplicate_rate,tool_most_redundant_target",
+                        "worker_subagents__single_generalist,worker_subagents:single_generalist,worker_subagents,config_decoder_test.exe,config_value_recovery,Config Value Recovery,config_decoder_test.exe::config_value_recovery,84.0,75.0,9.0,1.0,2.0,0.15,0x140001400",
+                        "worker_prompt_shape__empty,worker_prompt_shape:empty,worker_prompt_shape,config_decoder_test.exe,config_value_recovery,Config Value Recovery,config_decoder_test.exe::config_value_recovery,92.0,75.0,17.0,1.0,5.0,0.42,0x140001400",
                     ]
                 )
                 + "\n",
@@ -292,18 +294,22 @@ class ResultsBrowserTests(unittest.TestCase):
         self.assertEqual(analysis["configuration_count"], 3)
         self.assertEqual(analysis["best_variant"]["display_label"], "worker_prompt_shape:empty")
         self.assertEqual(analysis["widest_task_shift"]["sample_task_id"], "config_decoder_test.exe::config_value_recovery")
+        self.assertEqual(analysis["most_redundant_variant"]["display_label"], "worker_prompt_shape:empty")
+        self.assertEqual(analysis["most_redundant_task"]["sample_task_id"], "config_decoder_test.exe::config_value_recovery")
         self.assertEqual(analysis["chart_sections"][0]["key"], "overview")
         self.assertEqual(analysis["chart_sections"][0]["images"][0]["title"], "Baseline vs Variant Mean Score")
         self.assertEqual(len(analysis["task_matrix_columns"]), 2)
         self.assertEqual(analysis["task_matrix_rows"][0]["sample_task_id"], "config_decoder_test.exe::config_value_recovery")
         self.assertIn("worker_subagents__single_generalist", analysis["task_matrix_rows"][0]["configs"])
         self.assertIn("worker_prompt_shape__empty", analysis["task_matrix_rows"][0]["configs"])
+        self.assertEqual(analysis["redundancy_hotspots"][0]["tool_most_redundant_target"], "0x140001400")
 
     def test_results_browser_reports_visualization_error_when_static_charts_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             results_root = Path(temp_dir) / "results"
             experiment_root = results_root / "experiments" / "sweep-experimental-20260402_000000-nocharts"
-            run_dir = results_root / "runs" / "run-001"
+            run_dir = experiment_root / "runs" / "baseline" / "r001"
+            run_path = str(run_dir.relative_to(experiment_root))
             outputs_root = experiment_root / "outputs"
             experiment_root.mkdir(parents=True)
             run_dir.mkdir(parents=True)
@@ -325,7 +331,7 @@ class ResultsBrowserTests(unittest.TestCase):
                         "runs": [
                             {
                                 "run_id": "run-001",
-                                "run_dir": str(run_dir),
+                                "run_path": run_path,
                                 "variant_id": "baseline",
                                 "display_label": "baseline",
                                 "pipeline": "auto_triage",
