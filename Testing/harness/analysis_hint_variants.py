@@ -1,14 +1,14 @@
 """
-File: query_variants.py
+File: analysis_hint_variants.py
 Author: Matt-Ung
 Last Updated: 2026-04-08
 Purpose:
-  Load and apply named query wrappers for manifest-backed evaluation tasks.
+  Load and apply optional analysis-prior wrappers for pilot experiments.
 
 Summary:
-  This module keeps prompt-wrapper variants declarative by loading
-  `Testing/config/query_variants.json` and applying the selected wrapper to a
-  base task query plus a small amount of sample metadata.
+  This module keeps generic, verify-first hint variants declarative by
+  loading `Testing/config/analysis_hint_variants.json` and wrapping the base
+  task query without asserting that any hinted behavior is truly present.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from typing import Any, Dict
 from .paths import CONFIG_ROOT, read_json
 
 
-def load_query_variants() -> Dict[str, Dict[str, str]]:
-    raw = read_json(CONFIG_ROOT / "query_variants.json")
+def load_analysis_hint_variants() -> Dict[str, Dict[str, str]]:
+    raw = read_json(CONFIG_ROOT / "analysis_hint_variants.json")
     variants = raw.get("variants") if isinstance(raw.get("variants"), dict) else {}
     return {
         str(name): {
@@ -32,8 +32,12 @@ def load_query_variants() -> Dict[str, Dict[str, str]]:
     }
 
 
-def apply_query_variant(base_query: str, sample_meta: Dict[str, Any], variant_name: str = "default") -> str:
-    variants = load_query_variants()
+def apply_analysis_hint_variant(
+    base_query: str,
+    sample_meta: Dict[str, Any],
+    variant_name: str = "default",
+) -> str:
+    variants = load_analysis_hint_variants()
     selected_name = str(variant_name or "default").strip() or "default"
     variant = variants.get(selected_name) or variants.get("default") or {"prefix": "", "suffix": ""}
 

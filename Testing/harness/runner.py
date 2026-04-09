@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .analysis_hint_variants import apply_analysis_hint_variant
 from .analyze import run_agent_case
 from .artifacts import inspect_corpus_bundles, prepare_corpus_bundles
 from .budgeting import (
@@ -38,9 +39,9 @@ from .building import build_corpus
 from .config_groups import compute_config_group_id, normalize_run_config_group_payload
 from .paths import BUNDLE_ROOT, build_run_id, ensure_dir, read_json, write_json
 from .preflight import validate_run_configuration
-from .query_variants import apply_query_variant
 from .result_layout import build_run_output_layout
 from .result_store import ensure_task_case_dir, run_log_path, run_logs_root, standalone_run_dir, task_log_path
+from .response_scope_variants import apply_response_scope_variant
 from .reporting import aggregate_records, build_sample_record, write_markdown_report, write_summary_csv
 from .samples import (
     build_evaluation_tasks,
@@ -294,7 +295,8 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--pipeline", default="", help="Pipeline preset override")
     parser.add_argument("--architecture", default="", help="Architecture preset override")
     parser.add_argument("--query", default="", help="Optional fixed query override for all samples")
-    parser.add_argument("--query-variant", default="default", help="Prompt/query detail variant name")
+    parser.add_argument("--response-scope-variant", default="default", help="Named response-scope wrapper that changes how concise or expansive the requested report should be")
+    parser.add_argument("--analysis-hint-variant", default="default", help="Named verify-first analysis-hint wrapper for pilot experiments")
     parser.add_argument("--subagent-profile", default="default", help="Worker subagent breadth profile override")
     parser.add_argument("--worker-persona-profile", default="default", help="Worker-stage persona prompt overlay profile")
     parser.add_argument("--worker-role-prompt-mode", default="default", help="Worker role prompt mode: default or blank")
@@ -365,7 +367,8 @@ def main(argv: List[str] | None = None) -> None:
         "pipeline": args.pipeline or config.default_pipeline,
         "architecture": args.architecture or config.default_architecture,
         "query_override": str(args.query or "").strip(),
-        "query_variant": str(args.query_variant or "default").strip() or "default",
+        "response_scope_variant": str(args.response_scope_variant or "default").strip() or "default",
+        "analysis_hint_variant": str(args.analysis_hint_variant or "default").strip() or "default",
         "subagent_profile": str(args.subagent_profile or "default").strip() or "default",
         "worker_persona_profile": str(args.worker_persona_profile or "default").strip() or "default",
         "worker_role_prompt_mode": str(args.worker_role_prompt_mode or "default").strip() or "default",
@@ -524,7 +527,8 @@ def main(argv: List[str] | None = None) -> None:
         selected_difficulties=args.difficulty_filter,
         pipeline=run_metadata["pipeline"],
         architecture=run_metadata["architecture"],
-        query_variant=run_metadata["query_variant"],
+        response_scope_variant=run_metadata["response_scope_variant"],
+        analysis_hint_variant=run_metadata["analysis_hint_variant"],
         worker_persona_profile=run_metadata["worker_persona_profile"],
         worker_role_prompt_mode=run_metadata["worker_role_prompt_mode"],
         validator_review_level=run_metadata["validator_review_level"],
@@ -615,7 +619,8 @@ def main(argv: List[str] | None = None) -> None:
 
     _emit_progress(
         f"Starting run {run_id}: {len(evaluation_tasks)} task(s), pipeline={run_metadata['pipeline']}, "
-        f"architecture={run_metadata['architecture']}, query_variant={run_metadata['query_variant']}"
+        f"architecture={run_metadata['architecture']}, response_scope_variant={run_metadata['response_scope_variant']}, "
+        f"analysis_hint_variant={run_metadata['analysis_hint_variant']}"
     )
     records: List[Dict[str, Any]] = []
     run_budget_status: Dict[str, Any] = {
@@ -639,7 +644,16 @@ def main(argv: List[str] | None = None) -> None:
         bundle_manifest = read_json(bundle_dir / "bundle_manifest.json") if (bundle_dir / "bundle_manifest.json").exists() else {}
 
         base_query = str(args.query or "").strip() or str(task.query or "").strip()
-        effective_query = apply_query_variant(base_query, visible_sample_meta, run_metadata["query_variant"])
+        effective_query = apply_response_scope_variant(
+            base_query,
+            visible_sample_meta,
+            run_metadata["response_scope_variant"],
+        )
+        effective_query = apply_analysis_hint_variant(
+            effective_query,
+            visible_sample_meta,
+            run_metadata["analysis_hint_variant"],
+        )
         live_status.update(
             {
                 "stage": "analysis",

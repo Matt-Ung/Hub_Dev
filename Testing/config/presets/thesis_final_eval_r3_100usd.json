@@ -28,7 +28,8 @@
     "corpus": "final_round",
     "pipeline": "auto_triage",
     "architecture": "balanced",
-    "query_variant": "default",
+    "response_scope_variant": "default",
+    "analysis_hint_variant": "default",
     "subagent_profile": "default",
     "worker_persona_profile": "default",
     "worker_role_prompt_mode": "default",
@@ -86,19 +87,13 @@
       ]
     },
     {
-      "variable": "tool_availability",
-      "description": "Compare the locked final baseline against reduced tool-surface conditions.",
+      "variable": "response_scope",
+      "description": "Compare the locked final baseline against the concise response-scope follow-up that moved positively in the broad pilot without leaking new sample-specific hints.",
       "variants": [
         {
-          "name": "core_static",
+          "name": "brief",
           "overrides": {
-            "tool_profile": "core_static"
-          }
-        },
-        {
-          "name": "ghidra_only",
-          "overrides": {
-            "tool_profile": "ghidra_only"
+            "response_scope_variant": "brief"
           }
         }
       ]

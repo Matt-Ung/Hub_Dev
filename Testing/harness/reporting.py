@@ -618,7 +618,8 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
         "difficulty",
         "pipeline",
         "architecture",
-        "query_variant",
+        "response_scope_variant",
+        "analysis_hint_variant",
         "subagent_profile",
         "worker_persona_profile",
         "worker_role_prompt_mode",
@@ -692,7 +693,8 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
                 "difficulty": record.get("difficulty", ""),
                 "pipeline": run_metadata.get("pipeline", ""),
                 "architecture": run_metadata.get("architecture", ""),
-                "query_variant": run_metadata.get("query_variant", ""),
+                "response_scope_variant": run_metadata.get("response_scope_variant", ""),
+                "analysis_hint_variant": run_metadata.get("analysis_hint_variant", ""),
                 "subagent_profile": run_metadata.get("subagent_profile", ""),
                 "worker_persona_profile": run_metadata.get("worker_persona_profile", ""),
                 "worker_role_prompt_mode": run_metadata.get("worker_role_prompt_mode", ""),
@@ -775,7 +777,8 @@ def write_markdown_report(path, aggregate: Dict[str, Any]) -> None:
     lines.append(f"- Stable config-group ID: `{run_metadata.get('config_lineage_id', '')}`")
     lines.append(f"- Pipeline: `{run_metadata.get('pipeline', '')}`")
     lines.append(f"- Architecture: `{run_metadata.get('architecture', '')}`")
-    lines.append(f"- Query variant: `{run_metadata.get('query_variant', '')}`")
+    lines.append(f"- Response-scope variant: `{run_metadata.get('response_scope_variant', '')}`")
+    lines.append(f"- Analysis-hint variant: `{run_metadata.get('analysis_hint_variant', '')}`")
     lines.append(f"- Subagent profile: `{run_metadata.get('subagent_profile', '')}`")
     lines.append(f"- Worker persona profile: `{run_metadata.get('worker_persona_profile', '')}`")
     lines.append(f"- Worker role prompt mode: `{run_metadata.get('worker_role_prompt_mode', '')}`")

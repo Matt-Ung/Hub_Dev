@@ -1,0 +1,21 @@
+{
+  "version": "analysis_hint_variants_v1",
+  "description": "Optional analysis-prior wrappers that add generic, verify-first investigation hints without asserting that a behavior is truly present. These are intended for future pilot studies rather than the maintained final sweep.",
+  "variants": {
+    "default": {
+      "description": "Do not add extra analysis hints.",
+      "prefix": "",
+      "suffix": ""
+    },
+    "triage_signals_verify": {
+      "description": "Nudge the agent to check common reverse-engineering pivots such as packing, encoded configuration, crypto, and staged payload logic, but only claim them if the evidence supports it.",
+      "prefix": "Use a verify-first workflow. If the evidence supports it, check whether the sample relies on packing, encoded or encrypted configuration, hashing-based dispatch, crypto routines, staged payload logic, or persistence setup. ",
+      "suffix": " Treat these as investigation leads, not assumptions, and clearly label anything not directly supported by the evidence."
+    },
+    "static_pivots_verify": {
+      "description": "Bias the agent toward static-analysis pivots such as unpacking, config recovery, and notable embedded artifacts while preserving explicit uncertainty.",
+      "prefix": "Prioritize the strongest static-analysis pivots first. If supported by the artifacts, investigate unpacking, config decoding, embedded resources or payloads, and notable import or string clusters before making broader behavioral claims. ",
+      "suffix": " Only report a pivot as present when the sample artifacts actually support it, and call out uncertainty when the evidence is incomplete."
+    }
+  }
+}

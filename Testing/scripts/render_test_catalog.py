@@ -9,8 +9,9 @@ Purpose:
 Summary:
   This script turns the manifest and sweep configuration into an inspection
   artifact for developers. It exists to make the benchmark surface readable
-  before a run begins by exporting the sample/task inventory, prompt variants,
-  and active experiment dimensions as JSON, CSV, Markdown, and HTML.
+  before a run begins by exporting the sample/task inventory, maintained
+  prompt wrappers, and active experiment dimensions as JSON, CSV, Markdown,
+  and HTML.
 """
 
 from __future__ import annotations
@@ -24,8 +25,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from _bootstrap import TESTING_ROOT  # noqa: F401
+from harness.analysis_hint_variants import apply_analysis_hint_variant, load_analysis_hint_variants
 from harness.paths import CONFIG_ROOT, RESULTS_ROOT, ensure_dir, read_json, write_json
-from harness.query_variants import apply_query_variant, load_query_variants
+from harness.response_scope_variants import apply_response_scope_variant, load_response_scope_variants
 from harness.samples import get_corpus_config, load_sample_manifest, resolve_sample_metadata, resolve_sample_tasks, sample_task_key
 
 
@@ -69,30 +71,42 @@ Description:
   write in multiple formats.
 Outputs:
   Returns a dictionary containing summary metadata plus normalized sample,
-  task, query-variant, and sweep-dimension rows.
+  task, response-scope, analysis-hint, and sweep-dimension rows.
 Side Effects:
   None.
 """
 def _build_catalog(corpus_name: str) -> Dict[str, Any]:
     corpus = get_corpus_config(corpus_name)
     manifest = load_sample_manifest(corpus_name)
-    query_variants = load_query_variants()
+    response_scope_variants = load_response_scope_variants()
+    analysis_hint_variants = load_analysis_hint_variants()
     sweep_config = read_json(CONFIG_ROOT / "experiment_sweeps.json")
     sample_rows: List[Dict[str, Any]] = []
     task_rows: List[Dict[str, Any]] = []
     dimension_rows: List[Dict[str, Any]] = []
-    query_variant_rows: List[Dict[str, Any]] = []
+    response_scope_rows: List[Dict[str, Any]] = []
+    analysis_hint_rows: List[Dict[str, Any]] = []
     matrix_rows: List[Dict[str, Any]] = []
     difficulty_counts: Counter[str] = Counter()
     tag_counts: Counter[str] = Counter()
 
     sweep_variables = [str((entry or {}).get("variable") or "").strip() for entry in (sweep_config.get("sweeps") or []) if str((entry or {}).get("variable") or "").strip()]
 
-    for variant_name in sorted(query_variants.keys()):
-        variant = query_variants.get(variant_name) or {}
-        query_variant_rows.append(
+    for variant_name in sorted(response_scope_variants.keys()):
+        variant = response_scope_variants.get(variant_name) or {}
+        response_scope_rows.append(
             {
-                "query_variant": variant_name,
+                "response_scope_variant": variant_name,
+                "description": str(variant.get("description") or "").strip(),
+                "prefix": str(variant.get("prefix") or "").strip(),
+                "suffix": str(variant.get("suffix") or "").strip(),
+            }
+        )
+    for variant_name in sorted(analysis_hint_variants.keys()):
+        variant = analysis_hint_variants.get(variant_name) or {}
+        analysis_hint_rows.append(
+            {
+                "analysis_hint_variant": variant_name,
                 "description": str(variant.get("description") or "").strip(),
                 "prefix": str(variant.get("prefix") or "").strip(),
                 "suffix": str(variant.get("suffix") or "").strip(),
@@ -118,9 +132,13 @@ def _build_catalog(corpus_name: str) -> Dict[str, Any]:
             task_name = str(task.get("name") or task_id).strip() or task_id
             base_query = str(task.get("query") or "").strip()
             sample_task_id = sample_task_key(sample_name, task_id)
-            prompts = {
-                variant_name: apply_query_variant(base_query, sample_meta, variant_name)
-                for variant_name in sorted(query_variants.keys())
+            response_scope_prompts = {
+                variant_name: apply_response_scope_variant(base_query, sample_meta, variant_name)
+                for variant_name in sorted(response_scope_variants.keys())
+            }
+            analysis_hint_prompts = {
+                variant_name: apply_analysis_hint_variant(base_query, sample_meta, variant_name)
+                for variant_name in sorted(analysis_hint_variants.keys())
             }
             tags = [str(item).strip() for item in (task.get("tags") or []) if str(item).strip()]
             for tag in tags:
@@ -137,8 +155,10 @@ def _build_catalog(corpus_name: str) -> Dict[str, Any]:
                 "acceptance_targets": _fmt_list(task.get("acceptance_targets") or []),
                 "base_query": base_query,
             }
-            for variant_name, prompt in prompts.items():
-                task_row[f"prompt_{variant_name}"] = prompt
+            for variant_name, prompt in response_scope_prompts.items():
+                task_row[f"response_scope_prompt_{variant_name}"] = prompt
+            for variant_name, prompt in analysis_hint_prompts.items():
+                task_row[f"analysis_hint_prompt_{variant_name}"] = prompt
             task_rows.append(task_row)
 
             matrix_row: Dict[str, Any] = {
@@ -197,7 +217,8 @@ def _build_catalog(corpus_name: str) -> Dict[str, Any]:
         "sample_count": len(sample_rows),
         "task_count": len(task_rows),
         "difficulty_counts": dict(sorted(difficulty_counts.items())),
-        "query_variants": sorted(query_variants.keys()),
+        "response_scope_variants": sorted(response_scope_variants.keys()),
+        "analysis_hint_variants": sorted(analysis_hint_variants.keys()),
         "sweep_variable_count": len(sweep_variables),
         "sweep_variables": sweep_variables,
         "top_tags": dict(tag_counts.most_common()),
@@ -207,7 +228,8 @@ def _build_catalog(corpus_name: str) -> Dict[str, Any]:
         "baseline": baseline,
         "samples": sample_rows,
         "tasks": task_rows,
-        "query_variants": query_variant_rows,
+        "response_scope_variants": response_scope_rows,
+        "analysis_hint_variants": analysis_hint_rows,
         "dimensions": dimension_rows,
         "task_dimension_matrix": matrix_rows,
     }
@@ -233,7 +255,8 @@ def _render_markdown(catalog: Dict[str, Any]) -> str:
     lines.append(f"- Corpus: `{summary['corpus']}`")
     lines.append(f"- Samples: `{summary['sample_count']}`")
     lines.append(f"- Tasks: `{summary['task_count']}`")
-    lines.append(f"- Query variants: `{', '.join(summary['query_variants'])}`")
+    lines.append(f"- Response-scope variants: `{', '.join(summary['response_scope_variants'])}`")
+    lines.append(f"- Analysis-hint variants: `{', '.join(summary['analysis_hint_variants'])}`")
     lines.append(f"- Sweep variables: `{', '.join(summary['sweep_variables'])}`")
     lines.append("")
     lines.append("## Baseline Configuration")
@@ -257,12 +280,19 @@ def _render_markdown(catalog: Dict[str, Any]) -> str:
             f"| {row['sample']} | {row['difficulty']} | {row['task_count']} | {row['primary_techniques']} |"
         )
     lines.append("")
-    lines.append("## Query Variants")
+    lines.append("## Response-Scope Variants")
     lines.append("")
     lines.append("| Variant | Description |")
     lines.append("|---|---|")
-    for row in catalog["query_variants"]:
-        lines.append(f"| {row['query_variant']} | {row['description']} |")
+    for row in catalog["response_scope_variants"]:
+        lines.append(f"| {row['response_scope_variant']} | {row['description']} |")
+    lines.append("")
+    lines.append("## Analysis-Hint Variants")
+    lines.append("")
+    lines.append("| Variant | Description |")
+    lines.append("|---|---|")
+    for row in catalog["analysis_hint_variants"]:
+        lines.append(f"| {row['analysis_hint_variant']} | {row['description']} |")
     lines.append("")
     lines.append("## Tasks")
     lines.append("")
@@ -274,9 +304,12 @@ def _render_markdown(catalog: Dict[str, Any]) -> str:
         lines.append(f"- Tags: `{row['tags']}`")
         lines.append(f"- Target tools: `{row['target_tools']}`")
         lines.append(f"- Base query: `{row['base_query']}`")
-        lines.append(f"- Prompt `default`: `{row.get('prompt_default', row['base_query'])}`")
-        lines.append(f"- Prompt `brief`: `{row.get('prompt_brief', '')}`")
-        lines.append(f"- Prompt `detailed`: `{row.get('prompt_detailed', '')}`")
+        lines.append(f"- Response scope `default`: `{row.get('response_scope_prompt_default', row['base_query'])}`")
+        lines.append(f"- Response scope `brief`: `{row.get('response_scope_prompt_brief', '')}`")
+        lines.append(f"- Response scope `detailed`: `{row.get('response_scope_prompt_detailed', '')}`")
+        lines.append(f"- Analysis hint `default`: `{row.get('analysis_hint_prompt_default', row['base_query'])}`")
+        lines.append(f"- Analysis hint `triage_signals_verify`: `{row.get('analysis_hint_prompt_triage_signals_verify', '')}`")
+        lines.append(f"- Analysis hint `static_pivots_verify`: `{row.get('analysis_hint_prompt_static_pivots_verify', '')}`")
         lines.append(f"- Acceptance targets: `{row['acceptance_targets']}`")
         lines.append("")
     lines.append("## Sweep Dimensions")
@@ -326,10 +359,15 @@ def _render_html(catalog: Dict[str, Any]) -> str:
     task_rows = []
     for row in catalog["tasks"]:
         prompt_variants = []
-        for key in sorted(k for k in row.keys() if k.startswith("prompt_")):
-            variant_name = key.replace("prompt_", "", 1)
+        for key in sorted(k for k in row.keys() if k.startswith("response_scope_prompt_")):
+            variant_name = key.replace("response_scope_prompt_", "", 1)
             prompt_variants.append(
-                f"<h5>{esc(variant_name)}</h5><pre>{esc(row[key])}</pre>"
+                f"<h5>response_scope::{esc(variant_name)}</h5><pre>{esc(row[key])}</pre>"
+            )
+        for key in sorted(k for k in row.keys() if k.startswith("analysis_hint_prompt_")):
+            variant_name = key.replace("analysis_hint_prompt_", "", 1)
+            prompt_variants.append(
+                f"<h5>analysis_hint::{esc(variant_name)}</h5><pre>{esc(row[key])}</pre>"
             )
         task_rows.append(
             "<tr>"
@@ -354,13 +392,22 @@ def _render_html(catalog: Dict[str, Any]) -> str:
         for row in catalog["dimensions"]
     )
 
-    query_variant_rows = "\n".join(
+    response_scope_rows = "\n".join(
         "<tr>"
-        f"<td>{esc(row['query_variant'])}</td>"
+        f"<td>{esc(row['response_scope_variant'])}</td>"
         f"<td>{esc(row['description'])}</td>"
         f"<td><details><summary>View wrapper</summary><pre>{esc(row['prefix'])}</pre><pre>{esc(row['suffix'])}</pre></details></td>"
         "</tr>"
-        for row in catalog["query_variants"]
+        for row in catalog["response_scope_variants"]
+    )
+
+    analysis_hint_rows = "\n".join(
+        "<tr>"
+        f"<td>{esc(row['analysis_hint_variant'])}</td>"
+        f"<td>{esc(row['description'])}</td>"
+        f"<td><details><summary>View wrapper</summary><pre>{esc(row['prefix'])}</pre><pre>{esc(row['suffix'])}</pre></details></td>"
+        "</tr>"
+        for row in catalog["analysis_hint_variants"]
     )
 
     baseline_rows = "\n".join(
@@ -392,7 +439,8 @@ def _render_html(catalog: Dict[str, Any]) -> str:
     for label, value in [
         ("Samples", summary["sample_count"]),
         ("Tasks", summary["task_count"]),
-        ("Query variants", ", ".join(summary["query_variants"])),
+        ("Response-scope variants", ", ".join(summary["response_scope_variants"])),
+        ("Analysis-hint variants", ", ".join(summary["analysis_hint_variants"])),
         ("Sweep variables", summary["sweep_variable_count"]),
     ]:
         summary_cards.append(f"<div class='card'><div class='label'>{esc(label)}</div><div class='value'>{esc(value)}</div></div>")
@@ -441,7 +489,7 @@ def _render_html(catalog: Dict[str, Any]) -> str:
 <body>
   <div class="wrap">
     <h1>Test Catalog</h1>
-    <p>Generated from the manifest, query-variant config, and sweep definition for the <strong>{esc(summary['corpus'])}</strong> corpus.</p>
+    <p>Generated from the manifest, response-scope wrappers, analysis-hint wrappers, and sweep definition for the <strong>{esc(summary['corpus'])}</strong> corpus.</p>
     <div class="cards">{''.join(summary_cards)}</div>
 
     <div class="section">
@@ -470,11 +518,21 @@ def _render_html(catalog: Dict[str, Any]) -> str:
     </div>
 
     <div class="section">
-      <h2>Query Variants</h2>
+      <h2>Response-Scope Variants</h2>
       <div class="scroll">
         <table>
           <thead><tr><th>Variant</th><th>Description</th><th>Wrapper</th></tr></thead>
-          <tbody>{query_variant_rows}</tbody>
+          <tbody>{response_scope_rows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Analysis-Hint Variants</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Variant</th><th>Description</th><th>Wrapper</th></tr></thead>
+          <tbody>{analysis_hint_rows}</tbody>
         </table>
       </div>
     </div>
@@ -483,7 +541,7 @@ def _render_html(catalog: Dict[str, Any]) -> str:
       <h2>Tasks and Prompted Work</h2>
       <div class="scroll">
         <table>
-          <thead><tr><th>Sample Task</th><th>Difficulty</th><th>Tags</th><th>Target Tools</th><th>Base Query</th><th>Prompt Variants</th><th>Acceptance Targets</th></tr></thead>
+          <thead><tr><th>Sample Task</th><th>Difficulty</th><th>Tags</th><th>Target Tools</th><th>Base Query</th><th>Prompt Wrappers</th><th>Acceptance Targets</th></tr></thead>
           <tbody>{task_table}</tbody>
         </table>
       </div>
@@ -543,7 +601,8 @@ def main() -> None:
     write_json(output_dir / "catalog.json", catalog)
     _write_rows_csv(output_dir / "samples.csv", catalog["samples"])
     _write_rows_csv(output_dir / "tasks.csv", catalog["tasks"])
-    _write_rows_csv(output_dir / "query_variants.csv", catalog["query_variants"])
+    _write_rows_csv(output_dir / "response_scope_variants.csv", catalog["response_scope_variants"])
+    _write_rows_csv(output_dir / "analysis_hint_variants.csv", catalog["analysis_hint_variants"])
     _write_rows_csv(output_dir / "sweep_dimensions.csv", catalog["dimensions"])
     _write_rows_csv(output_dir / "task_dimension_matrix.csv", catalog["task_dimension_matrix"])
     (output_dir / "benchmark_catalog.md").write_text(_render_markdown(catalog), encoding="utf-8")

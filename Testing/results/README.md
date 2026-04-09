@@ -174,6 +174,16 @@ Live monitor:
 python Testing/scripts/run_experiment_sweep.py --corpus experimental --live-view
 ```
 
+Global child-run concurrency:
+
+```bash
+python Testing/scripts/run_experiment_sweep.py --corpus experimental --live-view --max-concurrent-child-runs 6
+```
+
+Use `--max-concurrent-child-runs` to cap total active child runs across the
+whole sweep. `--max-concurrent-repetitions` is narrower and only caps overlap
+within the same planned configuration.
+
 Active results browser:
 
 ```bash

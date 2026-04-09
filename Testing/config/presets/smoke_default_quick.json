@@ -10,5 +10,7 @@
   "tasks": [
     "default_analysis"
   ],
+  "response_scope_variant": "default",
+  "analysis_hint_variant": "default",
   "recommended_judge_model": "openai:gpt-4o-mini"
 }

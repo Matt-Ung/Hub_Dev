@@ -21,10 +21,11 @@ import importlib.util
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from .analysis_hint_variants import load_analysis_hint_variants
 from .artifacts import inspect_corpus_bundles, load_tool_profiles, resolve_analyze_headless, _resolve_java_home
 from .judge import Agent, PYDANTIC_AVAILABLE
 from .paths import CONFIG_ROOT, PROMPTS_ROOT, REPO_ROOT, read_json
-from .query_variants import load_query_variants
+from .response_scope_variants import load_response_scope_variants
 from .samples import build_evaluation_tasks, normalize_sample_task_key, sample_task_key
 from .subprocess_utils import tool_available
 
@@ -226,7 +227,8 @@ Inputs:
   - selected_samples / selected_task_ids / selected_task_keys /
     selected_difficulties: optional CLI filters that narrow the intended
     evaluation scope.
-  - pipeline / architecture / query_variant / worker_persona_profile /
+  - pipeline / architecture / response_scope_variant /
+    analysis_hint_variant / worker_persona_profile /
     worker_role_prompt_mode / validator_review_level / tool_profile /
     prefer_upx_unpacked:
     requested runtime knobs to verify.
@@ -256,7 +258,8 @@ def validate_run_configuration(
     selected_difficulties: Iterable[str],
     pipeline: str,
     architecture: str,
-    query_variant: str,
+    response_scope_variant: str,
+    analysis_hint_variant: str,
     worker_persona_profile: str,
     worker_role_prompt_mode: str,
     validator_review_level: str,
@@ -283,13 +286,23 @@ def validate_run_configuration(
     errors.extend(prompt_check.get("errors") or [])
     warnings.extend(prompt_check.get("warnings") or [])
 
-    variants = load_query_variants()
-    selected_query_variant = str(query_variant or "default").strip() or "default"
-    if "default" not in variants:
-        errors.append("query_variants.json must define a `default` variant.")
-    if selected_query_variant not in variants:
+    response_scope_variants = load_response_scope_variants()
+    selected_response_scope_variant = str(response_scope_variant or "default").strip() or "default"
+    if "default" not in response_scope_variants:
+        errors.append("response_scope_variants.json must define a `default` variant.")
+    if selected_response_scope_variant not in response_scope_variants:
         errors.append(
-            f"Unknown query variant {selected_query_variant!r}. Available: {', '.join(sorted(variants))}"
+            "Unknown response_scope_variant "
+            f"{selected_response_scope_variant!r}. Available: {', '.join(sorted(response_scope_variants))}"
+        )
+    analysis_hint_variants = load_analysis_hint_variants()
+    selected_analysis_hint_variant = str(analysis_hint_variant or "default").strip() or "default"
+    if "default" not in analysis_hint_variants:
+        errors.append("analysis_hint_variants.json must define a `default` variant.")
+    if selected_analysis_hint_variant not in analysis_hint_variants:
+        errors.append(
+            "Unknown analysis_hint_variant "
+            f"{selected_analysis_hint_variant!r}. Available: {', '.join(sorted(analysis_hint_variants))}"
         )
 
     persona_profiles_raw = read_json(REPO_ROOT / "multi_agent_wf" / "workflow_config" / "worker_persona_profiles.json")

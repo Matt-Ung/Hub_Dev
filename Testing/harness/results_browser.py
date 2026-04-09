@@ -237,6 +237,7 @@ _BROWSER_HTML = """<!doctype html>
       gap: 12px;
       max-height: calc(100vh - 290px);
       overflow: auto;
+      overscroll-behavior: contain;
     }
     .detail-panel .panel-body {
       display: flex;
@@ -446,6 +447,7 @@ _BROWSER_HTML = """<!doctype html>
     }
     .queue-card,
     .run-card {
+      flex: 0 0 auto;
       border: 1px solid var(--line);
       border-radius: 18px;
       background: rgba(255, 255, 255, 0.84);
@@ -484,6 +486,10 @@ _BROWSER_HTML = """<!doctype html>
       align-items: flex-start;
       margin-bottom: 8px;
     }
+    .run-top > div {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
     .card-eyebrow {
       font-size: 11px;
       color: var(--muted-soft);
@@ -497,7 +503,10 @@ _BROWSER_HTML = """<!doctype html>
       font-weight: 800;
       letter-spacing: -0.02em;
       line-height: 1.3;
-      overflow-wrap: anywhere;
+      overflow-wrap: normal;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .card-meta,
     .run-meta {
@@ -509,6 +518,10 @@ _BROWSER_HTML = """<!doctype html>
       margin-top: 6px;
       color: var(--muted-soft);
       font-size: 12px;
+    }
+    .run-link {
+      min-height: 92px;
+      box-sizing: border-box;
     }
     .count-row {
       display: flex;

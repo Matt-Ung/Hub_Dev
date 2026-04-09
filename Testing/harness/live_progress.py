@@ -180,6 +180,7 @@ _INDEX_HTML = """<!doctype html>
       gap: 12px;
       max-height: calc(100vh - 250px);
       overflow: auto;
+      overscroll-behavior: contain;
     }
     .detail-panel .panel-body {
       display: flex;
@@ -219,6 +220,7 @@ _INDEX_HTML = """<!doctype html>
     }
     .queue-card,
     .run-card {
+      flex: 0 0 auto;
       border: 1px solid var(--line);
       border-radius: 18px;
       background: rgba(255, 255, 255, 0.84);
@@ -257,6 +259,10 @@ _INDEX_HTML = """<!doctype html>
       align-items: flex-start;
       margin-bottom: 8px;
     }
+    .run-top > div {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
     .card-eyebrow {
       font-size: 11px;
       color: var(--muted-soft);
@@ -270,7 +276,10 @@ _INDEX_HTML = """<!doctype html>
       font-weight: 800;
       letter-spacing: -0.02em;
       line-height: 1.3;
-      overflow-wrap: anywhere;
+      overflow-wrap: normal;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .card-meta,
     .run-meta {
@@ -282,6 +291,10 @@ _INDEX_HTML = """<!doctype html>
       margin-top: 6px;
       color: var(--muted-soft);
       font-size: 12px;
+    }
+    .run-link {
+      min-height: 92px;
+      box-sizing: border-box;
     }
     .count-row {
       display: flex;
@@ -1691,6 +1704,32 @@ def _selected_task_meta(sample_task_id: str, live_status: Dict[str, Any], record
     }
 
 
+def _resolve_selected_task_log_path(
+    run_dir: Path | None,
+    sample_task_id: str,
+    selected_task: Dict[str, str],
+) -> Path | None:
+    if run_dir is None or not run_dir.exists():
+        return None
+
+    # The UI selection should be authoritative. If the operator clicked a
+    # specific task row, route the server-status pane to that task's log even
+    # when the live status is still focused on a different current task.
+    sample_name, task_id = _split_sample_task_id(sample_task_id)
+    if sample_name and task_id:
+        candidate = task_log_path(run_dir, sample_name, task_id)
+        if candidate.exists():
+            return candidate
+
+    sample_name = str(selected_task.get("sample") or "").strip()
+    task_id = str(selected_task.get("task_id") or "").strip()
+    if sample_name and task_id:
+        candidate = task_log_path(run_dir, sample_name, task_id)
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _summarize_run_output(
     run_dir: Path | None,
     live_status: Dict[str, Any],
@@ -2158,13 +2197,8 @@ def load_live_view_detail(
     selected_task_record = selected_task_artifacts.get("record") if isinstance(selected_task_artifacts.get("record"), dict) else {}
     selected_task = _selected_task_meta(selected_sample_task_id, live_status, selected_task_record)
     focused_sample = str(selected_task.get("sample") or focused_sample or "").strip()
-    selected_task_log_path = None
-    selected_task_log_text = ""
-    if run_dir and run_dir.exists() and selected_task.get("sample") and selected_task.get("task_id"):
-        candidate = task_log_path(run_dir, str(selected_task.get("sample") or ""), str(selected_task.get("task_id") or ""))
-        if candidate.exists():
-            selected_task_log_path = candidate
-            selected_task_log_text = _safe_text(candidate)
+    selected_task_log_path = _resolve_selected_task_log_path(run_dir, selected_sample_task_id, selected_task)
+    selected_task_log_text = _safe_text(selected_task_log_path) if selected_task_log_path is not None else ""
     agent_status_log_text = ""
     if isinstance(selected_task_artifacts.get("agent"), dict):
         agent_status_log_text = str((selected_task_artifacts.get("agent") or {}).get("status_log") or "").strip()

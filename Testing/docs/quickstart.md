@@ -301,6 +301,12 @@ python Testing/scripts/run_launch_preset.py \
   --live-view
 ```
 
+If you want true total sweep concurrency rather than only overlapping
+repetitions of the same configuration, add
+`--max-concurrent-child-runs <N>`. The older
+`--max-concurrent-repetitions <N>` flag only limits overlap within one
+configuration family.
+
 This preset is the recommended first decision-useful study because it:
 
 - uses only focused, unique task IDs, so the selected scope is unambiguous
@@ -430,6 +436,11 @@ as they change. It is intentionally lightweight and developer-facing:
 - primary final-output pane for the selected run, with baseline and judge context beside it
 - separate server-status log panel for transient live logs
 - task-level status rows from each child run's `live_status.json`
+
+For true sweep-wide concurrency, pair `--live-view` with
+`--max-concurrent-child-runs <N>`. Use
+`--max-concurrent-repetitions <N>` only when you specifically want to cap how
+many repetitions of the same variant may overlap.
 
 The monitor metadata is written under:
 

@@ -18,8 +18,10 @@ presets.
   - baseline plus one-variable-at-a-time sweep definition
   - used when you run `Testing/scripts/run_experiment_sweep.py` directly
   - this is the maintained generic sweep config, not a named preset
-- `query_variants.json`
-  - prompt wrappers such as `default`, `brief`, and `detailed`
+- `response_scope_variants.json`
+  - response-scope wrappers such as `default`, `brief`, and `detailed`
+- `analysis_hint_variants.json`
+  - optional verify-first hint wrappers intended for pilot studies
 - `tool_profiles.json`
   - named MCP tool-availability profiles for ablations
 - `budget_guardrails.json`
@@ -94,15 +96,26 @@ Use:
 
 Prefer tool profiles when studying MCP/tool availability instead of creating ad hoc architecture presets.
 
-## Add A New Query Variant
+## Add A New Response-Scope Variant
 
-Edit [query_variants.json](query_variants.json).
+Edit [response_scope_variants.json](response_scope_variants.json).
 
 Each variant wraps the base task query as:
 
 `prefix + base_query + suffix`
 
 Keep these variants small and mechanical. If a change is really a role/persona or workflow change, do not encode it here.
+
+## Add A New Analysis-Hint Variant
+
+Edit [analysis_hint_variants.json](analysis_hint_variants.json).
+
+These wrappers are for future pilot studies that add generic, verify-first
+investigation leads without asserting that a behavior is present. Keep them:
+
+- conservative
+- evidence-seeking
+- explicit about verification rather than assumption
 
 ## Add Or Change The Binary Rubric
 
@@ -145,7 +158,7 @@ A preset can target either:
 - `runner: "single_run"`
   - good for default baselines and targeted one-configuration comparisons
   - supports run-level overrides such as `pipeline`, `architecture`,
-    `query_variant`, `tool_profile`, `validator_review_level`, and
+    `response_scope_variant`, `analysis_hint_variant`, `tool_profile`, `validator_review_level`, and
     `force_model`
 - `runner: "sweep"`
   - good for one-variable-at-a-time studies or broad full-suite launches

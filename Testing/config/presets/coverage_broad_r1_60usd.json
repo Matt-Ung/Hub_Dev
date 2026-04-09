@@ -35,7 +35,8 @@
     "corpus": "experimental",
     "pipeline": "auto_triage",
     "architecture": "balanced",
-    "query_variant": "default",
+    "response_scope_variant": "default",
+    "analysis_hint_variant": "default",
     "subagent_profile": "default",
     "worker_persona_profile": "default",
     "worker_role_prompt_mode": "default",
@@ -53,13 +54,13 @@
   },
   "sweeps": [
     {
-      "variable": "query_verbosity",
-      "description": "Change only the task prompt/query detail level with a shorter-than-default query variant.",
+      "variable": "response_scope",
+      "description": "Change only how concise the requested final report should be while leaving the underlying task unchanged.",
       "variants": [
         {
           "name": "brief",
           "overrides": {
-            "query_variant": "brief"
+            "response_scope_variant": "brief"
           }
         }
       ]

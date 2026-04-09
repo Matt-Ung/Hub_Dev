@@ -117,7 +117,8 @@ Current default baseline:
 | corpus | `experimental` |
 | pipeline | `auto_triage` |
 | architecture | `balanced` |
-| query variant | `default` |
+| response-scope variant | `default` |
+| analysis-hint variant | `default` |
 | worker subagent profile | `default` |
 | worker persona profile | `default` |
 | worker role prompt mode | `default` |
@@ -130,7 +131,7 @@ Current default baseline:
 
 | Variable family | Variants |
 |---|---|
-| `query_verbosity` | `brief`, `detailed` |
+| `response_scope` | `brief`, `detailed` |
 | `worker_subagents` | `single_generalist` |
 | `worker_prompt_shape` | `artifact_focused`, `empty` |
 | `tool_availability` | `core_static`, `ghidra_only` |
@@ -156,7 +157,7 @@ Recommended operational presets for normal experiment work:
 - `budget_best_value_r2`
   - recommended under-budget comparison study
 - `coverage_broad_r1_60usd`
-  - one-repetition medium+hard broad-coverage preset that stays below the current 60 USD heuristic band by restricting the broad sweep to the query-verbosity, worker-subagent, and worker-prompt-shape families
+  - one-repetition medium+hard broad-coverage preset that stays below the current 60 USD heuristic band by restricting the broad sweep to the response-scope, worker-subagent, and worker-prompt-shape families
 - `sweep_decoder_depth_r3`
   - three-repetition combined decoder depth study over `config_decoder_test_stripped.exe` and `config_decoder_test_upx_stripped.exe`, trimmed to the single worker-subagent family so the current heuristic stays below 30 USD
 - `sweep_decoder_depth_followups_r3`
@@ -164,9 +165,9 @@ Recommended operational presets for normal experiment work:
 - `thesis_final_eval_r3_100usd`
   - held-out five-sample final-evaluation scaffold
   - one blind `default_analysis` pass per sample and three repetitions
-  - widened to worker breadth, worker prompt shape, tool surface, and
+  - widened to worker breadth, worker prompt shape, response scope, and
     architecture follow-ups while staying interpretable
-  - projects near `60 USD` under the current `0.50` per sample-task heuristic,
+  - projects near `52.5 USD` under the current `0.50` per sample-task heuristic,
     with a `100 USD` advisory target and a higher hard-stop ceiling to absorb
     moderate retry or token-usage variance
 
@@ -199,8 +200,7 @@ exhaustive:
 - `worker_subagents:single_generalist`
 - `worker_prompt_shape:artifact_focused`
 - `worker_prompt_shape:empty`
-- `tool_availability:core_static`
-- `tool_availability:ghidra_only`
+- `response_scope:brief`
 - `architecture_preset:ghidra_focused`
 - `architecture_preset:model_augmented`
 

@@ -160,7 +160,8 @@ def _build_config_group_summary_rows(successful_runs: List[Dict[str, Any]]) -> L
                 "corpus": config_group_key.get("corpus"),
                 "pipeline": config_group_key.get("pipeline"),
                 "architecture": config_group_key.get("architecture"),
-                "query_variant": config_group_key.get("query_variant"),
+                "response_scope_variant": config_group_key.get("response_scope_variant"),
+                "analysis_hint_variant": config_group_key.get("analysis_hint_variant"),
                 "worker_persona_profile": config_group_key.get("worker_persona_profile"),
                 "worker_role_prompt_mode": config_group_key.get("worker_role_prompt_mode"),
                 "selected_samples": "; ".join(config_group_key.get("selected_samples") or []),
@@ -311,7 +312,8 @@ def _planned_run_instance(
         "log_rel_path": str(log_path.relative_to(resolved_experiment_root)),
         "pipeline": str(run_cfg.get("pipeline") or ""),
         "architecture": str(run_cfg.get("architecture") or ""),
-        "query_variant": str(run_cfg.get("query_variant") or ""),
+        "response_scope_variant": str(run_cfg.get("response_scope_variant") or ""),
+        "analysis_hint_variant": str(run_cfg.get("analysis_hint_variant") or ""),
         "validator_review_level": str(run_cfg.get("validator_review_level") or ""),
         "tool_profile": str(run_cfg.get("tool_profile") or ""),
         "prefer_upx_unpacked": bool(run_cfg.get("prefer_upx_unpacked")),
@@ -639,7 +641,8 @@ def _build_comparison_tables(
                     "comparison_baseline_label": str(planned_cfg.get("comparison_baseline_label") or "baseline"),
                     "pipeline": str(planned_cfg.get("pipeline") or ""),
                     "architecture": str(planned_cfg.get("architecture") or ""),
-                    "query_variant": str(planned_cfg.get("query_variant") or ""),
+                    "response_scope_variant": str(planned_cfg.get("response_scope_variant") or ""),
+                    "analysis_hint_variant": str(planned_cfg.get("analysis_hint_variant") or ""),
                     "subagent_profile": str(planned_cfg.get("subagent_profile") or ""),
                     "worker_persona_profile": str(planned_cfg.get("worker_persona_profile") or ""),
                     "worker_role_prompt_mode": str(planned_cfg.get("worker_role_prompt_mode") or ""),
@@ -707,7 +710,8 @@ def _build_comparison_tables(
             "run_ids": list(group.get("run_ids") or []),
             "pipeline": ((group.get("run_manifest") or {}).get("pipeline") or ""),
             "architecture": ((group.get("run_manifest") or {}).get("architecture") or ""),
-            "query_variant": ((group.get("run_manifest") or {}).get("query_variant") or ""),
+            "response_scope_variant": ((group.get("run_manifest") or {}).get("response_scope_variant") or ""),
+            "analysis_hint_variant": ((group.get("run_manifest") or {}).get("analysis_hint_variant") or ""),
             "subagent_profile": ((group.get("run_manifest") or {}).get("subagent_profile") or ""),
             "worker_persona_profile": ((group.get("run_manifest") or {}).get("worker_persona_profile") or ""),
             "worker_role_prompt_mode": ((group.get("run_manifest") or {}).get("worker_role_prompt_mode") or ""),
@@ -1534,37 +1538,51 @@ def _execute_child_run_specs(
     runner: Callable[..., Dict[str, Any]] = run_command,
     on_launch: Callable[[Dict[str, Any]], None] | None = None,
     on_complete: Callable[[Dict[str, Any], Dict[str, Any]], bool | None] | None = None,
+    max_concurrent_per_group: int | None = None,
+    group_key_fn: Callable[[Dict[str, Any]], str] | None = None,
 ) -> None:
     concurrency = max(1, int(max_concurrent or 1))
+    per_group_limit = max(1, int(max_concurrent_per_group or 0)) if max_concurrent_per_group is not None else None
     allow_new_launches = True
 
-    if concurrency <= 1:
-        for spec in child_specs:
-            if on_launch is not None:
-                on_launch(spec)
-            completed = _invoke_child_run_spec(spec, runner=runner)
-            if on_complete is not None and on_complete(spec, completed) is False:
-                break
-        return
+    def _group_key(spec: Dict[str, Any]) -> str:
+        if group_key_fn is None:
+            return ""
+        return str(group_key_fn(spec) or "")
 
-    future_to_spec: Dict[Any, Dict[str, Any]] = {}
-    next_index = 0
+    pending_specs: List[Dict[str, Any]] = list(child_specs)
+    future_to_spec: Dict[Any, Tuple[Dict[str, Any], str]] = {}
+    active_by_group: Dict[str, int] = defaultdict(int)
     with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sweep-child") as executor:
-        while next_index < len(child_specs) or future_to_spec:
-            while allow_new_launches and next_index < len(child_specs) and len(future_to_spec) < concurrency:
-                spec = child_specs[next_index]
-                next_index += 1
+        while pending_specs or future_to_spec:
+            while allow_new_launches and len(future_to_spec) < concurrency:
+                launch_index: int | None = None
+                launch_group = ""
+                for index, spec in enumerate(pending_specs):
+                    candidate_group = _group_key(spec)
+                    if per_group_limit is not None and candidate_group and active_by_group.get(candidate_group, 0) >= per_group_limit:
+                        continue
+                    launch_index = index
+                    launch_group = candidate_group
+                    break
+                if launch_index is None:
+                    break
+                spec = pending_specs.pop(launch_index)
                 if on_launch is not None:
                     on_launch(spec)
+                if per_group_limit is not None and launch_group:
+                    active_by_group[launch_group] += 1
                 future = executor.submit(_invoke_child_run_spec, spec, runner=runner)
-                future_to_spec[future] = spec
+                future_to_spec[future] = (spec, launch_group)
 
             if not future_to_spec:
                 break
 
             completed_futures, _ = wait(list(future_to_spec.keys()), return_when=FIRST_COMPLETED)
             for future in completed_futures:
-                spec = future_to_spec.pop(future)
+                spec, launch_group = future_to_spec.pop(future)
+                if per_group_limit is not None and launch_group:
+                    active_by_group[launch_group] = max(0, int(active_by_group.get(launch_group, 0)) - 1)
                 try:
                     completed = future.result()
                 except Exception as exc:
@@ -1628,6 +1646,7 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
     parser.add_argument("--timeout-sec", type=int, default=0, help="Optional subprocess timeout in seconds for child runs; 0 disables it")
     parser.add_argument("--repetitions", type=int, default=0, help="Optional repetition-count override; 0 uses the config default")
     parser.add_argument("--max-concurrent-repetitions", type=int, default=1, help="Maximum number of child repetitions for the same planned configuration to execute at once. Default is 1 (sequential).")
+    parser.add_argument("--max-concurrent-child-runs", type=int, default=0, help="Maximum total child runs across the whole sweep to execute at once. 0 uses the same limit as --max-concurrent-repetitions.")
     parser.add_argument("--skip-visuals", action="store_true", help="Skip PNG chart generation")
     parser.add_argument("--quiet-child-output", action="store_true", help="Do not stream child run status/output while the sweep is running")
     parser.add_argument("--live-view", action="store_true", help="Start a lightweight local progress monitor that polls the sweep artifacts while runs are executing")
@@ -1685,6 +1704,12 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
         dict(run_cfg, prefer_upx_unpacked=True) if args.prefer_unpacked_upx else dict(run_cfg)
         for run_cfg in planned_runs
     ]
+    effective_max_concurrent_repetitions = max(1, int(args.max_concurrent_repetitions or 1))
+    effective_max_concurrent_child_runs = max(
+        1,
+        int(args.max_concurrent_child_runs or effective_max_concurrent_repetitions),
+    )
+
     experiment_manifest = {
         "experiment_id": experiment_id,
         "config_path": str(Path(args.config).resolve()),
@@ -1693,7 +1718,8 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
         "selected_tasks": list(args.task),
         "selected_difficulties": list(args.difficulty_filter),
         "repetitions": repetitions,
-        "max_concurrent_repetitions": max(1, int(args.max_concurrent_repetitions or 1)),
+        "max_concurrent_repetitions": effective_max_concurrent_repetitions,
+        "max_concurrent_child_runs": effective_max_concurrent_child_runs,
         "enable_budget_guardrails": bool(args.enable_budget_guardrails),
         "prefer_upx_unpacked": bool(args.prefer_unpacked_upx),
         "budget_config": budget_config,
@@ -1814,7 +1840,8 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                 "pipeline": str(run_cfg.get("pipeline") or corpus.default_pipeline),
                 "architecture": str(run_cfg.get("architecture") or corpus.default_architecture),
                 "validator_review_level": str(run_cfg.get("validator_review_level") or "default"),
-                "query_variant": str(run_cfg.get("query_variant") or "default"),
+                "response_scope_variant": str(run_cfg.get("response_scope_variant") or "default"),
+                "analysis_hint_variant": str(run_cfg.get("analysis_hint_variant") or "default"),
                 "worker_role_prompt_mode": str(run_cfg.get("worker_role_prompt_mode") or "default"),
                 "prefer_upx_unpacked": bool(args.prefer_unpacked_upx or run_cfg.get("prefer_upx_unpacked")),
                 "checks": validate_run_configuration(
@@ -1826,7 +1853,8 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                     selected_difficulties=args.difficulty_filter,
                     pipeline=str(run_cfg.get("pipeline") or corpus.default_pipeline),
                     architecture=str(run_cfg.get("architecture") or corpus.default_architecture),
-                    query_variant=str(run_cfg.get("query_variant") or "default"),
+                    response_scope_variant=str(run_cfg.get("response_scope_variant") or "default"),
+                    analysis_hint_variant=str(run_cfg.get("analysis_hint_variant") or "default"),
                     worker_persona_profile=str(run_cfg.get("worker_persona_profile") or "default"),
                     worker_role_prompt_mode=str(run_cfg.get("worker_role_prompt_mode") or "default"),
                     validator_review_level=str(run_cfg.get("validator_review_level") or "default"),
@@ -1960,13 +1988,12 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
         "limits": budget_config,
         "aborted_early": False,
     }
-    max_concurrent_repetitions = max(1, int(args.max_concurrent_repetitions or 1))
+    all_child_specs: List[Dict[str, Any]] = []
     for run_cfg in planned_runs:
         variant_id = str(run_cfg.get("variant_id") or "variant")
         variant_name = str(run_cfg.get("variant_name") or variant_id)
         comparison_baseline_id = str(run_cfg.get("comparison_baseline_id") or "").strip()
         comparison_baseline_label = str(run_cfg.get("comparison_baseline_label") or "").strip()
-        child_specs: List[Dict[str, Any]] = []
         for repetition_index in range(repetitions):
             planned_key = f"{variant_id}::r{repetition_index + 1}"
             catalog_entry = run_entries[run_entry_index[planned_key]]
@@ -1984,8 +2011,10 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                 str(run_cfg.get("pipeline") or corpus.default_pipeline),
                 "--architecture",
                 str(run_cfg.get("architecture") or corpus.default_architecture),
-                "--query-variant",
-                str(run_cfg.get("query_variant") or "default"),
+                "--response-scope-variant",
+                str(run_cfg.get("response_scope_variant") or "default"),
+                "--analysis-hint-variant",
+                str(run_cfg.get("analysis_hint_variant") or "default"),
                 "--subagent-profile",
                 str(run_cfg.get("subagent_profile") or "default"),
                 "--worker-persona-profile",
@@ -2065,9 +2094,10 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                 f"{str(run_cfg.get('changed_variable') or '')}:baseline" if bool(run_cfg.get("is_family_baseline"))
                 else f"{str(run_cfg.get('changed_variable') or '')}:{variant_name}"
             )
-            child_specs.append(
+            all_child_specs.append(
                 {
                     "catalog_entry": catalog_entry,
+                    "concurrency_group": variant_id,
                     "display_label": display_label,
                     "repetition_index": repetition_index + 1,
                     "cmd": cmd,
@@ -2079,92 +2109,90 @@ def run_experiment_sweep(argv: List[str] | None = None) -> None:
                     "stream_capture_path": "",
                 }
             )
-        if not child_specs:
-            continue
 
-        def _on_launch(spec: Dict[str, Any]) -> None:
-            entry = spec["catalog_entry"]
-            timeout_value = spec.get("timeout_sec")
-            timeout_label = f"{timeout_value}s" if timeout_value is not None else "disabled"
-            print(
-                f"[sweep] starting {spec['display_label']} replicate {spec['repetition_index']}/{repetitions} "
-                f"(timeout={timeout_label})",
-                file=sys.stderr,
-                flush=True,
-            )
-            entry.update(
-                {
-                    "status": "running",
-                    "ok": None,
-                    "command": list(spec.get("cmd") or []),
-                    "started_at_epoch": time.time(),
-                    "finished_at_epoch": None,
-                }
-            )
-            _write_run_catalog(experiment_root, run_entries)
-
-        def _on_complete(spec: Dict[str, Any], completed: Dict[str, Any]) -> bool:
-            nonlocal experiment_budget_status
-            entry = spec["catalog_entry"]
-            entry.update(
-                {
-                    "ok": bool(completed.get("ok")),
-                    "status": "completed" if bool(completed.get("ok")) else "failed",
-                    "stdout": str(completed.get("stdout") or ""),
-                    "stderr": str(completed.get("stderr") or ""),
-                    "returncode": completed.get("returncode"),
-                    "error": str(completed.get("error") or "").strip(),
-                    "finished_at_epoch": time.time(),
-                }
-            )
-            if completed.get("ok"):
-                try:
-                    payload = _parse_completion_payload(entry["stdout"])
-                    run_dir = Path(str(payload.get("run_dir") or "")).resolve()
-                    aggregate = read_json(run_dir / "aggregate.json")
-                    run_manifest = read_json(run_dir / "run_manifest.json")
-                    entry.update(
-                        {
-                            "run_id": str(payload.get("run_id") or ""),
-                            "run_dir": str(run_dir),
-                            "aggregate": aggregate,
-                            "run_manifest": run_manifest,
-                        }
-                    )
-                except Exception as exc:
-                    entry["ok"] = False
-                    entry["status"] = "failed"
-                    entry["error"] = f"{type(exc).__name__}: {exc}"
-            print(
-                f"[sweep] finished {entry['display_label']} replicate {spec['repetition_index']}/{repetitions} "
-                f"ok={entry.get('ok')}",
-                file=sys.stderr,
-                flush=True,
-            )
-            _write_run_catalog(experiment_root, run_entries)
-            if entry.get("ok") and isinstance(entry.get("aggregate"), dict):
-                successful_records: List[Dict[str, Any]] = []
-                for existing in run_entries:
-                    aggregate = existing.get("aggregate") if isinstance(existing.get("aggregate"), dict) else {}
-                    successful_records.extend(list(aggregate.get("records") or []))
-                experiment_budget_summary = summarize_record_budget(successful_records)
-                experiment_budget_status = evaluate_budget_status(experiment_budget_summary, budget_config, scope="experiment")
-                experiment_budget_status["aborted_early"] = False
-                write_json(experiment_root / "budget_status.json", experiment_budget_status)
-                if not experiment_budget_status.get("ok") and bool(budget_config.get("abort_experiment_on_budget_exceeded", True)):
-                    experiment_budget_status["aborted_early"] = True
-                    write_json(experiment_root / "budget_status.json", experiment_budget_status)
-                    return False
-            return True
-
-        _execute_child_run_specs(
-            child_specs,
-            max_concurrent=max_concurrent_repetitions,
-            on_launch=_on_launch,
-            on_complete=_on_complete,
+    def _on_launch(spec: Dict[str, Any]) -> None:
+        entry = spec["catalog_entry"]
+        timeout_value = spec.get("timeout_sec")
+        timeout_label = f"{timeout_value}s" if timeout_value is not None else "disabled"
+        print(
+            f"[sweep] starting {spec['display_label']} replicate {spec['repetition_index']}/{repetitions} "
+            f"(timeout={timeout_label})",
+            file=sys.stderr,
+            flush=True,
         )
-        if experiment_budget_status.get("aborted_early"):
-            break
+        entry.update(
+            {
+                "status": "running",
+                "ok": None,
+                "command": list(spec.get("cmd") or []),
+                "started_at_epoch": time.time(),
+                "finished_at_epoch": None,
+            }
+        )
+        _write_run_catalog(experiment_root, run_entries)
+
+    def _on_complete(spec: Dict[str, Any], completed: Dict[str, Any]) -> bool:
+        nonlocal experiment_budget_status
+        entry = spec["catalog_entry"]
+        entry.update(
+            {
+                "ok": bool(completed.get("ok")),
+                "status": "completed" if bool(completed.get("ok")) else "failed",
+                "stdout": str(completed.get("stdout") or ""),
+                "stderr": str(completed.get("stderr") or ""),
+                "returncode": completed.get("returncode"),
+                "error": str(completed.get("error") or "").strip(),
+                "finished_at_epoch": time.time(),
+            }
+        )
+        if completed.get("ok"):
+            try:
+                payload = _parse_completion_payload(entry["stdout"])
+                run_dir = Path(str(payload.get("run_dir") or "")).resolve()
+                aggregate = read_json(run_dir / "aggregate.json")
+                run_manifest = read_json(run_dir / "run_manifest.json")
+                entry.update(
+                    {
+                        "run_id": str(payload.get("run_id") or ""),
+                        "run_dir": str(run_dir),
+                        "aggregate": aggregate,
+                        "run_manifest": run_manifest,
+                    }
+                )
+            except Exception as exc:
+                entry["ok"] = False
+                entry["status"] = "failed"
+                entry["error"] = f"{type(exc).__name__}: {exc}"
+        print(
+            f"[sweep] finished {entry['display_label']} replicate {spec['repetition_index']}/{repetitions} "
+            f"ok={entry.get('ok')}",
+            file=sys.stderr,
+            flush=True,
+        )
+        _write_run_catalog(experiment_root, run_entries)
+        if entry.get("ok") and isinstance(entry.get("aggregate"), dict):
+            successful_records: List[Dict[str, Any]] = []
+            for existing in run_entries:
+                aggregate = existing.get("aggregate") if isinstance(existing.get("aggregate"), dict) else {}
+                successful_records.extend(list(aggregate.get("records") or []))
+            experiment_budget_summary = summarize_record_budget(successful_records)
+            experiment_budget_status = evaluate_budget_status(experiment_budget_summary, budget_config, scope="experiment")
+            experiment_budget_status["aborted_early"] = False
+            write_json(experiment_root / "budget_status.json", experiment_budget_status)
+            if not experiment_budget_status.get("ok") and bool(budget_config.get("abort_experiment_on_budget_exceeded", True)):
+                experiment_budget_status["aborted_early"] = True
+                write_json(experiment_root / "budget_status.json", experiment_budget_status)
+                return False
+        return True
+
+    _execute_child_run_specs(
+        all_child_specs,
+        max_concurrent=effective_max_concurrent_child_runs,
+        max_concurrent_per_group=effective_max_concurrent_repetitions,
+        group_key_fn=lambda spec: str(spec.get("concurrency_group") or ""),
+        on_launch=_on_launch,
+        on_complete=_on_complete,
+    )
 
     _write_run_catalog(experiment_root, run_entries)
     write_json(experiment_root / "budget_status.json", experiment_budget_status)

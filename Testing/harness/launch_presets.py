@@ -33,7 +33,8 @@ _SINGLE_RUN_FLAG_FIELDS: tuple[tuple[str, str], ...] = (
     ("pipeline", "--pipeline"),
     ("architecture", "--architecture"),
     ("query", "--query"),
-    ("query_variant", "--query-variant"),
+    ("response_scope_variant", "--response-scope-variant"),
+    ("analysis_hint_variant", "--analysis-hint-variant"),
     ("subagent_profile", "--subagent-profile"),
     ("worker_persona_profile", "--worker-persona-profile"),
     ("worker_role_prompt_mode", "--worker-role-prompt-mode"),
@@ -167,6 +168,7 @@ def build_launch_preset_command(
     preflight_only: bool = False,
     live_view: bool = False,
     max_concurrent_repetitions: int | None = None,
+    max_concurrent_child_runs: int | None = None,
     skip_build: bool = False,
     skip_prepare: bool = False,
     ghidra_install_dir: str = "",
@@ -203,6 +205,11 @@ def build_launch_preset_command(
         preset_concurrency = preset.get("max_concurrent_repetitions")
     if runner == "sweep" and preset_concurrency is not None and int(preset_concurrency) > 0:
         command.extend(["--max-concurrent-repetitions", str(int(preset_concurrency))])
+    preset_child_concurrency = max_concurrent_child_runs
+    if preset_child_concurrency is None:
+        preset_child_concurrency = preset.get("max_concurrent_child_runs")
+    if runner == "sweep" and preset_child_concurrency is not None and int(preset_child_concurrency) > 0:
+        command.extend(["--max-concurrent-child-runs", str(int(preset_child_concurrency))])
 
     for key, flag in _COMMON_FLAG_FIELDS:
         _append_flag(command, flag, preset.get(key))

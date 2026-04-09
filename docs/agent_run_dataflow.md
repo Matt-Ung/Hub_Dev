@@ -104,7 +104,7 @@ sequenceDiagram
     participant Report as "reporting + result_layout"
     participant FS as "results filesystem"
 
-    Trigger->>Runner: run args / UI inputs<br/>{corpus, sample?, task?, pipeline?, architecture?, query_variant, ...}
+    Trigger->>Runner: run args / UI inputs<br/>{corpus, sample?, task?, pipeline?, architecture?, response_scope_variant, analysis_hint_variant, ...}
     Runner->>Samples: list_sample_binaries()<br/>build_evaluation_tasks()
     Samples-->>Runner: EvaluationTask[]<br/>{sample_name, sample_path,<br/> task_id, task_name, query,<br/> difficulty, target_tools,<br/> expected_evidence,<br/> acceptance_targets, tags}
     Runner->>Bundles: build_corpus()<br/>prepare_corpus_bundles()<br/>inspect_corpus_bundles()
