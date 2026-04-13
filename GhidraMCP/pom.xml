@@ -7,8 +7,9 @@
   <artifactId>ThesisGhidraMCP</artifactId>
   <packaging>jar</packaging>
   <version>12.0.2-SNAPSHOT</version>
-  <name>ThesisGhidraMCP</name>
-  <url>http://maven.apache.org</url>
+  <name>HubDev GhidraMCP Extension</name>
+  <url>https://github.com/LaurieWired/GhidraMCP</url>
+  <description>Hub_Dev's extended GhidraMCP fork, based on LaurieWired's original GhidraMCP project.</description>
 
   <dependencies>
     <!-- Ghidra JARs as system-scoped dependencies -->

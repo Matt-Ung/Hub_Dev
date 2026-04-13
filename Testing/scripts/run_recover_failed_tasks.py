@@ -146,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
         help="For each relaunched task, retry retryable failures this many times after the first attempt.",
     )
     parser.add_argument(
+        "--deep-agent-request-limit",
+        type=int,
+        default=None,
+        help="Override the deep-agent request cap used by recovery child runs. Omit to reuse the original run setting when available, or pass 0 to disable the cap.",
+    )
+    parser.add_argument(
         "--max-concurrent-recovery-runs",
         type=int,
         default=1,
@@ -162,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_sec=int(args.timeout_sec or 0),
             task_failure_retries=max(0, int(args.task_failure_retries or 0)),
             max_concurrent_recovery_runs=max(1, int(args.max_concurrent_recovery_runs or 1)),
+            deep_agent_request_limit=args.deep_agent_request_limit,
         )
     except Exception as exc:
         print(f"Recovery failed: {type(exc).__name__}: {exc}", file=sys.stderr)

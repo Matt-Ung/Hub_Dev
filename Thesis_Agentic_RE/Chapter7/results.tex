@@ -1,226 +1,107 @@
 \chapter{Results and Analysis}
 \label{sec:results}
 
-This chapter should distinguish clearly between early-stage development evidence and the final thesis-grade evaluation. The repository already contains useful experimental artifacts, but the current materials are best treated as pilot or methodology-shaping results unless they are explicitly identified as part of the final held-out evaluation.
+This chapter separates three kinds of evidence by evidentiary weight. First, the archived broad and decoder-depth studies are used as development-stage evidence: they helped narrow the final comparison set and exposed workflow design problems, but they are not the main basis for final claims. Second, the repaired final held-out experiment is used for the main performance comparisons because it restores complete coverage across all seven configurations. Third, the unrecovered final sweep is retained only as a robustness caveat, because it shows an infrastructure failure mode that the repaired aggregate would otherwise hide.
 
-\section{Preliminary Repository Snapshot}
+\section{Development-Stage Archive Evidence}
 
-The repository currently contains two result sets that are useful for shaping the final analysis chapter:
+The archived broad and decoder-depth figures are still useful, but they should be read as methodology-shaping artifacts rather than as final effect estimates. Their main value is that they show which workflow changes were worth carrying into the held-out evaluation and which ones exposed design problems before the blind final comparison was launched. The broad pilot sample set is summarized in Table~\ref{tab:broad-sweep-samples}, and the variant labels used across the archive and final studies are summarized in Table~\ref{tab:evaluation-variants}.
 
-\begin{itemize}
-\item a repaired breadth-oriented sweep artifact, which compares several configuration families but only has one repetition per configuration; and
-\item a merged decoder-depth artifact, which compares five configurations on the \texttt{config\_decoder\_test} stripped and packed variants with three repetitions each.
-\end{itemize}
-
-These artifacts are useful because they expose failure modes, refine the reporting stack, and help identify which workflow variables deserve deeper study. They should not, however, be written up as the final answer to the thesis research question without a separate held-out evaluation. In particular, the breadth sweep is descriptive rather than statistically strong because each configuration only appears once.
-
-\section{Preliminary Development Observations}
-
-\begin{itemize}
-\item Early runs are most useful for debugging workflow behavior, understanding failure accounting, and selecting promising intervention families.
-\item At this stage, the goal is not to prove broad effectiveness but to identify which comparisons are worth carrying forward into stronger evaluation.
-\item All numeric observations in this section should be treated as provisional unless they are later repeated in the final evaluation section.
-\end{itemize}
+\subsection{Broad Coverage Pilot}
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{experiment_results/broad_repaired_overall_ranking.png}
-\caption{Preliminary repaired broad-sweep ranking. This figure is useful for hypothesis generation and follow-up planning rather than for a final claim about general effectiveness.}
+\caption{Archived broad-pilot ranking. This figure is used here as a descriptive development artifact: it shows which intervention families separated from the baseline strongly enough to justify follow-up study, but it is not treated as a thesis-grade estimate of general effectiveness.}
 \label{fig:broad-repaired-ranking}
 \end{figure}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\textwidth]{experiment_results/broad_repaired_tradeoffs.png}
-\caption{Preliminary repaired broad-sweep runtime and cost tradeoffs. The main use of this figure is to identify follow-up candidates and obvious cost or latency regressions before the final held-out evaluation.}
-\label{fig:broad-repaired-tradeoffs}
-\end{figure}
+Figure~\ref{fig:broad-repaired-ranking} supports two narrow conclusions. First, the pilot was sufficient to rule out some directions as uninteresting for the final comparison set. In particular, the final thesis sweep did not continue treating reduced tool access as a central variable, because that direction behaved more like an artificial handicap than an informative workflow comparison. Second, prompt-surface and worker-topology changes were large enough in the pilot to justify carrying them forward into deeper testing.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\textwidth]{experiment_results/broad_repaired_reliability.png}
-\caption{Preliminary repaired broad-sweep reliability and coverage view. Even in pilot runs, the reporting should keep validator, analysis, and infrastructure failures separate.}
-\label{fig:broad-repaired-reliability}
-\end{figure}
+The broad pilot does \emph{not} support a stronger claim than that. It is best read as a screening step over the authored benchmark. It helps explain why the final sweep focused on worker subagents, worker prompt shape, response scope, and architectural emphasis, but it does not by itself establish that any of those variables generalize to harder held-out malware families.
 
-Provisional observations from the repaired broad sweep currently on disk:
-
-\begin{itemize}
-\item The no-role worker-prompt condition shows the largest descriptive score lift over baseline in this repaired pilot sweep: mean score \texttt{85.405} versus baseline \texttt{75.155}, with a score delta of \texttt{+10.250}. This should be treated as a follow-up signal rather than as definitive evidence.
-\item The single-generalist worker profile and the brief-query condition both improve mean score by roughly \texttt{+4.5}. The single-generalist condition is more useful for follow-up work because it changes the workflow structure rather than only shortening the query surface.
-\item After repair, the retained breadth-sweep rows have full coverage. That is important for debugging the harness, but it does not remove the limitation that the sweep still has one repetition per configuration.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Keep this section explicitly framed as preliminary in the final thesis draft.}
-\item \TODO{Replace the provisional repository-snapshot discussion above with a short bridge into the final evaluation once that run exists.}
-\item \TODO{Explain why the broad sweep was used to choose follow-up variables rather than as the sole basis for a strong final claim.}
-\item \TODO{Report cost, runtime, and stability tradeoffs alongside score movement so the reader sees why score alone was not treated as decisive at this stage.}
-\end{itemize}
-
-\section{Broad Coverage Pilot Testing}
-
-The repaired breadth sweep is best treated as a broad-coverage pilot over the authored benchmark. Its role in the thesis should be to show how the harness was used to explore the configuration space, surface failure modes, and choose promising follow-up conditions before any held-out malware-facing evaluation.
-
-\begin{itemize}
-\item This stage should be described as a broader realism check over task categories and workflow families, not as proof of general external validity.
-\item It is appropriate to use this stage to motivate which interventions were carried into the focused depth study and later held-out evaluation.
-\item It is not appropriate to treat this stage alone as evidence that the system generalizes to real malware families.
-\item If a manually supplied malware-family pilot is run before the final locked evaluation, it should also be framed here as pre-final and methodology-shaping rather than thesis-conclusive.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Add a concise table that summarizes the retained pilot families, their descriptive score movement, and the reason each family was or was not advanced into later testing.}
-\item \TODO{Use this section to explain what the broad pilot taught about methodology, not just which variant happened to score highest.}
-\item \TODO{If a malware-family realism check is run before the final held-out evaluation, report it here as a broad-coverage pilot and state clearly that it is still pre-final.}
-\end{itemize}
-
-The maintained reproduction path for this section is the preset \texttt{coverage\_broad\_r1\_60usd}. A clean rerun uses \path{Testing/scripts/run\_launch\_preset.py} with a preflight pass first and then the real run command:
-
-\begin{verbatim}
-python Testing/scripts/run_launch_preset.py \
-  --preset coverage_broad_r1_60usd \
-  --judge-model openai:gpt-4o-mini \
-  --preflight-only
-
-python Testing/scripts/run_launch_preset.py \
-  --preset coverage_broad_r1_60usd \
-  --judge-model openai:gpt-4o-mini
-\end{verbatim}
-
-The preflight record for this pilot is written under \path{Testing/results/preflight/}, while the executed sweep and its figures are written under \path{Testing/results/experiments/<experiment\_id>/}. That directory is the canonical source for the \path{variant\_summary.csv}, \path{task\_comparison.csv}, and \path{outputs/*.png} artifacts cited in this section.
-
-\section{Focused Decoder Development Study}
-
-The deeper \texttt{config\_decoder\_test} study should serve as a focused development case study rather than just another row in the broad sweep. Its purpose is to test whether the selected interventions appear to improve depth of understanding on a deliberately richer executable, not to replace the final held-out evaluation.
-
-\begin{itemize}
-\item Compare stripped versus packed-and-stripped variants.
-\item Compare default analysis with focused configuration-recovery tasks.
-\item Analyze whether the selected variable family improves depth of understanding or only broad summary quality.
-\end{itemize}
+\subsection{Focused Decoder-Depth Case Study}
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{experiment_results/decoder_depth_combined_overall_ranking.png}
-\caption{Preliminary decoder-depth ranking across stripped and packed \texttt{config\_decoder\_test} tasks. This figure is stronger than the broad pilot because it includes repetitions, but it is still part of the developmental evidence base rather than the final held-out evaluation.}
+\caption{Archived decoder-depth ranking over the stripped and packed \texttt{config\_decoder\_test} variants. This case study is stronger than the broad pilot because it includes repeated runs, but it still remains a developmental case study rather than the final held-out evaluation.}
 \label{fig:decoder-depth-ranking}
 \end{figure}
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\textwidth]{experiment_results/decoder_depth_combined_tradeoffs.png}
-\caption{Preliminary decoder-depth tradeoffs. This view is useful for understanding whether a score gain comes with a practical runtime or cost penalty.}
-\label{fig:decoder-depth-tradeoffs}
-\end{figure}
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\textwidth]{experiment_results/decoder_depth_combined_task_category_deltas.png}
-\caption{Preliminary decoder-depth task-category score deltas. This figure supports a case-study interpretation of where each intervention helps or hurts.}
-\label{fig:decoder-depth-category-deltas}
-\end{figure}
-
-\begin{figure}[t]
-\centering
 \includegraphics[width=\textwidth]{experiment_results/decoder_depth_combined_reliability.png}
-\caption{Preliminary decoder-depth reliability and coverage view. This figure is especially useful because it distinguishes a validator-dominated failure mode from simple infrastructure failure.}
+\caption{Archived decoder-depth reliability and coverage. This figure is especially important because it separates weak analytical output from a validator-dominated failure mode.}
 \label{fig:decoder-depth-reliability}
 \end{figure}
 
-Provisional observations from the current combined decoder-depth experiment:
+The archived decoder-depth study supports a stronger but still limited interpretation. Compared with the broad pilot, it provides clearer evidence that workflow changes can matter differently on a deeper reverse-engineering task family than on easier overview-oriented tasks. Figure~\ref{fig:decoder-depth-ranking} shows that worker prompt shape and worker topology can change performance on packed and stripped decoder-oriented cases rather than merely changing report style. Figure~\ref{fig:decoder-depth-reliability} shows that not every additional layer helps. The validator-heavy pipeline behaves as a concrete negative case because its collapse is visible as a reliability and coverage failure rather than only a low score. The exact stripped and UPX-packed executables used in that case study are listed in Table~\ref{tab:depth-sweep-samples}, and the decoder-specific variant labels are defined in Table~\ref{tab:evaluation-variants}.
 
-\begin{itemize}
-\item Baseline mean score is \texttt{79.232} with task-success rate \texttt{0.963}.
-\item The no-role worker-prompt condition appears to be the strongest repeated-trial variant in this focused study: mean score \texttt{83.597}, score delta \texttt{+4.365}, lower mean runtime, and nearly flat cost relative to baseline. This is promising, but it remains a case-study result rather than the final thesis endpoint.
-\item The single-generalist worker profile also improves mean score to \texttt{82.671}, but its task-success rate drops slightly from \texttt{0.963} to \texttt{0.926}. The current interpretation is therefore a tradeoff, not an unconditional improvement.
-\item The validator-heavy pipeline appears to perform poorly in this study: mean score \texttt{3.571}, task-success rate \texttt{0.037}, validator-blocked rate \texttt{0.963}, and much larger runtime and cost than baseline. This is useful as an early warning about workflow design, not just as a low score.
-\item Task-level outputs suggest that the packed UPX variant remains methodologically informative: for example, the no-role worker-prompt condition improves the packed default-analysis task by \texttt{+10.713}, while the single-generalist worker profile improves the packing triage task but regresses the parser-validation audit task.
-\end{itemize}
+This case study therefore motivated two design choices for the held-out evaluation. The final sweep kept worker-topology and prompt-shape comparisons, because the decoder-depth figures suggested they could matter on richer tasks. It did not elevate the validator-heavy pipeline into the final comparison set, because the development evidence suggested that its failure mode was structural rather than merely unlucky on one sample.
 
-\begin{itemize}
-\item \TODO{Turn the working observations above into a polished preliminary case-study narrative once the wording is locked.}
-\item \TODO{Explain why \texttt{config\_decoder\_test} is a useful stress test for reverse-engineering depth.}
-\item \TODO{Discuss whether the packed variant changes the relative value of tool orchestration or unpacking support. The current task-level evidence suggests that packed-sample handling changes which intervention helps: prompt-shape changes help some packed tasks, while worker-subagent structure helps others.}
-\item \TODO{Explain why the no-role worker-prompt condition looks better in the repeated decoder-depth study than the evidence-focused worker prompt, and whether that difference reflects cleaner worker instructions or something specific to this benchmark.}
-\item \TODO{Analyze the validator-heavy pipeline separately as a failure mode, not just a low-scoring configuration. Its near-total validator-block rate is methodologically interesting because it changes what ``failure'' means.}
-\end{itemize}
+\section{Final Held-Out Evaluation}
 
-The maintained reproduction paths for the decoder-depth studies are the presets \texttt{sweep\_decoder\_depth\_r3} and \texttt{sweep\_decoder\_depth\_followups\_r3}. The first preset reproduces the repeated combined depth comparison over the stripped and packed decoder variants. The second reproduces the narrower worker-prompt and validator follow-up suite. The repository commands are:
+Unless otherwise noted, performance comparisons in this section refer to the rebuilt repaired experiment, which preserves the benchmark scope and configuration set while folding in successful recovery results for tasks that initially failed for infrastructure reasons. (The exact experiment identifier and artifact provenance are documented in Appendix~\ref{app:reproduction-commands}.) The unrecovered sweep remains important and is discussed separately in Section~\ref{sec:final-failure-analysis}, because it reveals a real robustness limitation of the workflow. The held-out sample aliases and evaluator-side technique summaries are listed in Table~\ref{tab:final-heldout-samples}, and the configuration labels that appear in the figures are summarized in Table~\ref{tab:evaluation-variants}.
 
-\begin{verbatim}
-python Testing/scripts/run_launch_preset.py \
-  --preset sweep_decoder_depth_r3 \
-  --judge-model openai:gpt-4o-mini \
-  --preflight-only
+\subsection{Overall Performance After Recovery}
 
-python Testing/scripts/run_launch_preset.py \
-  --preset sweep_decoder_depth_r3 \
-  --judge-model openai:gpt-4o-mini
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{experiment_results/final_eval_overall_ranking.png}
+\caption{Repaired final held-out ranking across all seven configurations. This figure uses the rebuilt repaired experiment so that all configurations have full coverage. The highest descriptive mean score belongs to \texttt{worker\_prompt\_shape:artifact\_focused}, but none of the overall shifts reached the thesis confidence target of $p \le 0.05$.}
+\label{fig:final-overall-ranking}
+\end{figure}
 
-python Testing/scripts/run_launch_preset.py \
-  --preset sweep_decoder_depth_followups_r3 \
-  --judge-model openai:gpt-4o-mini \
-  --preflight-only
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{experiment_results/final_eval_effect_size_summary.png}
+\caption{Effect-size summary for the repaired final held-out comparison relative to baseline. This figure matters because the repaired experiment supports descriptive ranking, but the inferential question is whether any overall shift is large and stable enough to treat as more than a sample-limited difference.}
+\label{fig:final-effect-size-summary}
+\end{figure}
 
-python Testing/scripts/run_launch_preset.py \
-  --preset sweep_decoder_depth_followups_r3 \
-  --judge-model openai:gpt-4o-mini
-\end{verbatim}
+Figures~\ref{fig:final-overall-ranking} and~\ref{fig:final-effect-size-summary} support several direct findings. First, the final repaired comparison does \emph{not} show a statistically significant overall winner at the thesis confidence target. The best descriptive overall mean score is produced by \texttt{worker\_prompt\_shape:artifact\_focused} at \texttt{82.382}, compared with the baseline at \texttt{78.096}, but the replicate-level permutation test yields \texttt{p = 0.5}. Second, four of the six non-baseline variants underperform the baseline descriptively on overall mean score, and none of those degradations are statistically significant either. Third, the effect-size view shows why the chapter should stop short of a stronger claim: the descriptive winner moves in a positive direction, but the repaired final run still provides only three repetitions per configuration and none of the comparisons meets the thesis significance target.
 
-As with the broad pilot, preflight writes only to \path{Testing/results/preflight/}. Executed decoder-depth suites write their canonical outputs under \path{Testing/results/experiments/<experiment\_id>/}, where the thesis-facing comparison tables and figures can be regenerated directly from the run artifacts.
+These findings answer the first research question in a constrained way. The final repaired run does \emph{not} justify claiming that any alternative workflow is superior overall on the held-out benchmark. It does, however, establish that the evidence-first worker-prompt overlay (\texttt{artifact\_focused}) is the strongest descriptive candidate in the current design space, while the remaining alternatives either appear neutral-to-negative overall or depend heavily on which executable is being analyzed. That executable dependence motivates the finer-grained analysis in the next subsection.
 
-\section{Final Held-Out Evaluation Run}
+\subsection{Executable-Level Heterogeneity}
 
-This section should be reserved for the main thesis-grade evaluation. The final write-up should make it obvious that this is the section that carries the strongest empirical claims, while the earlier sections remain developmental or pilot evidence.
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{experiment_results/final_eval_cross_executable_heatmap.png}
+\caption{Cross-executable score-delta heatmap for the repaired final held-out experiment. Positive cells indicate improvement over the baseline on that executable and negative cells indicate degradation. This view matters because every non-baseline configuration in the repaired final run is marked as mixed and masked by average in the executable-consistency summary.}
+\label{fig:final-cross-executable-heatmap}
+\end{figure}
 
-\begin{itemize}
-\item The final held-out run should use the locked malware-family set, final workflow configuration choices, and final reporting language.
-\item Broad-coverage pilot testing and authored-benchmark development runs should be treated as preparation for this section, not as a substitute for it.
-\item Any stronger language about effectiveness, robustness, or comparative superiority should be grounded here rather than in the preliminary sections above.
-\item The current repository scaffold for this section is the blind manual-corpus preset \texttt{thesis\_final\_eval\_r3\_100usd}, which compares the baseline against a wider but still selective set of development-informed follow-up conditions over five analyst-supplied samples, one locked blind default-analysis task per sample, and three repetitions.
-\item Runtime analysis should remain blind to malware family identity. The evaluator-side manifest stores family and provenance metadata, but the runtime should only see neutral blind aliases plus task prompts that treat the binary as unknown.
-\end{itemize}
+Figure~\ref{fig:final-cross-executable-heatmap} shows why the overall mean is not enough. All six non-baseline configurations are heterogeneous across the five executables. In the executable-consistency summary, every non-baseline row is labeled \texttt{mixed}, and every one is flagged as \texttt{masked\_by\_average=true}. That is not a rhetorical caveat; it is a direct property of the repaired final dataset. The paged per-executable score panels generated from the same repaired experiment retain the repetition-level variance detail and are included in Appendix~\ref{app:final-per-executable-panels}, but the heatmap is the more legible thesis-scale summary and is therefore the figure kept in the main text.
 
-\begin{itemize}
-\item \TODO{Document the final malware-family set: Emotet, QakBot, TrickBot, WannaCry, and PlugX, using analyst-supplied samples only.}
-\item \TODO{State the final run configuration(s), including baseline, treatment conditions, repetition count, the use of blind runtime aliases, and any held-constant tool or model settings.}
-\item \TODO{Insert the final evaluation tables and figures for score, runtime, cost, reliability, and coverage.}
-\item \TODO{Compare the final evaluation configurations against the chosen baselines using the final scoring and failure-accounting policy.}
-\item \TODO{Describe the analyst-reviewed gold-label workflow, including where Ghidra/manual evidence anchors were inserted and how unsupported claims were encoded.}
-\item \TODO{Add the final statistical analysis and confidence language here, including any caveats about sample size, power, multiple comparisons, and budget-driven retry variance.}
-\item \TODO{Make explicit which claims are supported by the final held-out run versus only by preliminary development evidence.}
-\end{itemize}
+The concrete pattern is easy to summarize. Baseline remains strongest on \texttt{sample2.exe} and \texttt{sample5.exe}. \texttt{worker\_prompt\_shape:empty} is the top descriptive performer only on \texttt{sample1.exe}, and even there the gain over baseline is modest at \texttt{+1.19}. \texttt{worker\_prompt\_shape:artifact\_focused} is strongest on \texttt{sample3.exe}, where it improves mean score by \texttt{+21.427} relative to baseline. \texttt{architecture\_preset:model\_augmented} ties for the best score on \texttt{sample4.exe} and improves by \texttt{+11.903} there, but it is also the worst-performing configuration on \texttt{sample1.exe} with a delta of \texttt{-17.856}. These are sample-dependent reversals, not minor fluctuations around the same answer. Table~\ref{tab:final-heldout-samples} is useful alongside this subsection because the alias names alone do not tell the reader which kinds of behaviors or analysis challenges each sample was meant to stress.
 
-\section{Qualitative Failure Analysis}
+Two conclusions follow directly from the data. First, the final benchmark is heterogeneous enough that the configuration with the best global mean can still be a poor choice for specific executables, a finding that would be invisible in aggregate-only reporting. Second, the final repaired dataset supports \emph{conditional} findings more confidently than \emph{global} ones: some interventions help on certain executable profiles while hurting others. This answers the third research question more clearly than the first or second one. The held-out results show that executable-level heterogeneity is not a side note; it is central to how these workflows should be interpreted.
 
-The thesis should include concrete examples of failures, not just averages. This is particularly important in agentic systems where some runs fail because the workflow reasoned poorly, while others fail because the tool chain or orchestration broke down.
+The next interpretive step is plausible but not fully proven: the executables that benefit from \texttt{artifact\_focused} or \texttt{model\_augmented} may be the ones where deeper control-flow reconstruction or evidence organization matters more than broad default coverage. The current experiment is suggestive on that point, but with only five executables it is better to treat that as a hypothesis for future stratified evaluation than as a settled causal explanation.
 
-\begin{itemize}
-\item Analysis errors and worker assignment failures.
-\item Cases where the report completed but important evidence was missing.
-\item Cases where recovery reruns changed the aggregate interpretation.
-\end{itemize}
+\subsection{Robustness Caveat from the Original Held-Out Sweep}
+\label{sec:final-failure-analysis}
 
-\begin{itemize}
-\item \TODO{Select two or three illustrative failure cases and analyze them in detail.}
-\item \TODO{Differentiate reasoning failures, tool failures, and judging or recovery artifacts. A good starting point is to contrast the validator-blocked \path{pipeline_preset:validators_reporter} runs with repaired broad-sweep failures that were caused by worker assignment or analysis-stage errors.}
-\item \TODO{Show how the live monitor or result browser made these failures inspectable.}
-\item \TODO{Include at least one example where recovery changed the aggregate interpretation, and one example where recovery was intentionally not used because the underlying failure was deterministic rather than transient.}
-\end{itemize}
+The repaired aggregate is the right artifact for comparing final scores, but the original unrecovered held-out sweep still matters as a methodological caveat. It exposed a real first-pass robustness problem concentrated on a subset of the harder samples, especially when Ghidra-heavy worker assignments accumulated too much shared context before completion. That matters because some one-shot failures were infrastructural rather than purely analytical, so the unrecovered sweep alone would understate the workflow's usable performance on the held-out benchmark.
 
-\section{Interpretation and Claim Boundaries}
+That caveat should not dominate the results narrative, however. The main thesis question in this chapter is what can be learned from the completed final comparisons once recovery restores coverage. The unrecovered sweep is therefore best treated as context for interpreting those repaired comparisons, not as the central empirical result. The detailed outcome counts, per-executable failure figures, and assignment-failure breakdown are moved to Appendix~\ref{app:heldout-failure-accounting}, and Chapter~\ref{sec:limitations} discusses what they do and do not imply about robustness.
 
-\begin{itemize}
-\item Which interventions improve evidence quality?
-\item Which interventions merely change style or verbosity?
-\item Which workflow changes improve some task types while hurting others?
-\item What do the results imply for future reverse-engineering assistants?
-\item Which observations are preliminary and which are supported by the final held-out evaluation?
-\end{itemize}
+\section{Discussion and Claim Boundaries}
 
-\begin{itemize}
-\item \TODO{End the chapter with a concise synthesis of what the final evaluation implies for the thesis research questions.}
-\item \TODO{Ensure every claim here is supported by a table, figure, or explicitly cited run artifact. Broad pilot claims should remain explicitly descriptive, and stronger language should be reserved for the final held-out evaluation section.}
-\item \TODO{Make explicit that family attribution, if reported at all, is low weight compared with evidence recovery and false-positive control.}
-\end{itemize}
+\subsection{Findings Directly Supported by the Data}
+
+The repaired final experiment supports four direct findings. First, no non-baseline configuration achieved a statistically significant overall score improvement at the thesis confidence target. Second, \texttt{worker\_prompt\_shape:artifact\_focused} is the strongest descriptive overall candidate in the repaired final comparison, but that claim is descriptive rather than confirmatory. Third, executable-level behavior is strongly heterogeneous: every non-baseline configuration is mixed across the five executables, and every one is marked as masked by average in the executable-consistency summary. Fourth, the original unrecovered held-out sweep exposed a real workflow robustness problem dominated by host-worker context overflow on Ghidra-heavy assignments.
+
+\subsection{Plausible Interpretations}
+
+The results also suggest, but do not prove, several interpretations. The first is that evidence-first prompt shaping may help most on executables where the bottleneck is organizing and grounding many competing artifacts rather than simply producing a concise report. The second is that architecture-level changes such as \texttt{model\_augmented} may be acting as conditional strategies rather than universal improvements: they help on some executables and clearly hurt on others. The third is that the held-out benchmark is stressing two capabilities at once, namely reverse-engineering quality and orchestration robustness. The failure analysis makes it plausible that some of the apparent performance difference between configurations is mediated by how well they keep worker contexts tractable, not only by how well they reason after the context is assembled.
+
+\subsection{Open Uncertainties and Measurement Gaps}
+
+Several uncertainties remain open. The final comparison still covers only five held-out executables and three repaired repetitions per configuration, so the executable-level patterns should be treated as strong case evidence rather than as a stable estimate of population-level behavior. The significance tables reinforce that caution: none of the overall score shifts reached the thesis significance threshold, and no multiple-comparison correction is applied in the exploratory task-level tables. In addition, the repaired experiment necessarily combines original runs with targeted recovery runs. That is appropriate for obtaining full benchmark coverage, but it means the final aggregate should be read as the best-available completed comparison under the evaluated workflow rather than as a pristine one-shot sweep.
+
+The tool-usage summaries are also useful but limited. They identify repeated-call hotspots and they now distinguish same-source repeats from cross-source overlap within a task. However, they still do not attach every tool call to a specific work item inside a reused worker slot. That means the current instrumentation can support statements such as ``this task and source produced many repeated calls'' or ``same-source repetition exists here,'' but it cannot yet prove that each repeated call was truly unnecessary. That measurement limitation is discussed more fully in Chapter~\ref{sec:limitations}.
+
+Taken together, the repaired final results support three evidence-backed conclusions. First, no single configuration can be claimed as globally best with statistical confidence at the thesis significance target. Second, workflow choices matter materially at the executable level: \texttt{worker\_prompt\_shape:artifact\_focused} is the strongest descriptive overall candidate and produces the largest positive delta on \texttt{sample3.exe} ($+21.4$ over baseline), but the same configuration does not dominate uniformly. Third, executable-level heterogeneity is large enough that average-only reporting would be misleading: every non-baseline configuration is flagged as \texttt{masked\_by\_average} in the consistency summary. These findings frame agentic reverse engineering as a workflow-selection and robustness challenge rather than a prompt-tuning problem with a single optimal answer.

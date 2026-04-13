@@ -46,6 +46,7 @@ def main() -> None:
     parser.add_argument("--live-view", action="store_true", help="For sweep presets, start the lightweight local progress monitor")
     parser.add_argument("--max-concurrent-repetitions", type=int, default=0, help="For sweep presets, allow up to this many repetitions of the same planned configuration to run at once. 0 keeps the preset/default behavior.")
     parser.add_argument("--max-concurrent-child-runs", type=int, default=0, help="For sweep presets, allow up to this many total child runs across the whole sweep to run at once. 0 keeps the preset/default behavior.")
+    parser.add_argument("--deep-agent-request-limit", type=int, default=None, help="Override the deep-agent request cap used by the launched evaluation runs. Pass 0 to disable the cap.")
     parser.add_argument("--enable-budget-guardrails", action="store_true", help="Enable budget ceilings for the launched preset. By default preset budget values are not enforced.")
     parser.add_argument("--skip-build", action="store_true", help="Pass --skip-build through to the underlying runner")
     parser.add_argument("--skip-prepare", action="store_true", help="Pass --skip-prepare through to the underlying runner")
@@ -69,6 +70,7 @@ def main() -> None:
             live_view=args.live_view,
             max_concurrent_repetitions=(int(args.max_concurrent_repetitions) if int(args.max_concurrent_repetitions) > 0 else None),
             max_concurrent_child_runs=(int(args.max_concurrent_child_runs) if int(args.max_concurrent_child_runs) > 0 else None),
+            deep_agent_request_limit=args.deep_agent_request_limit,
             skip_build=args.skip_build,
             skip_prepare=args.skip_prepare,
             ghidra_install_dir=args.ghidra_install_dir,

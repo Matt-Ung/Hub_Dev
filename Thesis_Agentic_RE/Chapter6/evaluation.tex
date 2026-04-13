@@ -1,181 +1,50 @@
 \chapter{Evaluation Methodology and Experimental Design}
 \label{sec:evaluation}
 
-This chapter should explain how the thesis evaluates the system without overstating what the current data can support. The repository already contains a concrete binary-analysis harness, and the final chapter should align tightly with that implementation.
+This chapter explains how the thesis evaluates the system. The evaluation methodology is grounded in the implemented binary-analysis harness and is designed to keep claims aligned with the available evidence.
 
 \section{Evaluation Goals}
 
-\begin{itemize}
-\item Measure whether tool-orchestrated workflows outperform weaker baselines on binary-analysis tasks.
-\item Separate the effects of tool access, workflow topology, prompt shaping, and review strictness.
-\item Capture both successful analyses and structured failure modes such as analysis errors, validator blocks, and judge failures.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{State the primary evaluation objective in thesis-ready language.}
-\item \TODO{List the secondary ablation questions and map each one to a configuration family.}
-\end{itemize}
+The evaluation has three goals. The first is to measure whether tool-orchestrated workflows outperform weaker baselines on binary-analysis tasks. The second is to compare the workflow surfaces that remain central in the evaluated experiments: topology, prompt shaping, response scope, and architecture emphasis. The third is to capture both successful analyses and structured failure modes such as analysis errors, validator blocks, and judge failures, so that the results reflect operational reliability alongside analytical quality.
 
 \section{Benchmark Corpus and Task Model}
 
-The maintained binary benchmark uses an experimental corpus of authored executables and executable variants. The evaluation unit is a sample-task pair rather than only a sample. This detail is important because it lets the thesis distinguish broad understanding tasks from focused recovery tasks.
+The binary benchmark uses an experimental corpus of authored executables and executable variants. The evaluation unit is a sample-task pair rather than only a sample. This detail is important because it lets the thesis distinguish broad understanding tasks from focused recovery tasks. That design differs from benchmark-centric evaluations such as BinMetric \cite{shang2025binmetriccomprehensivebinaryanalysis}, which are primarily organized around fixed binary-analysis question sets for model comparison. Here the target of evaluation is the configured analysis workflow acting on a sample-task unit, with intermediate artifacts and operational failures preserved alongside the final score.
 
-\begin{itemize}
-\item Sample variants cover conditions such as stripping, packing, deceptive strings, anti-analysis behavior, and configuration decoding.
-\item Tasks include default analysis as well as focused recovery questions such as config extraction, decode-flow recovery, packing triage, and behavioral reconstruction.
-\item The corpus supports both breadth-oriented sweeps and depth-oriented studies on selected executables such as \texttt{config\_decoder\_test}.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Describe the experimental corpus, including how many source programs, executable variants, and sample-task pairs were used for the final thesis experiments.}
-\item \TODO{Add a short table summarizing representative samples and the reasoning skills they are intended to stress.}
-\item \TODO{Explain why \texttt{config\_decoder\_test} became a centerpiece for deeper analysis.}
-\item \TODO{Explain how the final held-out malware-facing evaluation differs from the authored benchmark and why the two should not be conflated.}
-\end{itemize}
+Sample variants cover conditions such as stripping, packing, deceptive strings, anti-analysis behavior, and configuration decoding. Tasks include default analysis as well as focused recovery questions such as config extraction, decode-flow recovery, packing triage, and behavioral reconstruction. The corpus supports both breadth-oriented sweeps across many executables and depth-oriented studies on selected executables such as \texttt{config\_decoder\_test}.
 
 \section{Single Runs, Sweeps, and Repetitions}
 
-The harness supports both single-run evaluation and experiment sweeps. Maintained sweeps are baseline-first and primarily one-variable-at-a-time. The thesis should explain this choice clearly, because it affects how causal claims can be interpreted.
+The harness supports both single-run evaluation and experiment sweeps. Sweeps are baseline-first and primarily one-variable-at-a-time, which shapes what kinds of causal claims the experiments can support.
 
-\begin{itemize}
-\item A global baseline defines the default workflow configuration.
-\item Variant families change one configuration surface at a time.
-\item Some families insert local family baselines where a fair comparison requires it.
-\item Repetitions support stronger claims about stability and significance.
-\item The current repository artifacts include a repaired breadth sweep with one repetition per configuration and a decoder-depth follow-up with three repetitions per configuration.
-\end{itemize}
+A global baseline defines the default workflow configuration against which all variants are compared. In the maintained experiments, that baseline is not a deliberately weak strawman. It is a tool-complete staged static-analysis workflow with a light preparatory pass, deterministic presweeps, a balanced specialist worker mix, default prompt surfaces, and final reporting. Variant families then change one configuration surface at a time, and some families insert local family baselines where a fair comparison requires it. Repetitions support stronger claims about stability and significance. The evaluation artifacts include a repaired breadth sweep with one repetition per configuration and decoder-depth and final studies with three repetitions per configuration.
 
-\begin{itemize}
-\item \TODO{Explain why the broad sweep uses one-variable-at-a-time comparisons instead of a full factorial design.}
-\item \TODO{Document the final repetition counts used for the headline experiments and for the decoder depth study. The current artifact set is asymmetric: the repaired broad sweep is descriptive because each configuration only has one repetition, whereas the decoder-depth combined experiment has three repetitions per configuration.}
-\item \TODO{Clarify how repaired experiments are handled when failed tasks are rerun and merged.}
-\item \TODO{Make explicit that repaired and merged experiments preserve raw run provenance, rather than replacing the original experiments in-place.}
-\end{itemize}
-
-For reproducibility, the maintained repository entry points for these development experiments are now the folder-based launch presets under \path{Testing/config/presets/}. The broad-coverage pilot discussed in this thesis corresponds to the preset \texttt{coverage\_broad\_r1\_60usd}. The repeated decoder-depth case study corresponds to \texttt{sweep\_decoder\_depth\_r3}, and the narrower follow-up depth suite corresponds to \texttt{sweep\_decoder\_depth\_followups\_r3}. A clean rerun begins by rebuilding and preparing the experimental corpus:
-
-\begin{verbatim}
-make all-exes
-python Testing/scripts/prepare_bundles.py --corpus experimental
-\end{verbatim}
-
-The maintained preflight and execution commands for the broad pilot are:
-
-\begin{verbatim}
-python Testing/scripts/run_launch_preset.py \
-  --preset coverage_broad_r1_60usd \
-  --judge-model openai:gpt-4o-mini \
-  --preflight-only
-
-python Testing/scripts/run_launch_preset.py \
-  --preset coverage_broad_r1_60usd \
-  --judge-model openai:gpt-4o-mini
-\end{verbatim}
-
-The maintained preflight and execution commands for the repeated decoder-depth suites are:
-
-\begin{verbatim}
-python Testing/scripts/run_launch_preset.py \
-  --preset sweep_decoder_depth_r3 \
-  --judge-model openai:gpt-4o-mini \
-  --preflight-only
-
-python Testing/scripts/run_launch_preset.py \
-  --preset sweep_decoder_depth_r3 \
-  --judge-model openai:gpt-4o-mini
-
-python Testing/scripts/run_launch_preset.py \
-  --preset sweep_decoder_depth_followups_r3 \
-  --judge-model openai:gpt-4o-mini \
-  --preflight-only
-
-python Testing/scripts/run_launch_preset.py \
-  --preset sweep_decoder_depth_followups_r3 \
-  --judge-model openai:gpt-4o-mini
-\end{verbatim}
-
-Preflight-only commands now write readiness artifacts under \path{Testing/results/preflight/}. Real launched experiments write their run catalogs, child runs, summaries, and figures under \path{Testing/results/experiments/<experiment\_id>/}. This separation is important because it keeps the experiment directory reserved for actual executed sweeps rather than planning scaffolds.
+For reproducibility, each experiment family is defined as a self-contained launch preset. The exact preset identifiers, launch commands, and artifact locations are collected in Appendix~\ref{app:reproduction-commands} so that the body chapter can focus on methodology rather than command syntax. The harness also separates preflight readiness artifacts from executed experiment outputs to keep the experiment record reserved for completed sweeps.
 
 \section{Broad Coverage and Final Held-Out Malware Evaluation}
 
-The methodology chapter should separate three evaluation roles:
+The evaluation design serves three distinct roles. Development and pilot runs on the authored benchmark are used to debug workflow behavior and identify promising interventions. Broader malware-facing coverage checks provide a realism test over manually supplied families. The final held-out evaluation run carries the main thesis-grade empirical claims.
 
-\begin{itemize}
-\item development and pilot runs on the authored benchmark, used to debug workflow behavior and identify promising interventions;
-\item broader malware-facing coverage checks, used as a realism test over manually supplied families; and
-\item the final held-out evaluation run, which should carry the main thesis-grade empirical claims.
-\end{itemize}
+The evaluation also includes a blind final-evaluation corpus. This corpus is intentionally evaluator-backed rather than a self-describing live-malware collection: the runtime sees only neutral sample aliases and task prompts, while the evaluator-facing reference set preserves family labels, source files, and scoring anchors. This separation matters both for safety and for scientific clarity. The broad-coverage pilot remains methodology-shaping, while the final held-out run carries the strongest empirical claims.
 
-The repository now includes a metadata-backed manual corpus scaffold for analyst-supplied malware families rather than a live malware corpus. This is important both for safety and for scientific clarity: the broad-coverage plan should be described as a broader realism check, while the final held-out run should be described as the main evaluation.
+The held-out family set comprises Emotet, QakBot, TrickBot, WannaCry, and PlugX simulations, exposed to the runtime only as \texttt{sample1.exe} through \texttt{sample5.exe}. The final experiment runs one blind default-analysis task per sample across the baseline and a small set of development-informed comparison conditions. The comparison set is intentionally narrow: worker-subagent structure, worker-prompt shape, response scope, and architecture preset were varied because they proved more informative in development runs than obvious handicaps such as reduced tool access. Evaluator-side reference files anchor the judge on sample-specific behaviors, evidence anchors, and overclaim boundaries without exposing family identity to the runtime agent.
 
-\begin{itemize}
-\item The intended five-family set is Emotet, QakBot, TrickBot, WannaCry, and PlugX, but the repository stores only placeholder paths and evaluator-side metadata.
-\item The manual final-evaluation manifest uses neutral numbered runtime aliases, while family labels and gold-label pointers remain on the evaluator side.
-\item The current repository preset for this stage is a scaffold, not yet the completed final run. It exists to lock the intended evaluation structure before the analyst-supplied samples are inserted.
-\item The active final-run scaffold currently uses one blind default-analysis pass per sample, then spends the remaining budget on a wider comparison across worker breadth, prompt shape, response scope, and architecture.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Describe the manual final-evaluation manifest and explain why the repository stores metadata only, not binaries or fetch automation.}
-\item \TODO{Document the blind runtime alias policy and explain why family identity should not be exposed to the analysis agent during the run.}
-\item \TODO{Explain how broad-coverage pilot testing informs method development without being presented as proof of general effectiveness.}
-\item \TODO{State the criteria for promoting a configuration from benchmark-development runs into the final held-out malware evaluation.}
-\end{itemize}
+A methodological caveat emerged only once the final held-out corpus was exercised at full scale. The final samples were materially more complex than the authored experimental benchmark, and that difference exposed a host-worker context-bloat failure mode that did not dominate the earlier development runs. In the final experiment, some Ghidra-heavy worker assignments exceeded the model input-context limit after large tool outputs and shared-state context were combined into a single worker request. This is important for interpreting the held-out results: part of the observed degradation is a workflow-scaling limitation, not only a reasoning-quality limitation. Chapter~\ref{sec:results} therefore reports final performance alongside per-executable failure distributions rather than only aggregate score summaries.
 
 \section{Baselines and Experimental Variables}
 
-The current harness exposes several variable families that can be studied empirically:
+The harness can express several variable families, but the thesis experiments focus on those that survived development-stage screening: response scope, worker subagent profile, worker prompt shape, worker role-prompt mode, architecture preset, pipeline preset, and selected validator-backed pipeline follow-ups in the decoder-depth study. Appendix~\ref{app:sample-variant-traceability} gives the complete mapping from variant labels to baseline-relative changes.
 
-\begin{itemize}
-\item query verbosity
-\item worker subagent profile
-\item worker prompt shape and worker role-prompt mode
-\item tool availability
-\item architecture preset
-\item pipeline preset
-\item validator topology
-\item validator review level
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Decide which of these families will be discussed in the thesis body versus moved to appendix material.}
-\item \TODO{Explain the rationale for the chosen baseline in the final experiments.}
-\item \TODO{Document the deeper \texttt{config\_decoder\_test} study separately from the broad sweep. The current repaired broad sweep suggests that the no-role worker-prompt condition and the single-generalist worker profile are the most interesting follow-up families, which is why the depth study focuses on those surfaces plus a validator-heavy pipeline comparison.}
-\item \TODO{Justify why the brief-query condition was not promoted into the decoder-depth follow-up despite a positive descriptive broad-sweep delta; the current interpretation is that it looked less mechanistically interesting than worker-prompt and worker-subagent effects.}
-\end{itemize}
+Prompt-shape and role-prompt changes are treated here as empirical variables rather than assumed improvements. That choice follows from both the archive-stage screening results and from external evidence that persona-style prompting does not reliably improve factual accuracy even when it changes response style \cite{basil2025promptingscience4}.
 
 \section{Judging and Scoring}
 
-Run outputs are judged with a structured binary-analysis rubric and converted into continuous scores. This thesis should make the judging methodology explicit, including both its usefulness and its limitations.
+Run outputs are judged with a structured binary-analysis rubric and converted into continuous scores. The judging methodology matters because it defines how the experiments distinguish weak answers from unsupported or infrastructure-dominated failures.
 
-\begin{itemize}
-\item Per-task judge outputs preserve structured feedback and an overall score.
-\item Legacy pass or fail thresholds still exist, but sweep analysis should focus on score deltas, success rates, and error rates.
-\item The harness preserves analysis outcomes such as completed, analysis error, no result, judge error, and validator blocked.
-\item The final held-out evaluation scaffold also includes analyst-reviewed gold-label templates. These are intended to anchor evidence expectations and false-positive controls, not merely family attribution.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Describe the rubric dimensions used by the judge and justify why they align with reverse-engineering quality.}
-\item \TODO{Explain whether human spot-checking was used to validate judge outputs and how analyst-reviewed gold labels were incorporated in the final held-out run.}
-\item \TODO{Discuss the difference between completed-but-weak analyses and infrastructure failures.}
-\item \TODO{Document the final held-out weighting policy: evidence recovery, capability inference, reasoning quality, false-positive control, and optional low-weight family attribution.}
-\end{itemize}
+Per-task judge outputs preserve structured feedback and an overall score. Legacy pass-or-fail thresholds still exist, but sweep analysis focuses on score deltas, success rates, and error rates rather than binary outcomes. The harness preserves analysis outcomes such as completed, analysis error, no result, judge error, and validator blocked. The final held-out evaluation scaffold also includes analyst-reviewed gold-label templates, which are intended to anchor evidence expectations and false-positive controls rather than merely family attribution.
 
 \section{Statistical Treatment and Comparison Strategy}
 
-The final thesis should not report only descriptive movement. The harness supports paired comparisons and limited significance analysis when repetitions or enough matched task pairs exist.
+The analysis in this thesis does not rely only on descriptive movement. The harness supports paired comparisons and limited significance analysis when repetitions or enough matched task pairs exist.
 
-\begin{itemize}
-\item Replicate-level comparison when repeated runs exist.
-\item Paired-task comparison across matched sample-task pairs.
-\item Reporting of score deltas, task success deltas, and significance outputs where supported.
-\item Explicit distinction between descriptive one-off sweep results and repeated experiments that can support stronger stability claims.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{State the statistical tests actually used in the final thesis and justify their assumptions. In particular, explain that the repaired broad sweep should be reported descriptively because it has one repetition per configuration, while the decoder-depth combined experiment can support limited repeated-trial summaries.}
-\item \TODO{Document how missing or recovered tasks are treated in the analysis set.}
-\item \TODO{Explain what level of evidence is sufficient for claims in the results chapter. The current artifact set supports stronger claims about the decoder-depth study than about the one-repetition broad sweep.}
-\item \TODO{Describe how validator-blocked outcomes are separated from infrastructure failures and why collapsing them into a single failure rate would be misleading.}
-\end{itemize}
+Where repeated runs exist, the harness supports replicate-level comparison. For matched sample-task pairs, it supports paired-task comparison. It reports score deltas, task success deltas, and significance outputs where the data support them. Throughout, the analysis maintains an explicit distinction between descriptive one-off sweep results and repeated experiments that can support stronger stability claims.

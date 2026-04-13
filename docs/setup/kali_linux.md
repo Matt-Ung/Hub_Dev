@@ -55,12 +55,6 @@ Optional but recommended:
 sudo apt install -y upx-ucl
 ```
 
-Optional analysis enrichers:
-
-```bash
-sudo apt install -y ssdeep
-```
-
 Why these matter:
 
 - `python3-venv`
@@ -73,10 +67,6 @@ Why these matter:
   - required for Ghidra-based bundle preparation
 - `upx-ucl`
   - only needed if you want packed-sample workflows or `--prefer-unpacked-upx`
-- `ssdeep`
-  - enables the optional `ssdeepmcp` fuzzy-hashing server used for similarity
-    triage and analyst-side clustering workflows
-
 ## Clone The Repo
 
 ```bash

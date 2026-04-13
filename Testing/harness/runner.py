@@ -41,6 +41,7 @@ from .paths import BUNDLE_ROOT, build_run_id, ensure_dir, read_json, write_json
 from .preflight import validate_run_configuration
 from .result_layout import build_run_output_layout
 from .result_store import ensure_task_case_dir, run_log_path, run_logs_root, standalone_run_dir, task_log_path
+from .runtime_limits import request_limit_env_value, resolve_testing_deep_agent_request_limit
 from .response_scope_variants import apply_response_scope_variant
 from .reporting import aggregate_records, build_sample_record, write_markdown_report, write_summary_csv
 from .samples import (
@@ -304,6 +305,7 @@ def main(argv: List[str] | None = None) -> None:
     parser.add_argument("--tool-profile", default="full", help="Named MCP tool-availability profile for analysis ablations")
     parser.add_argument("--prefer-unpacked-upx", action="store_true", help="When the prepared sample is recognized as UPX-packed, build a derived unpacked bundle and continue downstream analysis against it. Falls back to the original bundle if detection or unpacking fails.")
     parser.add_argument("--task-failure-retries", type=int, default=0, help="Retry a sample-task this many times after the first attempt when the failure is classified as retryable. Validator-blocked outcomes are not retried.")
+    parser.add_argument("--deep-agent-request-limit", type=int, default=None, help="Override the deep-agent request cap used for evaluation runs. Omit to use the maintained testing default, or pass 0 to disable the cap.")
     parser.add_argument("--model-profile", default="", help="Experiment model profile label for reporting (for example: repo_default, budget, premium)")
     parser.add_argument("--force-model", default="", help="Optional model ID to force across the run")
     parser.add_argument("--label", default="", help="Optional short label for this run")
@@ -346,6 +348,7 @@ def main(argv: List[str] | None = None) -> None:
     run_dir = ensure_dir(Path(run_root_override).expanduser().resolve()) if run_root_override else ensure_dir(standalone_run_dir(run_id))
     ensure_dir(run_dir / "cases")
     _configure_run_logging(run_dir)
+    deep_agent_request_limit = resolve_testing_deep_agent_request_limit(args.deep_agent_request_limit)
 
     # Tutorial 5.3 in multi_agent_wf/extension_tutorial.md: mirror any new
     # env-driven workflow knob here so single runs and sweep child runs use the
@@ -353,6 +356,8 @@ def main(argv: List[str] | None = None) -> None:
     os.environ["DEEP_WORKER_SUBAGENT_PROFILE"] = str(args.subagent_profile or "default").strip() or "default"
     os.environ["DEEP_WORKER_PERSONA_PROFILE"] = str(args.worker_persona_profile or "default").strip() or "default"
     os.environ["DEEP_WORKER_ROLE_PROMPT_MODE"] = str(args.worker_role_prompt_mode or "default").strip() or "default"
+    os.environ["TESTING_DEEP_AGENT_REQUEST_LIMIT"] = request_limit_env_value(deep_agent_request_limit)
+    os.environ["DEEP_AGENT_REQUEST_LIMIT"] = request_limit_env_value(deep_agent_request_limit)
     if str(args.force_model or "").strip():
         os.environ["DEEP_FORCE_MODEL_ID"] = str(args.force_model).strip()
     else:
@@ -376,6 +381,7 @@ def main(argv: List[str] | None = None) -> None:
         "tool_profile": str(args.tool_profile or "full").strip() or "full",
         "prefer_upx_unpacked": bool(args.prefer_unpacked_upx),
         "task_failure_retries": max(0, int(args.task_failure_retries or 0)),
+        "deep_agent_request_limit": deep_agent_request_limit,
         "model_profile": str(args.model_profile or "").strip(),
         "force_model": str(args.force_model or "").strip(),
         "judge_mode": args.judge_mode,

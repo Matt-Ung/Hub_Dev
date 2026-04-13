@@ -1133,8 +1133,8 @@ _INDEX_HTML = """<!doctype html>
 """
 
 
-_STAGE_STARTED_RE = re.compile(r"Stage started:\s*([A-Za-z0-9_]+)")
-_STAGE_FINISHED_RE = re.compile(r"Stage finished:\s*([A-Za-z0-9_]+)")
+_STAGE_STARTED_RE = re.compile(r"Stage started:\s*([A-Za-z0-9_.-]+)")
+_STAGE_FINISHED_RE = re.compile(r"Stage finished:\s*([A-Za-z0-9_.-]+)")
 
 _HARNESS_PROGRESS_STAGES: List[Tuple[str, str]] = [
     ("build", "Build"),
@@ -1549,6 +1549,28 @@ def _sample_dir_for_task(run_dir: Path | None, sample_task_id: str) -> Path | No
     return task_case_dir(run_dir, sample_name, task_id)
 
 
+def _latest_attempt_artifact(sample_dir: Path, filename: str) -> Path | None:
+    attempts_dir = sample_dir / "attempts"
+    if not attempts_dir.exists():
+        return None
+    candidates: List[Tuple[int, float, Path]] = []
+    for path in attempts_dir.glob(f"attempt_*/{filename}"):
+        try:
+            attempt_text = path.parent.name.split("_", 1)[1]
+            attempt_index = int(attempt_text)
+        except Exception:
+            attempt_index = 0
+        try:
+            mtime = path.stat().st_mtime
+        except Exception:
+            mtime = 0.0
+        candidates.append((attempt_index, mtime, path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1], str(item[2])))
+    return candidates[-1][2]
+
+
 def _resolve_active_catalog_run_dir(experiment_root: Path, entry: Dict[str, Any]) -> Path | None:
     run_path = str((entry or {}).get("run_path") or "").strip()
     if not run_path:
@@ -1665,6 +1687,18 @@ def _load_task_artifacts(run_dir: Path | None, sample_task_id: str) -> Dict[str,
     record_path = sample_dir / "record.json"
     agent_path = sample_dir / "agent_result.json"
     judge_path = sample_dir / "judge_result.json"
+    if not record_path.exists():
+        latest_record = _latest_attempt_artifact(sample_dir, "record.json")
+        if latest_record is not None:
+            record_path = latest_record
+    if not agent_path.exists():
+        latest_agent = _latest_attempt_artifact(sample_dir, "agent_result.json")
+        if latest_agent is not None:
+            agent_path = latest_agent
+    if not judge_path.exists():
+        latest_judge = _latest_attempt_artifact(sample_dir, "judge_result.json")
+        if latest_judge is not None:
+            judge_path = latest_judge
     return {
         "sample_dir": sample_dir,
         "record": _safe_json(record_path),
@@ -1808,6 +1842,33 @@ def _parse_agent_stage_history(log_text: str) -> Tuple[List[str], List[str], str
         if seen_started[name] > finished_counts.get(name, 0):
             current = name
     return started, finished, current
+
+
+def _pipeline_stage_log_text(
+    *,
+    run_log: str,
+    agent_status_log_text: str,
+) -> str:
+    """
+    Function: _pipeline_stage_log_text
+    Inputs:
+      - run_log: harness-level run log captured for the selected child run.
+      - agent_status_log_text: inner agent status log for the selected task,
+        when available from the agent result artifact.
+    Description:
+      Pick the strongest available stage-history source for the pipeline
+      widget. Inner pipeline stages such as planner and workers are emitted by
+      the deep-agent status log, while the run log mostly covers harness-level
+      progress. Prefer the agent log whenever it contains stage markers.
+    Outputs:
+      Returns the text blob that should drive stage-history parsing.
+    Side Effects:
+      None.
+    """
+    agent_text = str(agent_status_log_text or "").strip()
+    if _STAGE_STARTED_RE.search(agent_text) or _STAGE_FINISHED_RE.search(agent_text):
+        return agent_text
+    return str(run_log or "")
 
 
 def _select_comparison_baseline_entry(runs: List[Dict[str, Any]], run_entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -2202,6 +2263,10 @@ def load_live_view_detail(
     agent_status_log_text = ""
     if isinstance(selected_task_artifacts.get("agent"), dict):
         agent_status_log_text = str((selected_task_artifacts.get("agent") or {}).get("status_log") or "").strip()
+    pipeline_log_text = _pipeline_stage_log_text(
+        run_log=run_log,
+        agent_status_log_text=agent_status_log_text,
+    )
     return {
         "run_id": str(run_entry.get("run_id") or ""),
         "run_log": run_log,
@@ -2257,7 +2322,7 @@ def load_live_view_detail(
             run_entry=run_entry,
             run_manifest=run_manifest,
             live_status=live_status,
-            log_text=run_log,
+            log_text=pipeline_log_text,
         ),
     }
 

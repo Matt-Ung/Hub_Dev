@@ -355,10 +355,22 @@ def summarize_tool_call_redundancy(
     total_calls = len(calls)
     exact_counts = Counter(call["exact_key"] for call in calls)
     semantic_counts = Counter(call["semantic_key"] for call in calls)
+    exact_counts_by_source = Counter(
+        (str(call.get("source") or ""), call["exact_key"])
+        for call in calls
+        if str(call.get("source") or "").strip()
+    )
+    semantic_counts_by_source = Counter(
+        (str(call.get("source") or ""), call["semantic_key"])
+        for call in calls
+        if str(call.get("source") or "").strip()
+    )
     cache_counts = _cache_event_summary(entries)
 
     exact_duplicates = sum(max(0, count - 1) for count in exact_counts.values())
     semantic_duplicates = sum(max(0, count - 1) for count in semantic_counts.values())
+    same_source_exact_duplicates = sum(max(0, count - 1) for count in exact_counts_by_source.values())
+    same_source_semantic_duplicates = sum(max(0, count - 1) for count in semantic_counts_by_source.values())
 
     tool_buckets: Dict[str, Dict[str, Any]] = {}
     for call in calls:
@@ -370,11 +382,17 @@ def summarize_tool_call_redundancy(
                 "total_calls": 0,
                 "unique_exact_calls": set(),
                 "unique_semantic_targets": set(),
+                "exact_counts_by_source": Counter(),
+                "semantic_counts_by_source": Counter(),
             },
         )
         bucket["total_calls"] += 1
         bucket["unique_exact_calls"].add(str(call.get("exact_key") or ""))
         bucket["unique_semantic_targets"].add(str(call.get("semantic_key") or ""))
+        source_label = str(call.get("source") or "").strip()
+        if source_label:
+            bucket["exact_counts_by_source"][(source_label, str(call.get("exact_key") or ""))] += 1
+            bucket["semantic_counts_by_source"][(source_label, str(call.get("semantic_key") or ""))] += 1
 
     top_duplicate_tools: List[Dict[str, Any]] = []
     for bucket in tool_buckets.values():
@@ -383,6 +401,8 @@ def summarize_tool_call_redundancy(
         unique_semantic = len(bucket.get("unique_semantic_targets") or [])
         exact_dup = max(0, total - unique_exact)
         semantic_dup = max(0, total - unique_semantic)
+        same_source_exact_dup = sum(max(0, count - 1) for count in (bucket.get("exact_counts_by_source") or Counter()).values())
+        same_source_semantic_dup = sum(max(0, count - 1) for count in (bucket.get("semantic_counts_by_source") or Counter()).values())
         top_duplicate_tools.append(
             {
                 "tool_name": str(bucket.get("tool_name") or ""),
@@ -392,14 +412,19 @@ def summarize_tool_call_redundancy(
                 "unique_semantic_targets": unique_semantic,
                 "exact_duplicate_calls": exact_dup,
                 "semantic_duplicate_calls": semantic_dup,
+                "same_source_exact_duplicate_calls": same_source_exact_dup,
+                "same_source_semantic_duplicate_calls": same_source_semantic_dup,
                 "exact_duplicate_rate": round(exact_dup / total, 6) if total else 0.0,
                 "semantic_duplicate_rate": round(semantic_dup / total, 6) if total else 0.0,
+                "same_source_exact_duplicate_rate": round(same_source_exact_dup / total, 6) if total else 0.0,
+                "same_source_semantic_duplicate_rate": round(same_source_semantic_dup / total, 6) if total else 0.0,
             }
         )
     top_duplicate_tools.sort(
         key=lambda item: (
+            -int(item.get("same_source_semantic_duplicate_calls") or 0),
             -int(item.get("semantic_duplicate_calls") or 0),
-            -int(item.get("exact_duplicate_calls") or 0),
+            -int(item.get("same_source_exact_duplicate_calls") or 0),
             str(item.get("tool_family") or ""),
         )
     )
@@ -418,6 +443,7 @@ def summarize_tool_call_redundancy(
                 "exact_keys": set(),
                 "stages": set(),
                 "sources": set(),
+                "source_counts": Counter(),
                 "example_normalized_args": call.get("normalized_args") or {},
             },
         )
@@ -426,7 +452,9 @@ def summarize_tool_call_redundancy(
         if call.get("stage"):
             bucket["stages"].add(str(call.get("stage")))
         if call.get("source"):
-            bucket["sources"].add(str(call.get("source")))
+            source_label = str(call.get("source"))
+            bucket["sources"].add(source_label)
+            bucket["source_counts"][source_label] += 1
 
     top_duplicate_targets: List[Dict[str, Any]] = []
     for bucket in target_groups.values():
@@ -435,6 +463,8 @@ def summarize_tool_call_redundancy(
         duplicate_calls = max(0, call_count - 1)
         if duplicate_calls <= 0:
             continue
+        source_counts = bucket.get("source_counts") or Counter()
+        same_source_duplicates = sum(max(0, int(count) - 1) for count in source_counts.values())
         top_duplicate_targets.append(
             {
                 "tool_name": str(bucket.get("tool_name") or ""),
@@ -446,6 +476,8 @@ def summarize_tool_call_redundancy(
                 "unique_exact_call_shapes": unique_exact,
                 "stages": sorted(bucket.get("stages") or []),
                 "sources": sorted(bucket.get("sources") or []),
+                "source_count": len(source_counts),
+                "same_source_duplicate_calls": same_source_duplicates,
                 "example_normalized_args": bucket.get("example_normalized_args") or {},
             }
         )
@@ -478,9 +510,13 @@ def summarize_tool_call_redundancy(
         "unique_exact_calls": len(exact_counts),
         "exact_duplicate_calls": exact_duplicates,
         "exact_duplicate_rate": round(exact_duplicates / total_calls, 6) if total_calls else 0.0,
+        "same_source_exact_duplicate_calls": same_source_exact_duplicates,
+        "same_source_exact_duplicate_rate": round(same_source_exact_duplicates / total_calls, 6) if total_calls else 0.0,
         "unique_semantic_targets": len(semantic_counts),
         "semantic_duplicate_calls": semantic_duplicates,
         "semantic_duplicate_rate": round(semantic_duplicates / total_calls, 6) if total_calls else 0.0,
+        "same_source_semantic_duplicate_calls": same_source_semantic_duplicates,
+        "same_source_semantic_duplicate_rate": round(same_source_semantic_duplicates / total_calls, 6) if total_calls else 0.0,
         "cache_event_counts": cache_counts,
         "top_duplicate_tools": top_duplicate_tools[:12],
         "top_duplicate_targets": top_duplicate_targets[:20],

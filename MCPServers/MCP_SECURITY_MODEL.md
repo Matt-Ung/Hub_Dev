@@ -8,13 +8,12 @@ Primary rule: prompts, client conventions, and agent intent are not treated as t
 
 | Server | Active path | Capability class | Side effects | Current enforcement |
 | --- | --- | --- | --- | --- |
-| `ghidramcp` (`bridge_mcp_ghidra.py`) | Active via `MCPServers/servers.json` | Binary-analysis read + optional live mutation | Live rename/comment/type edits against a running Ghidra session; HTTP requests | Read tools always allowed. Mutation tools are disabled by default and require `GHIDRA_MCP_ALLOW_MUTATIONS=1` or `--allow-mutations`. Remote Ghidra endpoints are disabled by default and require `GHIDRA_MCP_ALLOW_REMOTE_SERVER=1` or `--allow-remote-server`. |
+| `ghidramcp` (`bridge_mcp_ghidra.py`) | Active via `MCPServers/servers.json` | Binary-analysis read + optional live mutation | Live rename/comment/type edits against a running Ghidra session; managed UPX unpack + import into the active project; HTTP requests | Read tools always allowed. State-changing tools, including managed unpack/import, are disabled by default and require `GHIDRA_MCP_ALLOW_MUTATIONS=1` or `--allow-mutations`. Remote Ghidra endpoints are disabled by default and require `GHIDRA_MCP_ALLOW_REMOTE_SERVER=1` or `--allow-remote-server`. |
 | `artifactGhidraMCP.py` | Active through harness artifact-backed manifests | Read-only analysis artifacts | None | Read-only by design. Mutation tools return explicit errors. |
 | `stringmcp` | Active | Read-only subprocess | Executes `strings` | No shell execution. Reads caller-specified files only. |
 | `flareflossmcp` | Active | Bounded subprocess | Executes `floss` | Requires argv[0] to be `floss`/`floss.exe`, uses `shell=False`, rejects obvious placeholder paths. Still trusts FLOSS to behave safely. |
 | `CapaMCP` | Active | Bounded subprocess | Executes `capa` | Requires argv[0] to be `capa`/`capa.exe`, uses `shell=False`, injects rules/signatures when available. Still trusts capa itself. |
 | `hashdbmcp` | Active | Network read | Outbound HTTP to HashDB | No local writes. Trust boundary is the configured HashDB endpoint. |
-| `ssdeepmcp` | Active | Read-only subprocess | Executes `ssdeep` | No writes. |
 | `binwalkmcp` | Active | Read + extraction output | Executes `binwalk`; writes scan/extraction outputs | Output root is enforced server-side under the configured artifact root. Absolute or relative escapes are rejected. |
 | `upxmcp` | Active | Read + write output | Executes `upx`; writes unpacked copy | Output path is enforced server-side under the configured UPX output root. Absolute or relative escapes are rejected. |
 | `yaramcp` | Active | Read + controlled rule writes | Executes `yara`; writes generated rules and temporary validation/composite files | Generated rules and temporary files are written only under the generated-YARA artifact directory. Filenames cannot contain path separators. |
@@ -34,6 +33,7 @@ The enforced policy is:
 - `AGENT_ARTIFACT_DIR` is the root for agent-written artifacts.
 - Per-type artifact overrides must still remain under that root.
 - Tool-specific output roots for `binwalk`, `gitleaks`, `upx`, `binary_patch`, and `trivy` must remain under that same root.
+- Live Ghidra unpack artifacts created by `ghidramcp` are written under the repo-managed Ghidra artifact root, typically `./agent_artifacts/ghidra/unpacked_binaries/...`.
 - Relative paths are resolved against the scoped root, not against the current working directory.
 - Absolute paths outside the scoped root are rejected.
 - Escapes like `../..` are rejected after normalization.

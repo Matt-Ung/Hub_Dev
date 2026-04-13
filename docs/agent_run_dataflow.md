@@ -20,56 +20,128 @@ canonical diagrams. Rendered SVG exports are not maintained separately.
 ## Diagram 1. Runtime Default Pipeline Overview
 
 ```mermaid
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Inter, Segoe UI, Helvetica, Arial, sans-serif",
+    "fontSize": "12px",
+    "lineColor": "#6b7280",
+    "primaryTextColor": "#1f2937",
+    "clusterBkg": "#f8fafc",
+    "clusterBorder": "#d7deea"
+  },
+  "flowchart": {
+    "curve": "stepBefore",
+    "nodeSpacing": 24,
+    "rankSpacing": 54,
+    "padding": 10,
+    "htmlLabels": true
+  }
+}}%%
 flowchart LR
-    classDef stage fill:#eef3ff,stroke:#355caa,stroke-width:1.5,color:#14233c;
-    classDef data fill:#fff8e6,stroke:#b7791f,stroke-width:1.2,color:#3b2f14;
-    classDef store fill:#edf7ed,stroke:#2f855a,stroke-width:1.2,color:#173b2d;
-    classDef ext fill:#f7f0ff,stroke:#6b46c1,stroke-width:1.2,color:#2c1c54;
-    classDef decision fill:#ffecec,stroke:#b83232,stroke-width:1.5,color:#4a1919;
+    classDef stage fill:#f5f8ff,stroke:#9bb0d9,stroke-width:1.3px,color:#1f2937;
+    classDef data fill:#fff9ef,stroke:#e2c89d,stroke-width:1.2px,color:#3f3525;
+    classDef store fill:#eef8f1,stroke:#9cc8ad,stroke-width:1.2px,color:#214132;
+    classDef ext fill:#f7f2ff,stroke:#c4b0e8,stroke-width:1.2px,color:#3b2e57;
+    classDef decision fill:#fff1f1,stroke:#dea5a5,stroke-width:1.3px,color:#592d2d;
 
-    req["User request<br/>user_text"]:::data
-    env["Runtime settings<br/>DEEP_AGENT_PIPELINE_NAME<br/>DEEP_AGENT_ARCHITECTURE_NAME<br/>validator_review_level<br/>shell_execution_mode"]:::data
-    presets["Workflow config JSON<br/>pipeline_presets.json<br/>architecture_presets.json<br/>stage_kind_metadata.json<br/>stage_output_contracts.json"]:::store
-    runtime["get_runtime_sync(...)<br/>MultiAgentRuntime<br/>{pipeline_name,<br/> worker_architecture_name,<br/> stages[],<br/> static_tool_ids,<br/> dynamic_tool_ids,<br/> sandbox_tool_ids}"]:::stage
-    prompt["build_stage_prompt()<br/>stage input payload<br/>{user_text,<br/> prior_stage_outputs,<br/> stage contract,<br/> architecture,<br/> shared_state}"]:::data
-    shared["shared_state<br/>{validated_sample_path,<br/> pipeline_stage_progress,<br/> planned_work_items,<br/> planned_work_item_status,<br/> ghidra_change_proposals,<br/> generated_yara_rules,<br/> validation_history,<br/> model_usage_events,<br/> final_output}"]:::store
+    subgraph colA[" "]
+        direction TB
+        subgraph inputs["Stage 1 · Inputs / Configuration"]
+            direction TB
+            req["User request<br/>user_text"]:::data
+            env["Runtime settings<br/>DEEP_AGENT_PIPELINE_NAME<br/>DEEP_AGENT_ARCHITECTURE_NAME<br/>validator_review_level<br/>shell_execution_mode"]:::data
+            presets["Workflow config JSON<br/>pipeline_presets.json<br/>architecture_presets.json<br/>stage_kind_metadata.json<br/>stage_output_contracts.json"]:::store
+        end
+        style inputs fill:#fcf7ed,stroke:#e6d7bb,stroke-width:1.2px,color:#6a5b3d
 
-    preflight["preflight<br/>light tool-backed reconnaissance<br/>output: short handoff<br/>+ validated_sample_path"]:::stage
-    planner["planner<br/>planning only<br/>output text + JSON block<br/>[{id, objective,<br/> recommended_roles,<br/> evidence_targets}]"]:::stage
-    workers["workers<br/>host-parallel assignment execution<br/>assignment payload:<br/>{index, work_item,<br/> slot_name, archetype_name}<br/>output: evidence bundle<br/>+ optional GHIDRA/YARA proposal blocks"]:::stage
-    validators["validators<br/>review only<br/>output JSON gate<br/>{decision, signoff_count,<br/> required_signoffs,<br/> accepted_findings,<br/> rejected_findings,<br/> rejection_reasons,<br/> planner_fixes, summary}"]:::decision
-    reporter["reporter<br/>synthesis only<br/>output: final report<br/>+ optional finalized proposal blocks"]:::stage
-    tools["MCP tool layer<br/>artifact/live Ghidra, strings,<br/>FLOSS, capa, hashdb, yara, ...<br/>request: {tool_name, args}<br/>response: text/json"]:::ext
-    final["Pipeline return<br/>final_output string<br/>shared_state snapshots<br/>status_log + tool_log_sections"]:::data
+        subgraph setup["Stage 2 · Runtime Setup / Prompt Building"]
+            direction TB
+            runtime["get_runtime_sync(...)<br/>MultiAgentRuntime<br/>{pipeline_name,<br/> worker_architecture_name,<br/> stages[],<br/> static_tool_ids,<br/> dynamic_tool_ids,<br/> sandbox_tool_ids}"]:::stage
+            prompt["build_stage_prompt()<br/>stage input payload<br/>{user_text,<br/> prior_stage_outputs,<br/> stage contract,<br/> architecture,<br/> shared_state}"]:::data
+        end
+        style setup fill:#f3f7ff,stroke:#d6e0f4,stroke-width:1.2px,color:#40536c
+
+        subgraph preflightLane["Stage 3 · Preflight"]
+            direction TB
+            preflight["preflight<br/>light tool-backed reconnaissance<br/>output: short handoff<br/>+ validated_sample_path"]:::stage
+        end
+        style preflightLane fill:#edf5ff,stroke:#d1e1f3,stroke-width:1.2px,color:#426079
+    end
+    style colA fill:transparent,stroke:transparent
+
+    subgraph colB[" "]
+        direction TB
+        subgraph planningLane["Stage 4 · Planning"]
+            direction TB
+            planner["planner<br/>planning only<br/>output text + JSON block<br/>[{id, objective,<br/> recommended_roles,<br/> evidence_targets}]"]:::stage
+        end
+        style planningLane fill:#eef4ff,stroke:#d5def2,stroke-width:1.2px,color:#44546e
+
+        subgraph workerLane["Stage 5 · Workers / Tool Execution"]
+            direction TB
+            workers["workers<br/>host-parallel assignment execution<br/>assignment payload:<br/>{index, work_item,<br/> slot_name, archetype_name}<br/>output: evidence bundle<br/>+ optional GHIDRA/YARA proposal blocks"]:::stage
+            tools["MCP tool layer<br/>artifact/live Ghidra, strings,<br/>FLOSS, capa, hashdb, yara, ...<br/>request: {tool_name, args}<br/>response: text/json"]:::ext
+        end
+        style workerLane fill:#f5f1ff,stroke:#ddd2f2,stroke-width:1.2px,color:#50456f
+    end
+    style colB fill:transparent,stroke:transparent
+
+    subgraph colC[" "]
+        direction TB
+        subgraph validationLane["Stage 6 · Validation"]
+            direction TB
+            validators["validators<br/>review only<br/>output JSON gate<br/>{decision, signoff_count,<br/> required_signoffs,<br/> accepted_findings,<br/> rejected_findings,<br/> rejection_reasons,<br/> planner_fixes, summary}"]:::decision
+        end
+        style validationLane fill:#fff2f1,stroke:#ecc8c5,stroke-width:1.2px,color:#6a4643
+
+        subgraph reportingLane["Stage 7 · Reporting"]
+            direction TB
+            reporter["reporter<br/>synthesis only<br/>output: final report<br/>+ optional finalized proposal blocks"]:::stage
+        end
+        style reportingLane fill:#f2f6ff,stroke:#d7dff1,stroke-width:1.2px,color:#44566f
+    end
+    style colC fill:transparent,stroke:transparent
+
+    subgraph colD[" "]
+        direction TB
+        subgraph stateLane["Stage 8 · Shared State / Outputs / Return"]
+            direction TB
+            shared["shared_state<br/>{validated_sample_path,<br/> pipeline_stage_progress,<br/> planned_work_items,<br/> planned_work_item_status,<br/> ghidra_change_proposals,<br/> generated_yara_rules,<br/> validation_history,<br/> model_usage_events,<br/> final_output}"]:::store
+            final["Pipeline return<br/>final_output string<br/>shared_state snapshots<br/>status_log + tool_log_sections"]:::data
+        end
+        style stateLane fill:#eef8f1,stroke:#cfe1d4,stroke-width:1.2px,color:#355647
+    end
+    style colD fill:transparent,stroke:transparent
 
     req --> runtime
     env --> runtime
     presets --> runtime
     runtime --> prompt
     req --> prompt
-    shared --> prompt
+    prompt -.->|"shared_state context"| shared
 
     prompt --> preflight
-    preflight <--> shared
     preflight -->|"preflight handoff"| planner
+    preflight <--> shared
 
     prompt --> planner
-    planner <--> shared
     planner -->|"planned_work_items"| workers
+    planner <--> shared
 
     prompt --> workers
-    workers <--> shared
     workers <--> tools
     workers -->|"worker evidence bundle"| validators
+    workers <--> shared
 
     prompt --> validators
-    validators <--> shared
     validators -->|"accept"| reporter
+    validators <--> shared
     validators -.->|"reject + planner_fixes<br/>reset planner/workers/...<br/>replan up to MAX_VALIDATION_REPLAN_RETRIES"| planner
 
     prompt --> reporter
-    reporter <--> shared
     reporter --> final
+    reporter <--> shared
 ```
 
 Implementation map:

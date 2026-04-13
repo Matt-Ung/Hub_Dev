@@ -1,0 +1,6 @@
+sample,total_tasks,completed,completed_rate,worker_assignment_failed,analysis_error
+sample1.exe,21,19,0.904762,2,
+sample2.exe,21,9,0.428571,11,1
+sample3.exe,21,13,0.619048,8,
+sample4.exe,21,20,0.952381,,1
+sample5.exe,21,3,0.142857,18,

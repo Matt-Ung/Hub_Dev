@@ -44,6 +44,7 @@ def normalize_run_config_group_payload(run_metadata: Dict[str, Any]) -> Dict[str
         "validator_review_level": str(metadata.get("validator_review_level") or "").strip(),
         "tool_profile": str(metadata.get("tool_profile") or "").strip(),
         "prefer_upx_unpacked": bool(metadata.get("prefer_upx_unpacked")),
+        "deep_agent_request_limit": metadata.get("deep_agent_request_limit"),
         "model_profile": str(metadata.get("model_profile") or "").strip(),
         "force_model": str(metadata.get("force_model") or "").strip(),
         "judge_mode": str(metadata.get("judge_mode") or "").strip(),

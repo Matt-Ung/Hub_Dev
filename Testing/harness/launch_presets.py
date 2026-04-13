@@ -169,6 +169,7 @@ def build_launch_preset_command(
     live_view: bool = False,
     max_concurrent_repetitions: int | None = None,
     max_concurrent_child_runs: int | None = None,
+    deep_agent_request_limit: int | None = None,
     skip_build: bool = False,
     skip_prepare: bool = False,
     ghidra_install_dir: str = "",
@@ -210,6 +211,11 @@ def build_launch_preset_command(
         preset_child_concurrency = preset.get("max_concurrent_child_runs")
     if runner == "sweep" and preset_child_concurrency is not None and int(preset_child_concurrency) > 0:
         command.extend(["--max-concurrent-child-runs", str(int(preset_child_concurrency))])
+    resolved_request_limit = deep_agent_request_limit
+    if resolved_request_limit is None and "deep_agent_request_limit" in preset:
+        resolved_request_limit = preset.get("deep_agent_request_limit")
+    if resolved_request_limit is not None and str(resolved_request_limit).strip() != "":
+        command.extend(["--deep-agent-request-limit", str(int(resolved_request_limit))])
 
     for key, flag in _COMMON_FLAG_FIELDS:
         _append_flag(command, flag, preset.get(key))

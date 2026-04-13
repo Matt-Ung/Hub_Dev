@@ -1323,6 +1323,22 @@ _BROWSER_HTML = """<!doctype html>
             : "No semantic duplicate-call data available yet",
         },
         {
+          label: "Largest Executable Split",
+          value: ((analysis.most_heterogeneous_variant || {}).display_label) || "No executable split yet",
+          subvalue: analysis.most_heterogeneous_variant
+            ? `${analysis.most_heterogeneous_variant.heterogeneity_label || "mixed"} • span ${formatNumber(analysis.most_heterogeneous_variant.delta_span, 2)}`
+            : "Executable-level heterogeneity not available yet",
+        },
+        {
+          label: "Worst Redundant Executable",
+          value: analysis.most_redundant_executable
+            ? `${analysis.most_redundant_executable.sample || ""} • ${analysis.most_redundant_executable.display_label || ""}`
+            : "No executable hotspot yet",
+          subvalue: analysis.most_redundant_executable
+            ? `${formatNumber(analysis.most_redundant_executable.mean_tool_semantic_duplicate_calls, 2)} repeated calls • ${analysis.most_redundant_executable.tool_most_redundant_family || "tool family unknown"}`
+            : "Executable-level redundancy is not available yet",
+        },
+        {
           label: "Worst Redundant Task",
           value: ((analysis.most_redundant_task || {}).sample_task_id) || "No hotspots yet",
           subvalue: analysis.most_redundant_task
@@ -2202,6 +2218,10 @@ def _chart_section_key(entry: Dict[str, Any]) -> str:
             str(entry.get("description") or ""),
         ]
     ).lower()
+    if any(token in haystack for token in ("redundancy", "duplicate", "repeated tool", "wasteful")):
+        return "redundancy"
+    if any(token in haystack for token in ("executable", "cross-executable", "heterogeneous", "masked-by-average")):
+        return "executable"
     if any(token in haystack for token in ("reliability", "coverage", "failure", "validator", "judge error", "outcome breakdown")):
         return "reliability"
     if any(token in haystack for token in ("time", "duration", "runtime")):
@@ -2215,6 +2235,9 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
     manifest = _safe_json(experiment_root / "experiment_manifest.json")
     variant_rows = _safe_csv_rows(experiment_root / "variant_summary.csv")
     task_rows = _safe_csv_rows(experiment_root / "task_comparison.csv")
+    executable_rows = _safe_csv_rows(experiment_root / "executable_summary.csv")
+    executable_consistency_rows = _safe_csv_rows(experiment_root / "executable_consistency.csv")
+    redundancy_variant_rows = _safe_csv_rows(experiment_root / "tool_redundancy_by_variant.csv")
     charts = _collect_chart_entries(experiment_root)
     task_pages = _collect_task_page_entries(experiment_root)
     visualization_status = _load_visualization_status(experiment_root)
@@ -2230,6 +2253,16 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
             "description": "Validation, analysis, judge, and coverage outcomes separated so infrastructure failures do not get conflated with performance.",
             "open": True,
         },
+        "executable": {
+            "title": "Per-Executable Performance",
+            "description": "Executable-specific rankings and heatmaps showing where overall averages hide heterogeneous variant behavior.",
+            "open": True,
+        },
+        "redundancy": {
+            "title": "Tool Redundancy",
+            "description": "Repeated and near-equivalent tool-use views broken down by configuration, executable, and likely wasteful hotspot targets.",
+            "open": False,
+        },
         "task": {
             "title": "Task And Category Effects",
             "description": "Category-level score shifts and task-score consistency views showing where configurations helped or hurt.",
@@ -2241,7 +2274,7 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
             "open": False,
         },
     }
-    grouped_images: Dict[str, List[Dict[str, Any]]] = {"overview": [], "reliability": [], "task": [], "timing": []}
+    grouped_images: Dict[str, List[Dict[str, Any]]] = {"overview": [], "reliability": [], "executable": [], "redundancy": [], "task": [], "timing": []}
     for entry in charts:
         grouped_images[_chart_section_key(entry)].append(entry)
 
@@ -2303,6 +2336,47 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
         [
             row for row in non_baseline_variants
             if row.get("mean_tool_semantic_duplicate_calls") is not None or row.get("mean_tool_semantic_duplicate_rate") is not None
+        ],
+        key=lambda row: (
+            float(row.get("mean_tool_semantic_duplicate_calls") or 0.0),
+            float(row.get("mean_tool_semantic_duplicate_rate") or 0.0),
+        ),
+        default=None,
+    )
+    most_heterogeneous_variant = max(
+        [
+            {
+                "variant_id": str(row.get("variant_id") or ""),
+                "display_label": str(row.get("display_label") or row.get("variant_id") or ""),
+                "changed_variable": str(row.get("changed_variable") or ""),
+                "mean_score_delta": _as_float(row.get("mean_score_delta")),
+                "delta_span": _as_float(row.get("delta_span")),
+                "heterogeneity_label": str(row.get("heterogeneity_label") or ""),
+                "masked_by_average": _as_bool(row.get("masked_by_average")),
+                "strongest_executable": str(row.get("strongest_executable") or ""),
+                "weakest_executable": str(row.get("weakest_executable") or ""),
+            }
+            for row in executable_consistency_rows
+            if str(row.get("variant_id") or "")
+        ],
+        key=lambda row: (
+            1 if row.get("masked_by_average") else 0,
+            float(row.get("delta_span") or 0.0),
+        ),
+        default=None,
+    )
+    most_redundant_executable = max(
+        [
+            {
+                "variant_id": str(row.get("variant_id") or ""),
+                "display_label": str(row.get("display_label") or row.get("variant_id") or ""),
+                "sample": str(row.get("sample") or ""),
+                "mean_tool_semantic_duplicate_calls": _as_float(row.get("mean_tool_semantic_duplicate_calls")),
+                "mean_tool_semantic_duplicate_rate": _as_float(row.get("mean_tool_semantic_duplicate_rate")),
+                "tool_most_redundant_family": str(row.get("tool_most_redundant_family") or ""),
+            }
+            for row in executable_rows
+            if str(row.get("variant_id") or "") and str(row.get("variant_id") or "") != "baseline"
         ],
         key=lambda row: (
             float(row.get("mean_tool_semantic_duplicate_calls") or 0.0),
@@ -2434,10 +2508,15 @@ def _build_experiment_analysis_payload(experiment_root: Path) -> Dict[str, Any]:
         "highest_variance_variant": highest_variance,
         "widest_task_shift": widest_task_shift,
         "most_redundant_variant": most_redundant_variant,
+        "most_heterogeneous_variant": most_heterogeneous_variant,
+        "most_redundant_executable": most_redundant_executable,
         "most_redundant_task": most_redundant_task,
         "variant_rows": sorted_variants,
         "task_spotlights": task_spotlights[:10],
         "redundancy_hotspots": redundancy_hotspots[:12],
+        "executable_rows": executable_rows,
+        "executable_consistency_rows": executable_consistency_rows,
+        "redundancy_variant_rows": redundancy_variant_rows,
         "task_matrix_columns": task_matrix_columns,
         "task_matrix_rows": task_matrix_rows,
         "chart_sections": chart_sections,

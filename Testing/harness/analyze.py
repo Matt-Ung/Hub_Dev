@@ -21,6 +21,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict
@@ -34,6 +36,7 @@ from .artifacts import (
 )
 from .costing import estimate_event_costs
 from .paths import REPO_ROOT, read_json, write_json
+from .runtime_limits import resolve_testing_deep_agent_request_limit, request_limit_env_value
 from .tool_redundancy import normalize_tool_call_entries, summarize_tool_call_redundancy
 
 
@@ -63,6 +66,9 @@ def _fresh_harness_runtime(manifest_path: Path):
         "DEEP_ENABLE_MEMORY": "0",
         "DEEP_PERSIST_BACKEND": "0",
         "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS": "0",
+        "DEEP_AGENT_REQUEST_LIMIT": request_limit_env_value(
+            resolve_testing_deep_agent_request_limit()
+        ),
     }
     original_env = {key: os.environ.get(key) for key in env_overrides}
 
@@ -79,12 +85,21 @@ def _fresh_harness_runtime(manifest_path: Path):
             "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS",
             True,
         ),
+        "DEEP_AGENT_REQUEST_LIMIT": getattr(config_mod, "DEEP_AGENT_REQUEST_LIMIT", 50),
     }
 
     imported: Dict[str, Any] = {}
+    config_override_values = {
+        "MCP_SERVER_MANIFEST_PATH": str(manifest_path),
+        "DEEP_ENABLE_MEMORY": False,
+        "DEEP_PERSIST_BACKEND": False,
+        "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS": False,
+        "DEEP_AGENT_REQUEST_LIMIT": resolve_testing_deep_agent_request_limit(),
+    }
     for key, value in env_overrides.items():
         os.environ[key] = value
-        setattr(config_mod, key, value if key == "MCP_SERVER_MANIFEST_PATH" else value == "1")
+    for key, value in config_override_values.items():
+        setattr(config_mod, key, value)
 
     for module_name in runtime_module_names:
         sys.modules.pop(module_name, None)
@@ -147,6 +162,55 @@ def _build_initial_state(shared_state_factory):
         "shell_execution_mode": "none",
         "validator_review_level": "default",
         "shared_state": shared_state_factory(),
+    }
+
+
+def _running_agent_result_snapshot(
+    *,
+    state: Dict[str, Any],
+    result_stub: Dict[str, Any],
+    started_at: float,
+) -> Dict[str, Any]:
+    """
+    Function: _running_agent_result_snapshot
+    Inputs:
+      - state: in-flight runtime state for the active analysis case.
+      - result_stub: stable top-level result fields known before completion.
+      - started_at: monotonic timestamp captured at task start.
+    Description:
+      Build a lightweight in-progress `agent_result.json` payload so the live
+      monitor can read the current deep-agent status log and inner pipeline
+      stage progress before the final result is written.
+    Outputs:
+      Returns a partial result dictionary with running-state fields.
+    Side Effects:
+      None.
+    """
+    shared = state.get("shared_state") or {}
+    return {
+        **dict(result_stub or {}),
+        "ok": True,
+        "status": "running",
+        "produced_result": False,
+        "accepted_final_output": False,
+        "failure_reason": "",
+        "validator_review_level": str(shared.get("validator_review_level") or state.get("validator_review_level") or "default"),
+        "validator_summary": {},
+        "validation": {},
+        "worker_assignment_summary": dict(shared.get("host_worker_assignment_summary") or {}),
+        "failure_category": "",
+        "failure_retryable": False,
+        "failure_source": "",
+        "failure_stage": "",
+        "pipeline_error_context": dict(shared.get("last_pipeline_error") or {}),
+        "model_usage": {
+            "totals": dict(shared.get("model_usage_totals") or {}),
+            "by_stage": dict(shared.get("model_usage_by_stage") or {}),
+            "events": list(shared.get("model_usage_events") or []),
+        },
+        "cost_estimate": {},
+        "duration_sec": max(0.0, time.monotonic() - started_at),
+        "status_log": str(state.get("status_log") or ""),
     }
 
 
@@ -258,6 +322,7 @@ def _classify_failure_reason(error: str, shared: Dict[str, Any] | None = None) -
         source = "pipeline"
         if "could not parse the json body" in lowered:
             category = "invalid_request_payload"
+            retryable = True
         else:
             category = "invalid_request"
     elif any(marker in lowered for marker in ("429", "rate limit", "too many requests", "ratelimit")):
@@ -276,6 +341,7 @@ def _classify_failure_reason(error: str, shared: Dict[str, Any] | None = None) -
             "peer closed connection",
             "incomplete chunked read",
             "server disconnected",
+            "connection error",
             "connection reset",
             "connection aborted",
             "apiconnectionerror",
@@ -612,6 +678,41 @@ def run_agent_case(
                 "tool_profile": str(tool_profile or "full").strip() or "full",
                 "ok": False,
             }
+            partial_writer_stop = threading.Event()
+            partial_writer_thread: threading.Thread | None = None
+            if output_json is not None:
+                started_at = time.monotonic()
+
+                def _write_partial_agent_result() -> None:
+                    while not partial_writer_stop.wait(1.0):
+                        try:
+                            write_json(
+                                output_json,
+                                _running_agent_result_snapshot(
+                                    state=state,
+                                    result_stub=result,
+                                    started_at=started_at,
+                                ),
+                            )
+                        except Exception:
+                            # Partial live-view snapshots are best-effort. The
+                            # final result write remains authoritative.
+                            pass
+
+                write_json(
+                    output_json,
+                    _running_agent_result_snapshot(
+                        state=state,
+                        result_stub=result,
+                        started_at=started_at,
+                    ),
+                )
+                partial_writer_thread = threading.Thread(
+                    target=_write_partial_agent_result,
+                    name="agent-result-live-snapshot",
+                    daemon=True,
+                )
+                partial_writer_thread.start()
             try:
                 runtime = get_runtime_sync(pipeline, architecture_name=architecture)
                 report = run_deepagent_pipeline(runtime, effective_query, state)
@@ -640,6 +741,7 @@ def run_agent_case(
                         "failure_retryable": bool(status_info.get("failure_retryable")),
                         "failure_source": str(status_info.get("failure_source") or ""),
                         "failure_stage": str(status_info.get("failure_stage") or ""),
+                        "pipeline_error_context": dict(shared.get("last_pipeline_error") or {}),
                         "automation_status": str(shared.get("automation_status") or ""),
                         "auto_triage_status": str(shared.get("auto_triage_status") or ""),
                         "auto_triage_context_summary": str(shared.get("auto_triage_context_summary") or ""),
@@ -679,6 +781,7 @@ def run_agent_case(
                         "failure_retryable": bool(status_info.get("failure_retryable")),
                         "failure_source": str(status_info.get("failure_source") or ""),
                         "failure_stage": str(status_info.get("failure_stage") or ""),
+                        "pipeline_error_context": dict(shared.get("last_pipeline_error") or {}),
                         "error": "%s: %s" % (type(exc).__name__, exc),
                         "traceback": traceback.format_exc(),
                         "model_usage": {
@@ -691,6 +794,10 @@ def run_agent_case(
                         "status_log": str(state.get("status_log") or ""),
                     }
                 )
+            finally:
+                partial_writer_stop.set()
+                if partial_writer_thread is not None:
+                    partial_writer_thread.join(timeout=1.5)
 
     if output_json is not None:
         write_json(output_json, result)

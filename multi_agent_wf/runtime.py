@@ -1,7 +1,7 @@
 """
 File: runtime.py
 Author: Matt-Ung
-Last Updated: 2026-04-01
+Last Updated: 2026-04-09
 Purpose:
   Assemble and manage the runtime objects for the multi-agent workflow system.
 
@@ -13,7 +13,10 @@ Summary:
 """
 
 import asyncio
+import copy
+from dataclasses import is_dataclass, replace as dataclass_replace
 import json
+import math
 import os
 import re
 import sys
@@ -25,8 +28,15 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelMessage
 from pydantic_ai.mcp import MCPServerStdio
+from pydantic_ai.messages import ModelRequest, ModelResponse, ToolReturnPart, UserPromptPart
+try:
+    from pydantic_ai.usage import UsageLimits
+except Exception:  # pragma: no cover - lightweight test stubs may not expose submodules
+    class UsageLimits:  # type: ignore[override]
+        def __init__(self, *, request_limit: int | None = None, **_: Any) -> None:
+            self.request_limit = request_limit
 
 import pydantic_deep as pydantic_deep_pkg
 from pydantic_deep import create_deep_agent, create_default_deps, create_sliding_window_processor
@@ -45,6 +55,7 @@ from .config import (
     DEEP_AGENT_PIPELINE_NAME,
     DEEP_AGENT_PIPELINE_PRESETS,
     DEEP_AGENT_PIPELINE_ROUTER_MODEL,
+    DEEP_AGENT_REQUEST_LIMIT,
     DEEP_AGENT_RETRIES,
     DEEP_BACKEND_ROOT,
     DEEP_CONTEXT_MAX_TOKENS,
@@ -108,11 +119,308 @@ _FUNCTION_NAME_LIKE_RE = re.compile(r"^(?:FUN_|sub_|LAB_|thunk_)?[A-Za-z_~?][A-Z
 _FUNCTION_SELECTOR_WITH_ADDRESS_RE = re.compile(
     r"^\s*(?P<name>.+?)\s*@\s*(?P<address>(?:0x)?[0-9A-Fa-f]+)\s*$"
 )
+_HOST_WORKER_TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4
+_HOST_WORKER_HISTORY_TOKEN_BUDGET = max(24000, int(DEEP_CONTEXT_MAX_TOKENS or 0))
+_HOST_WORKER_TOOL_RESULT_CHAR_BUDGET = 14000
+_HOST_WORKER_BROAD_TOOL_RESULT_CHAR_BUDGET = 6000
+_HOST_WORKER_AGGRESSIVE_TOOL_RESULT_CHAR_BUDGET = 2200
+_HOST_WORKER_TEXT_PART_CHAR_BUDGET = 8000
+_HOST_WORKER_AGGRESSIVE_TEXT_PART_CHAR_BUDGET = 3200
+_HOST_WORKER_BROAD_TOOL_NAME_MARKERS = (
+    "list_strings",
+    "list_imports",
+    "list_exports",
+    "list_functions",
+    "list_data_items",
+    "list_segments",
+    "list_symbols",
+    "list_resources",
+    "search_functions_by_name",
+    "search_data",
+    "floss",
+    "strings",
+    "capa",
+)
+_HOST_WORKER_FOCUSED_CODE_TOOL_NAME_MARKERS = (
+    "decompile",
+    "disassemble",
+    "xref",
+    "cross_reference",
+    "pcode",
+)
+
+
+def _current_usage_limits() -> UsageLimits | None:
+    request_limit = DEEP_AGENT_REQUEST_LIMIT
+    if request_limit is None:
+        return None
+    return UsageLimits(request_limit=int(request_limit))
+
+
+def _supports_usage_limits_type_error(error: TypeError) -> bool:
+    message = str(error or "")
+    return "usage_limits" in message and "unexpected keyword" in message
+
+
+def _agent_run_sync_with_optional_usage_limits(agent: Agent, prompt: str) -> Any:
+    usage_limits = _current_usage_limits()
+    if usage_limits is None:
+        return agent.run_sync(prompt)
+    try:
+        return agent.run_sync(prompt, usage_limits=usage_limits)
+    except TypeError as error:
+        if not _supports_usage_limits_type_error(error):
+            raise
+        return agent.run_sync(prompt)
 
 
 def _safe_runtime_path_component(value: Any) -> str:
     text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._")
     return text or "default"
+
+
+def _replace_object_fields(obj: Any, **changes: Any) -> Any:
+    if obj is None or not changes:
+        return obj
+    model_copy = getattr(obj, "model_copy", None)
+    if callable(model_copy):
+        try:
+            return model_copy(update=changes)
+        except Exception:
+            pass
+    if is_dataclass(obj):
+        try:
+            return dataclass_replace(obj, **changes)
+        except Exception:
+            pass
+    try:
+        clone = copy.copy(obj)
+        for key, value in changes.items():
+            setattr(clone, key, value)
+        return clone
+    except Exception:
+        return obj
+
+
+def _estimate_token_count(text: Any) -> int:
+    raw = str(text or "")
+    if not raw:
+        return 0
+    return max(1, int(math.ceil(len(raw) / _HOST_WORKER_TOKEN_ESTIMATE_CHARS_PER_TOKEN)))
+
+
+def _serialize_message_for_budget(message: Any) -> str:
+    parts = []
+    for part in list(getattr(message, "parts", []) or []):
+        chunks = [part.__class__.__name__]
+        tool_name = str(getattr(part, "tool_name", "") or "").strip()
+        if tool_name:
+            chunks.append(f"tool={tool_name}")
+        if hasattr(part, "args"):
+            chunks.append(json.dumps(_json_safe(getattr(part, "args")), ensure_ascii=False, default=str, sort_keys=True))
+        if hasattr(part, "content"):
+            chunks.append(_coerce_direct_tool_result_text(getattr(part, "content")))
+        elif hasattr(part, "text"):
+            chunks.append(str(getattr(part, "text") or ""))
+        parts.append("\n".join(chunk for chunk in chunks if chunk))
+    return "\n\n".join(parts).strip()
+
+
+def _message_estimated_tokens(message: Any) -> int:
+    return _estimate_token_count(_serialize_message_for_budget(message))
+
+
+def _history_estimated_tokens(history: List[Any]) -> int:
+    return sum(_message_estimated_tokens(message) for message in list(history or []))
+
+
+def _is_broad_catalog_tool(tool_name: str) -> bool:
+    normalized = str(tool_name or "").strip().lower()
+    return any(marker in normalized for marker in _HOST_WORKER_BROAD_TOOL_NAME_MARKERS)
+
+
+def _is_code_heavy_tool(tool_name: str) -> bool:
+    normalized = str(tool_name or "").strip().lower()
+    return any(marker in normalized for marker in _HOST_WORKER_FOCUSED_CODE_TOOL_NAME_MARKERS)
+
+
+def _summarize_large_text_block(
+    text: str,
+    *,
+    max_chars: int,
+    head_lines: int,
+    tail_lines: int,
+    label: str,
+) -> str:
+    raw = str(text or "").strip()
+    if not raw or len(raw) <= max_chars:
+        return raw
+    lines = [line.rstrip() for line in raw.splitlines()]
+    non_empty_lines = sum(1 for line in lines if line.strip())
+    if len(lines) <= head_lines + tail_lines:
+        head = "\n".join(lines[:head_lines]).strip()
+        tail = "\n".join(lines[-tail_lines:]).strip()
+    else:
+        head = "\n".join(lines[:head_lines]).strip()
+        tail = "\n".join(lines[-tail_lines:]).strip()
+    summary = (
+        f"[{label} summarized for context]\n"
+        f"- original_chars: {len(raw)}\n"
+        f"- original_lines: {len(lines)}\n"
+        f"- non_empty_lines: {non_empty_lines}\n"
+        "- only a compact preview is kept in model history; re-query narrowly if you need a missing slice.\n"
+        "\n[head]\n"
+        f"{head}\n"
+        "\n...[middle omitted]...\n"
+        "\n[tail]\n"
+        f"{tail}"
+    ).strip()
+    if len(summary) > max_chars:
+        summary = summary[: max_chars - 20].rstrip() + "\n...[truncated]..."
+    return summary
+
+
+def _summarize_tool_result_for_model(
+    tool_name: str,
+    result: Any,
+    *,
+    aggressive: bool = False,
+) -> Tuple[Any, Dict[str, Any]]:
+    text = _coerce_direct_tool_result_text(result)
+    if not text:
+        return result, {"summarized": False}
+    if aggressive:
+        max_chars = _HOST_WORKER_AGGRESSIVE_TOOL_RESULT_CHAR_BUDGET
+        head_lines = 24
+        tail_lines = 8
+    elif _is_broad_catalog_tool(tool_name):
+        max_chars = _HOST_WORKER_BROAD_TOOL_RESULT_CHAR_BUDGET
+        head_lines = 40
+        tail_lines = 10
+    elif _is_code_heavy_tool(tool_name):
+        max_chars = _HOST_WORKER_TOOL_RESULT_CHAR_BUDGET
+        head_lines = 100
+        tail_lines = 30
+    else:
+        max_chars = 9000
+        head_lines = 60
+        tail_lines = 16
+    if len(text) <= max_chars:
+        return result, {"summarized": False}
+    summary = _summarize_large_text_block(
+        text,
+        max_chars=max_chars,
+        head_lines=head_lines,
+        tail_lines=tail_lines,
+        label=f"tool return: {tool_name or 'unknown_tool'}",
+    )
+    return summary, {
+        "summarized": True,
+        "original_chars": len(text),
+        "summary_chars": len(summary),
+        "tool_name": str(tool_name or "").strip(),
+        "aggressive": bool(aggressive),
+    }
+
+
+def _summarize_text_part_for_history(text: Any, *, aggressive: bool = False) -> Tuple[str, bool]:
+    raw = str(text or "").strip()
+    if not raw:
+        return raw, False
+    max_chars = _HOST_WORKER_AGGRESSIVE_TEXT_PART_CHAR_BUDGET if aggressive else _HOST_WORKER_TEXT_PART_CHAR_BUDGET
+    if len(raw) <= max_chars:
+        return raw, False
+    return (
+        _summarize_large_text_block(
+            raw,
+            max_chars=max_chars,
+            head_lines=80 if not aggressive else 28,
+            tail_lines=20 if not aggressive else 10,
+            label="text response",
+        ),
+        True,
+    )
+
+
+def _summarize_message_parts_for_history(message: Any, *, aggressive: bool = False) -> Any:
+    parts = list(getattr(message, "parts", []) or [])
+    if not parts:
+        return message
+    changed = False
+    next_parts: List[Any] = []
+    for part in parts:
+        next_part = part
+        if isinstance(part, ToolReturnPart):
+            summarized_content, _meta = _summarize_tool_result_for_model(
+                str(getattr(part, "tool_name", "") or ""),
+                getattr(part, "content", None),
+                aggressive=aggressive,
+            )
+            if summarized_content is not getattr(part, "content", None):
+                next_part = _replace_object_fields(part, content=summarized_content)
+                changed = True
+        elif hasattr(part, "content"):
+            summarized_text, summarized = _summarize_text_part_for_history(
+                getattr(part, "content", None),
+                aggressive=aggressive,
+            )
+            if summarized:
+                next_part = _replace_object_fields(part, content=summarized_text)
+                changed = True
+        next_parts.append(next_part)
+    if not changed:
+        return message
+    return _replace_object_fields(message, parts=next_parts)
+
+
+def _trim_history_to_token_budget(history: List[ModelMessage], *, max_tokens: int) -> List[ModelMessage]:
+    if not history:
+        return []
+    summarized = [_summarize_message_parts_for_history(message) for message in history]
+    if _history_estimated_tokens(summarized) <= max_tokens:
+        return summarized
+
+    suffix: List[ModelMessage] = []
+    total = 0
+    for message in reversed(summarized):
+        message_tokens = _message_estimated_tokens(message)
+        if suffix and total + message_tokens > max_tokens:
+            break
+        suffix.append(message)
+        total += message_tokens
+    suffix.reverse()
+
+    while suffix and isinstance(suffix[0], ModelResponse):
+        suffix = suffix[1:]
+    if not suffix:
+        suffix = [summarized[-1]]
+
+    if _history_estimated_tokens(suffix) <= max_tokens:
+        return suffix
+
+    aggressively_compacted = [
+        _summarize_message_parts_for_history(message, aggressive=True)
+        for message in suffix
+    ]
+    if _history_estimated_tokens(aggressively_compacted) <= max_tokens:
+        return aggressively_compacted
+
+    fallback: List[ModelMessage] = []
+    total = 0
+    for message in reversed(aggressively_compacted):
+        message_tokens = _message_estimated_tokens(message)
+        if fallback and total + message_tokens > max_tokens:
+            continue
+        fallback.append(message)
+        total += message_tokens
+    fallback.reverse()
+    while fallback and isinstance(fallback[0], ModelResponse):
+        fallback = fallback[1:]
+    return fallback or [aggressively_compacted[-1]]
+
+
+def _host_worker_token_budget_processor(history: List[ModelMessage]) -> List[ModelMessage]:
+    return _trim_history_to_token_budget(list(history or []), max_tokens=_HOST_WORKER_HISTORY_TOKEN_BUDGET)
 
 
 def _normalize_worker_subagent_profile(value: str) -> str:
@@ -287,6 +595,24 @@ def _normalize_tool_args_for_execution(server_id: str, tool_name: str, tool_args
     normalized_tool_name = str(tool_name or "").strip()
 
     if "ghidra" in sid:
+        if "limit" not in normalized:
+            for alias in ("maxResults", "max_results", "pageSize", "page_size"):
+                if alias in normalized:
+                    normalized["limit"] = normalized.pop(alias)
+                    break
+        else:
+            for alias in ("maxResults", "max_results", "pageSize", "page_size"):
+                normalized.pop(alias, None)
+
+        if "offset" not in normalized:
+            for alias in ("pageOffset", "page_offset", "startOffset", "start_offset"):
+                if alias in normalized:
+                    normalized["offset"] = normalized.pop(alias)
+                    break
+        else:
+            for alias in ("pageOffset", "page_offset", "startOffset", "start_offset"):
+                normalized.pop(alias, None)
+
         if normalized_tool_name in {"decompile_function", "get_function_xrefs"}:
             raw_name = str(normalized.get("name") or "").strip()
             match = _FUNCTION_SELECTOR_WITH_ADDRESS_RE.match(raw_name)
@@ -379,6 +705,41 @@ def _append_tool_cache_note(
 def _make_cached_tool_call_processor(server_id: str):
     requires_serial_calls = _server_requires_serial_calls(server_id)
 
+    def _guard_tool_result_for_history(
+        state: Optional[Dict[str, Any]],
+        stage_name: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        result: Any,
+    ) -> Any:
+        summarized_result = result
+        summary_meta = {"summarized": False}
+        if isinstance(result, (str, dict, list)):
+            summarized_result, summary_meta = _summarize_tool_result_for_model(
+                tool_name,
+                result,
+            )
+            if state is not None and summary_meta.get("summarized"):
+                _append_tool_log_entries(
+                    state,
+                    stage_name,
+                    [
+                        {
+                            "stage": stage_name,
+                            "kind": "tool_return_summarized",
+                            "server_id": server_id,
+                            "tool_name": tool_name,
+                            "args": _json_safe(tool_args),
+                            "source": "runtime.history_guard",
+                            "original_chars": int(summary_meta.get("original_chars") or 0),
+                            "summary_chars": int(summary_meta.get("summary_chars") or 0),
+                            "aggressive": bool(summary_meta.get("aggressive")),
+                            "event_at": datetime.now().isoformat(timespec="seconds"),
+                        }
+                    ],
+                )
+        return summarized_result, summary_meta
+
     async def _processor(ctx: Any, direct_call: Any, tool_name: str, tool_args: Dict[str, Any]) -> Any:
         normalized_tool_name = str(tool_name or "").strip()
         normalized_tool_args = _normalize_tool_args_for_execution(server_id, normalized_tool_name, tool_args)
@@ -406,13 +767,29 @@ def _make_cached_tool_call_processor(server_id: str):
             finally:
                 lock.release()
 
-        if not cacheable:
-            return await _direct_call_once()
-
         state = _ACTIVE_PIPELINE_STATE.get()
         stage_name = _ACTIVE_PIPELINE_STAGE.get() or "pipeline"
+        if not cacheable:
+            result = await _direct_call_once()
+            guarded_result, _ = _guard_tool_result_for_history(
+                state,
+                stage_name,
+                normalized_tool_name,
+                normalized_tool_args,
+                result,
+            )
+            return guarded_result
+
         if state is None:
-            return await _direct_call_once()
+            result = await _direct_call_once()
+            guarded_result, _ = _guard_tool_result_for_history(
+                None,
+                stage_name,
+                normalized_tool_name,
+                normalized_tool_args,
+                result,
+            )
+            return guarded_result
 
         cache = state.setdefault("tool_result_cache", {})
         cache_key = _tool_result_cache_key(server_id, normalized_tool_name, normalized_tool_args)
@@ -468,15 +845,24 @@ def _make_cached_tool_call_processor(server_id: str):
                 if inflight_record is not None and inflight_record[0] is task:
                     _TOOL_RESULT_CACHE_INFLIGHT.pop(cache_key, None)
 
-        if _is_cacheable_tool_result(result):
+        summarized_result, summary_meta = _guard_tool_result_for_history(
+            state,
+            stage_name,
+            normalized_tool_name,
+            normalized_tool_args,
+            result,
+        )
+
+        if _is_cacheable_tool_result(summarized_result):
             cache[cache_key] = {
                 "ok": True,
                 "server_id": server_id,
                 "tool_name": normalized_tool_name,
                 "args": _json_safe(normalized_tool_args),
-                "result": result,
+                "result": summarized_result,
                 "cached_at": datetime.now().isoformat(timespec="seconds"),
                 "hit_count": 0,
+                "history_guard": dict(summary_meta or {}),
             }
             _prune_tool_result_cache(state)
             _append_tool_cache_note(
@@ -496,7 +882,7 @@ def _make_cached_tool_call_processor(server_id: str):
                 normalized_tool_name,
                 normalized_tool_args,
             )
-        return result
+        return summarized_result
 
     return _processor
 
@@ -1743,13 +2129,18 @@ class _ControlledLocalBackend:
         return getattr(self._backend, name)
 
 
-def _build_history_processors() -> List[Any]:
-    return [
+def _build_history_processors(*, host_worker: bool = False) -> List[Any]:
+    trigger = ("messages", 12) if host_worker else ("messages", 80)
+    keep = ("messages", 6) if host_worker else ("messages", 40)
+    processors: List[Any] = [
         create_sliding_window_processor(
-            trigger=("messages", 80),
-            keep=("messages", 40),
+            trigger=trigger,
+            keep=keep,
         )
     ]
+    if host_worker:
+        processors.append(_host_worker_token_budget_processor)
+    return processors
 
 
 def _build_skill_directories() -> List[str]:
@@ -2866,11 +3257,12 @@ def select_pipeline_name_for_query_sync(user_text: str, state: Optional[Dict[str
         return default_pipeline_name
 
     try:
-        result = _build_pipeline_router_agent().run_sync(
+        result = _agent_run_sync_with_optional_usage_limits(
+            _build_pipeline_router_agent(),
             (
                 f"User request:\n{str(user_text or '').strip()}\n\n"
                 "Choose the best pipeline preset name for this request."
-            )
+            ),
         )
         selected = _extract_pipeline_name_from_router_output(result.output)
         if selected:
@@ -2911,12 +3303,13 @@ def select_architecture_name_for_query_sync(
     ).strip()
 
     try:
-        result = _build_architecture_router_agent().run_sync(
+        result = _agent_run_sync_with_optional_usage_limits(
+            _build_architecture_router_agent(),
             (
                 f"User request:\n{str(user_text or '').strip()}\n\n"
                 f"Selected pipeline preset:\n{selected_pipeline_name or 'unknown'}\n\n"
                 "Choose the best worker architecture preset name for this request."
-            )
+            ),
         )
         selected = _extract_architecture_name_from_router_output(result.output)
         if selected:
@@ -3044,7 +3437,7 @@ def build_host_worker_assignment_executor(
         # cancel-scope ownership bugs and malformed provider requests.
         context_manager=False,
         context_manager_max_tokens=DEEP_CONTEXT_MAX_TOKENS,
-        history_processors=_build_history_processors(),
+        history_processors=_build_history_processors(host_worker=True),
         retries=DEEP_AGENT_RETRIES,
         cost_tracking=False,
         toolsets=toolsets,
@@ -3266,6 +3659,7 @@ def get_runtime_sync(
             "skill_dirs": DEEP_SKILL_DIRS,
             "include_bundled_skills": DEEP_INCLUDE_BUNDLED_SKILLS,
             "deep_agent_retries": DEEP_AGENT_RETRIES,
+            "request_limit": DEEP_AGENT_REQUEST_LIMIT,
         },
     )
 
