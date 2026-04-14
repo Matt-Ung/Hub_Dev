@@ -2,7 +2,7 @@ PWD /Users/matthewung/Desktop/Thesis Tools/Hub_Dev/Thesis_Agentic_RE
 INPUT /usr/local/texlive/2026/texmf.cnf
 INPUT /usr/local/texlive/2026/texmf-dist/web2c/texmf.cnf
 INPUT /usr/local/texlive/2026/texmf-var/web2c/pdftex/pdflatex.fmt
-INPUT /Users/matthewung/Desktop/Thesis Tools/Hub_Dev/Thesis_Agentic_RE/thesis.tex
+INPUT thesis.tex
 OUTPUT thesis.log
 INPUT ./inithesis.cls
 INPUT inithesis.cls
@@ -291,6 +291,10 @@ INPUT ./Pictures/experiment_results/final_eval_cross_executable_heatmap.png
 INPUT ./Pictures/experiment_results/final_eval_cross_executable_heatmap.png
 INPUT ./Pictures/experiment_results/final_eval_cross_executable_heatmap.png
 INPUT ./Pictures/experiment_results/final_eval_cross_executable_heatmap.png
+INPUT ./Pictures/experiment_results/final_eval_redundant_tool_usage_by_executable.png
+INPUT ./Pictures/experiment_results/final_eval_redundant_tool_usage_by_executable.png
+INPUT ./Pictures/experiment_results/final_eval_redundant_tool_usage_by_executable.png
+INPUT ./Pictures/experiment_results/final_eval_redundant_tool_usage_by_executable.png
 INPUT ./Chapter8/limitations.tex
 INPUT ./Chapter8/limitations.tex
 INPUT ./Chapter8/limitations.tex

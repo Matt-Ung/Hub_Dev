@@ -7,7 +7,8 @@
 \providecommand{\BIBentrySTDinterwordspacing}{\spaceskip=0pt\relax}
 \providecommand{\BIBentryALTinterwordstretchfactor}{4}
 \providecommand{\BIBentryALTinterwordspacing}{\spaceskip=\fontdimen2\font plus
-\BIBentryALTinterwordstretchfactor\fontdimen3\font minus \fontdimen4\font\relax}
+\BIBentryALTinterwordstretchfactor\fontdimen3\font minus
+  \fontdimen4\font\relax}
 \providecommand{\BIBforeignlanguage}[2]{{%
 \expandafter\ifx\csname l@#1\endcsname\relax
 \typeout{** WARNING: IEEEtran.bst: No hyphenation pattern has been}%
@@ -22,98 +23,161 @@
 
 \bibitem{kunwar2024sok}
 \BIBentryALTinterwordspacing
-P.~Kunwar, K.~Aryal, M.~Gupta, M.~Abdelsalam, and E.~Bertino, ``{SoK}: Leveraging transformers for malware analysis,'' arXiv preprint arXiv:2405.17190, 2024. [Online]. Available: \url{https://arxiv.org/abs/2405.17190}
+P.~Kunwar, K.~Aryal, M.~Gupta, M.~Abdelsalam, and E.~Bertino, ``{SoK}:
+  Leveraging transformers for malware analysis,'' arXiv preprint
+  arXiv:2405.17190, 2024. [Online]. Available:
+  \url{https://arxiv.org/abs/2405.17190}
 \BIBentrySTDinterwordspacing
 
 \bibitem{mattei2022reusability}
-J.~Mattei, M.~McLaughlin, S.~Katcher, and D.~Votipka, ``A qualitative evaluation of reverse engineering tool usability,'' in \emph{Proceedings of the 38th Annual Computer Security Applications Conference}, Austin, TX, USA, Dec. 2022, pp. 619--631.
+J.~Mattei, M.~McLaughlin, S.~Katcher, and D.~Votipka, ``A qualitative
+  evaluation of reverse engineering tool usability,'' in \emph{Proceedings of
+  the 38th Annual Computer Security Applications Conference}, Austin, TX, USA,
+  Dec. 2022, pp. 619--631.
 
 \bibitem{yakdan2016johnny}
-K.~Yakdan, S.~Dechand, E.~Gerhards-Padilla, and M.~Smith, ``Helping johnny to analyze malware: A usability-optimized decompiler and malware analysis user study,'' in \emph{2016 IEEE Symposium on Security and Privacy (SP)}, San Jose, CA, USA, May 2016, pp. 158--177.
+K.~Yakdan, S.~Dechand, E.~Gerhards-Padilla, and M.~Smith, ``Helping johnny to
+  analyze malware: A usability-optimized decompiler and malware analysis user
+  study,'' in \emph{2016 IEEE Symposium on Security and Privacy (SP)}, San
+  Jose, CA, USA, May 2016, pp. 158--177.
 
 \bibitem{anthropic2025espionage}
 \BIBentryALTinterwordspacing
-{Anthropic}, ``Disrupting the first reported {AI}-orchestrated cyber espionage campaign,'' Anthropic, Full Report, Nov. 2025. [Online]. Available: \url{https://assets.anthropic.com/m/ec212e6566a0d47/original/Disrupting-the-first-reported-AI-orchestrated-cyber-espionage-campaign.pdf}
+{Anthropic}, ``Disrupting the first reported {AI}-orchestrated cyber espionage
+  campaign,'' Anthropic, Full Report, Nov. 2025. [Online]. Available:
+  \url{https://assets.anthropic.com/m/ec212e6566a0d47/original/Disrupting-the-first-reported-AI-orchestrated-cyber-espionage-campaign.pdf}
 \BIBentrySTDinterwordspacing
 
 \bibitem{fbi2025ic3}
 \BIBentryALTinterwordspacing
-{Federal Bureau of Investigation}, ``{2025 IC3 Annual Report},'' Internet Crime Complaint Center, Annual Report, 2025. [Online]. Available: \url{https://www.ic3.gov/AnnualReport/Reports/2025_IC3Report.pdf}
+{Federal Bureau of Investigation}, ``{2025 IC3 Annual Report},'' Internet Crime
+  Complaint Center, Annual Report, 2025. [Online]. Available:
+  \url{https://www.ic3.gov/AnnualReport/Reports/2025_IC3Report.pdf}
 \BIBentrySTDinterwordspacing
 
 \bibitem{raitsis2025obfuscation}
-T.~Raitsis, Y.~Elgazari, G.~E. Toibin, Y.~Lurie, S.~Mark, and O.~Margalit, ``Code obfuscation: A comprehensive approach to detection, classification, and ethical challenges,'' \emph{Algorithms}, vol.~18, no.~2, p.~54, Jan. 2025.
+T.~Raitsis, Y.~Elgazari, G.~E. Toibin, Y.~Lurie, S.~Mark, and O.~Margalit,
+  ``Code obfuscation: A comprehensive approach to detection, classification,
+  and ethical challenges,'' \emph{Algorithms}, vol.~18, no.~2, p.~54, Jan.
+  2025.
 
 \bibitem{ghidramcp2025}
-``Lauriewired/ghidramcp: {MCP} server for ghidra,'' \url{https://github.com/LaurieWired/GhidraMCP}, 2025, accessed: Dec. 12, 2025.
+``Lauriewired/ghidramcp: {MCP} server for ghidra,''
+  \url{https://github.com/LaurieWired/GhidraMCP}, 2025, accessed: Dec. 12,
+  2025.
 
 \bibitem{ghidraplugin2025}
-``Plugin,'' \url{https://ghidra.re/ghidra_docs/api/ghidra/framework/plugintool/Plugin.html}, 2025, accessed: Dec. 12, 2025.
+``Plugin,''
+  \url{https://ghidra.re/ghidra_docs/api/ghidra/framework/plugintool/Plugin.html},
+  2025, accessed: Dec. 12, 2025.
 
 \bibitem{xie2024resym}
-D.~Xie, Z.~Zhang, N.~Jiang, X.~Xu, L.~Tan, and X.~Zhang, ``Resym: Harnessing {LLMs} to recover variable and data structure symbols from stripped binaries,'' in \emph{Proceedings of the 2024 on ACM SIGSAC Conference on Computer and Communications Security}, Salt Lake City, UT, USA, Dec. 2024, pp. 4554--4568.
+D.~Xie, Z.~Zhang, N.~Jiang, X.~Xu, L.~Tan, and X.~Zhang, ``Resym: Harnessing
+  {LLMs} to recover variable and data structure symbols from stripped
+  binaries,'' in \emph{Proceedings of the 2024 on ACM SIGSAC Conference on
+  Computer and Communications Security}, Salt Lake City, UT, USA, Dec. 2024,
+  pp. 4554--4568.
 
 \bibitem{erdogan2025planandactimprovingplanningagents}
 \BIBentryALTinterwordspacing
-L.~E. Erdogan, N.~Lee, S.~Kim, S.~Moon, H.~Furuta, G.~Anumanchipalli, K.~Keutzer, and A.~Gholami, ``Plan-and-act: Improving planning of agents for long-horizon tasks,'' 2025. [Online]. Available: \url{https://arxiv.org/abs/2503.09572}
+L.~E. Erdogan, N.~Lee, S.~Kim, S.~Moon, H.~Furuta, G.~Anumanchipalli,
+  K.~Keutzer, and A.~Gholami, ``Plan-and-act: Improving planning of agents for
+  long-horizon tasks,'' 2025. [Online]. Available:
+  \url{https://arxiv.org/abs/2503.09572}
 \BIBentrySTDinterwordspacing
 
 \bibitem{yang2024sweagentagentcomputerinterfacesenable}
 \BIBentryALTinterwordspacing
-J.~Yang, C.~E. Jimenez, A.~Wettig, K.~Lieret, S.~Yao, K.~Narasimhan, and O.~Press, ``{SWE-agent}: Agent-computer interfaces enable automated software engineering,'' 2024. [Online]. Available: \url{https://arxiv.org/abs/2405.15793}
+J.~Yang, C.~E. Jimenez, A.~Wettig, K.~Lieret, S.~Yao, K.~Narasimhan, and
+  O.~Press, ``{SWE-agent}: Agent-computer interfaces enable automated software
+  engineering,'' 2024. [Online]. Available:
+  \url{https://arxiv.org/abs/2405.15793}
 \BIBentrySTDinterwordspacing
 
 \bibitem{madaan2023selfrefineiterativerefinementselffeedback}
 \BIBentryALTinterwordspacing
-A.~Madaan, N.~Tandon, P.~Gupta, S.~Hallinan, L.~Gao, S.~Wiegreffe, U.~Alon, N.~Dziri, S.~Prabhumoye, Y.~Yang, S.~Gupta, B.~P. Majumder, K.~Hermann, S.~Welleck, A.~Yazdanbakhsh, and P.~Clark, ``Self-refine: Iterative refinement with self-feedback,'' 2023. [Online]. Available: \url{https://arxiv.org/abs/2303.17651}
+A.~Madaan, N.~Tandon, P.~Gupta, S.~Hallinan, L.~Gao, S.~Wiegreffe, U.~Alon,
+  N.~Dziri, S.~Prabhumoye, Y.~Yang, S.~Gupta, B.~P. Majumder, K.~Hermann,
+  S.~Welleck, A.~Yazdanbakhsh, and P.~Clark, ``Self-refine: Iterative
+  refinement with self-feedback,'' 2023. [Online]. Available:
+  \url{https://arxiv.org/abs/2303.17651}
 \BIBentrySTDinterwordspacing
 
 \bibitem{gou2024criticlargelanguagemodels}
 \BIBentryALTinterwordspacing
-Z.~Gou, Z.~Shao, Y.~Gong, Y.~Shen, Y.~Yang, N.~Duan, and W.~Chen, ``{CRITIC}: Large language models can self-correct with tool-interactive critiquing,'' 2024. [Online]. Available: \url{https://arxiv.org/abs/2305.11738}
+Z.~Gou, Z.~Shao, Y.~Gong, Y.~Shen, Y.~Yang, N.~Duan, and W.~Chen, ``{CRITIC}:
+  Large language models can self-correct with tool-interactive critiquing,''
+  2024. [Online]. Available: \url{https://arxiv.org/abs/2305.11738}
 \BIBentrySTDinterwordspacing
 
 \bibitem{wang2022jtrans}
-H.~Wang, W.~Qu, G.~Katz, W.~Zhu, Z.~Gao, H.~Qiu, J.~Zhuge, and C.~Zhang, ``Jtrans: jump-aware transformer for binary code similarity detection,'' in \emph{Proceedings of the 31st ACM SIGSOFT International Symposium on Software Testing and Analysis}, Virtual, South Korea, Jul. 2022, pp. 1--13.
+H.~Wang, W.~Qu, G.~Katz, W.~Zhu, Z.~Gao, H.~Qiu, J.~Zhuge, and C.~Zhang,
+  ``Jtrans: jump-aware transformer for binary code similarity detection,'' in
+  \emph{Proceedings of the 31st ACM SIGSOFT International Symposium on Software
+  Testing and Analysis}, Virtual, South Korea, Jul. 2022, pp. 1--13.
 
 \bibitem{shang2025binmetriccomprehensivebinaryanalysis}
 \BIBentryALTinterwordspacing
-X.~Shang, G.~Chen, S.~Cheng, B.~Wu, L.~Hu, G.~Li, W.~Zhang, and N.~Yu, ``Binmetric: A comprehensive binary analysis benchmark for large language models,'' 2025. [Online]. Available: \url{https://arxiv.org/abs/2505.07360}
+X.~Shang, G.~Chen, S.~Cheng, B.~Wu, L.~Hu, G.~Li, W.~Zhang, and N.~Yu,
+  ``Binmetric: A comprehensive binary analysis benchmark for large language
+  models,'' 2025. [Online]. Available: \url{https://arxiv.org/abs/2505.07360}
 \BIBentrySTDinterwordspacing
 
 \bibitem{hu2026llmsdeobfuscatebinarycode}
 \BIBentryALTinterwordspacing
-L.~Hu, X.~Shang, J.~Shi, S.~Cheng, J.~Zhang, G.~Li, Z.~Yang, W.~Zhang, and D.~Lo, ``Can {LLMs} deobfuscate binary code? a systematic analysis of large language models into pseudocode deobfuscation,'' 2026. [Online]. Available: \url{https://arxiv.org/abs/2604.08083}
+L.~Hu, X.~Shang, J.~Shi, S.~Cheng, J.~Zhang, G.~Li, Z.~Yang, W.~Zhang, and
+  D.~Lo, ``Can {LLMs} deobfuscate binary code? a systematic analysis of large
+  language models into pseudocode deobfuscation,'' 2026. [Online]. Available:
+  \url{https://arxiv.org/abs/2604.08083}
 \BIBentrySTDinterwordspacing
 
 \bibitem{ghidrassist2025}
-jtang613, ``jtang613/ghidrassist,'' \url{https://github.com/jtang613/GhidrAssist}, 2025, java. Accessed: Dec. 12, 2025.
+jtang613, ``jtang613/ghidrassist,''
+  \url{https://github.com/jtang613/GhidrAssist}, 2025, java. Accessed: Dec. 12,
+  2025.
 
 \bibitem{zhou2026multiagentdesignoptimizingagents}
 \BIBentryALTinterwordspacing
-H.~Zhou, X.~Wan, R.~Sun, H.~Palangi, S.~Iqbal, I.~Vuli{\'c}, A.~Korhonen, and S.~{\"O}. Ar{\i}k, ``Multi-agent design: Optimizing agents with better prompts and topologies,'' 2026. [Online]. Available: \url{https://arxiv.org/abs/2502.02533}
+H.~Zhou, X.~Wan, R.~Sun, H.~Palangi, S.~Iqbal, I.~Vuli{\'c}, A.~Korhonen, and
+  S.~{\"O}. Ar{\i}k, ``Multi-agent design: Optimizing agents with better
+  prompts and topologies,'' 2026. [Online]. Available:
+  \url{https://arxiv.org/abs/2502.02533}
 \BIBentrySTDinterwordspacing
 
 \bibitem{abuzakuk2026optimizingagenticworkflowsusing}
 \BIBentryALTinterwordspacing
-S.~Abuzakuk, A.-M. Kermarrec, R.~Sharma, R.~M. Veski, and M.~de~Vos, ``Optimizing agentic workflows using meta-tools,'' 2026. [Online]. Available: \url{https://arxiv.org/abs/2601.22037}
+S.~Abuzakuk, A.-M. Kermarrec, R.~Sharma, R.~M. Veski, and M.~de~Vos,
+  ``Optimizing agentic workflows using meta-tools,'' 2026. [Online]. Available:
+  \url{https://arxiv.org/abs/2601.22037}
 \BIBentrySTDinterwordspacing
 
 \bibitem{basil2025promptingscience4}
 \BIBentryALTinterwordspacing
-S.~Basil, I.~Shapiro, D.~Shapiro, E.~R. Mollick, L.~Mollick, and L.~Meincke, ``Prompting science report 4: Playing pretend: Expert personas don't improve factual accuracy,'' SSRN Electronic Journal, Dec. 2025, date written: Dec. 5, 2025. [Online]. Available: \url{https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5879722}
+S.~Basil, I.~Shapiro, D.~Shapiro, E.~R. Mollick, L.~Mollick, and L.~Meincke,
+  ``Prompting science report 4: Playing pretend: Expert personas don't improve
+  factual accuracy,'' SSRN Electronic Journal, Dec. 2025, date written: Dec. 5,
+  2025. [Online]. Available:
+  \url{https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5879722}
 \BIBentrySTDinterwordspacing
 
 \bibitem{schwartz2018logic}
-E.~J. Schwartz, C.~F. Cohen, M.~Duggan, J.~Gennari, J.~S. Havrilla, and C.~Hines, ``Using logic programming to recover {C++} classes and methods from compiled executables,'' in \emph{Proceedings of the 2018 ACM SIGSAC Conference on Computer and Communications Security}, Toronto, Canada, Oct. 2018, pp. 426--441.
+E.~J. Schwartz, C.~F. Cohen, M.~Duggan, J.~Gennari, J.~S. Havrilla, and
+  C.~Hines, ``Using logic programming to recover {C++} classes and methods from
+  compiled executables,'' in \emph{Proceedings of the 2018 ACM SIGSAC
+  Conference on Computer and Communications Security}, Toronto, Canada, Oct.
+  2018, pp. 426--441.
 
 \bibitem{hashdb2025}
-``Hashdb,'' \url{https://hashdb.openanalysis.net/}, 2025, accessed: Dec. 12, 2025.
+``Hashdb,'' \url{https://hashdb.openanalysis.net/}, 2025, accessed: Dec. 12,
+  2025.
 
 \bibitem{detectiteasy2025}
-``horsicq/detect-it-easy: Program for determining types of files for windows, linux and {macOS},'' \url{https://github.com/horsicq/Detect-It-Easy}, 2025, accessed: Dec. 12, 2025.
+``horsicq/detect-it-easy: Program for determining types of files for windows,
+  linux and {macOS},'' \url{https://github.com/horsicq/Detect-It-Easy}, 2025,
+  accessed: Dec. 12, 2025.
 
 \bibitem{malwarebazaar2025}
-``Malwarebazaar | {API},'' \url{https://bazaar.abuse.ch/api/}, 2025, accessed: Dec. 12, 2025.
+``Malwarebazaar | {API},'' \url{https://bazaar.abuse.ch/api/}, 2025, accessed:
+  Dec. 12, 2025.
 
 \end{thebibliography}

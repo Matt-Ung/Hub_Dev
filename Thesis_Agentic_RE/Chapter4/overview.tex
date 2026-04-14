@@ -18,7 +18,6 @@ Preparatory stages establish basic sample metadata and reusable static-analysis 
 \section{Configuration Surfaces}
 
 The system exposes several configuration families that are central to the evaluation:
-[TODO CAN AND SHOULD BE FLESHED OUT MORE]
 \begin{itemize}
 \item \textbf{Response-scope variants} control how concise or expansive the final report should be.
 \item \textbf{Worker subagent profiles} determine whether workers are generalists or specialists.
@@ -29,7 +28,7 @@ The system exposes several configuration families that are central to the evalua
 \item \textbf{Validator topology and review level} determine how strict the internal quality gate is.
 \end{itemize}
 
-These are not merely engineering options; they are the intervention points used by the evaluation harness to compare baseline and variant behavior. The full mapping of variant labels to configuration changes is provided in Table~\ref{tab:evaluation-variants}.
+These are not merely engineering options; they are the intervention points used by the evaluation harness to compare baseline and variant behavior. Some of them primarily change how work is organized, such as worker subagent profiles, architecture presets, and pipeline presets. Others change how evidence is requested or summarized, such as response-scope variants and worker-prompt surfaces. Tool profiles matter most when asking how much performance depends on breadth of tool access rather than on orchestration alone. The full mapping of variant labels to configuration changes is provided in Table~\ref{tab:evaluation-variants}.
 
 \section{Shared State and Evidence Flow}
 
@@ -37,7 +36,8 @@ The system maintains shared run state so that later stages can inspect earlier f
 
 Shared state captures four categories of information: intermediate tool outputs and structured findings from earlier stages; stage status logs and work-item tracking; the final analysis report and supporting artifacts; and run metadata used by the evaluation harness, including bundle provenance and comparison context.
 
-[TODO CAN INCLUDE MORE DETAILS ABOUT USER INTERFACE DESIGN CHOICES, ABILITY TO CHOOSE PIPELINE, LIVE UPDATES TO PIPELINE PROGRESS, TOOL LOGS, AND EVALUATION HARNESS OUTPUTS]
 \section{Why This Architecture Fits Reverse Engineering}
+
+The same shared-state model also supports the two user-facing surfaces discussed later in the thesis. The analyst-facing interface exposes pipeline progress, tool logs, and intermediate stage outcomes while a run is in progress. The evaluation-facing browser exposes archived runs, repaired comparisons, and per-executable result views after the fact. Those interfaces matter scientifically because they make provenance inspectable rather than leaving the workflow as a single opaque report.
 
 The value proposition of the architecture is straightforward: binary analysis benefits from staged specialization because the evidence sources are heterogeneous, and high-confidence answers require both discovery and disciplined synthesis. A monolithic prompt can mention these needs, but it cannot enforce them structurally. The architecture used here makes those roles explicit so they can be inspected, varied, and measured.

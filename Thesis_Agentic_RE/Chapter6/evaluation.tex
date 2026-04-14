@@ -5,7 +5,7 @@ This chapter explains how the thesis evaluates the system. The evaluation method
 
 \section{Evaluation Goals}
 
-The evaluation has three goals. The first is to measure whether tool-orchestrated workflows outperform weaker baselines on binary-analysis tasks. The second is to compare the workflow surfaces that remain central in the evaluated experiments: topology, prompt shaping, response scope, and architecture emphasis. The third is to capture both successful analyses and structured failure modes such as analysis errors, validator blocks, and judge failures, so that the results reflect operational reliability alongside analytical quality.
+The evaluation has three goals. The first is to measure whether tool-orchestrated workflows outperform weaker baselines on binary-analysis tasks. The second is to compare the workflow surfaces that remain central in the evaluated experiments: topology, prompt shaping, response scope, and architecture emphasis. The third is to capture both successful analyses and structured failure modes such as analysis errors, validator blocks, judge failures, and repeated-tool-use hotspots, so that the results reflect operational reliability and efficiency alongside analytical quality.
 
 \section{Benchmark Corpus and Task Model}
 
@@ -41,7 +41,7 @@ Prompt-shape and role-prompt changes are treated here as empirical variables rat
 
 Run outputs are judged with a structured binary-analysis rubric and converted into continuous scores. The judging methodology matters because it defines how the experiments distinguish weak answers from unsupported or infrastructure-dominated failures.
 
-Per-task judge outputs preserve structured feedback and an overall score. Legacy pass-or-fail thresholds still exist, but sweep analysis focuses on score deltas, success rates, and error rates rather than binary outcomes. The harness preserves analysis outcomes such as completed, analysis error, no result, judge error, and validator blocked. The final held-out evaluation scaffold also includes analyst-reviewed gold-label templates, which are intended to anchor evidence expectations and false-positive controls rather than merely family attribution.
+Per-task judge outputs preserve structured feedback and an overall score. Legacy pass-or-fail thresholds still exist, but sweep analysis focuses on score deltas, success rates, error rates, timing summaries, and tool-use summaries rather than binary outcomes alone. The harness preserves analysis outcomes such as completed, analysis error, no result, judge error, and validator blocked. The final held-out evaluation scaffold also includes analyst-reviewed gold-label templates, which are intended to anchor evidence expectations and false-positive controls rather than merely family attribution.
 
 \section{Statistical Treatment and Comparison Strategy}
 
