@@ -23,6 +23,9 @@ import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.plugin.PluginCategoryNames;
 import ghidra.app.services.CodeViewerService;
 import ghidra.app.services.ProgramManager;
+import ghidra.app.util.importer.AutoImporter;
+import ghidra.app.util.importer.MessageLog;
+import ghidra.app.util.opinion.LoadResults;
 import ghidra.app.util.PseudoDisassembler;
 import ghidra.app.cmd.function.SetVariableNameCmd;
 import ghidra.program.model.symbol.SourceType;
@@ -32,8 +35,13 @@ import ghidra.util.exception.DuplicateNameException;
 import ghidra.util.exception.InvalidInputException;
 import ghidra.framework.plugintool.PluginInfo;
 import ghidra.framework.plugintool.util.PluginStatus;
+import ghidra.framework.main.AppInfo;
+import ghidra.framework.model.DomainFile;
+import ghidra.framework.model.DomainFolder;
+import ghidra.framework.model.Project;
 import ghidra.program.util.ProgramLocation;
 import ghidra.util.Msg;
+import ghidra.util.InvalidNameException;
 import ghidra.util.task.ConsoleTaskMonitor;
 import ghidra.util.task.TaskMonitor;
 import ghidra.program.model.pcode.HighVariable;
@@ -53,6 +61,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import javax.swing.SwingUtilities;
+import java.io.File;
 import java.io.InputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -74,6 +83,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
     description = "Starts an embedded HTTP server to expose program data. Port configurable via Tool Options."
 )
 public class GhidraMCPPlugin extends ProgramPlugin {
+    /*
+     * This extension is based on LaurieWired's original GhidraMCP project:
+     * https://github.com/LaurieWired/GhidraMCP
+     *
+     * This fork keeps the live HTTP bridge model but extends it for the
+     * Hub_Dev workflow, including automation hooks, guarded mutation behavior,
+     * and managed unpack/import helpers.
+     */
 
     private HttpServer server;
     private static final String OPTION_CATEGORY_NAME = "GhidraMCP HTTP Server";
@@ -662,6 +679,18 @@ public class GhidraMCPPlugin extends ProgramPlugin {
         server.createContext("/program_info", exchange -> {
             sendJsonResponse(exchange, getProgramInfoJson());
         });
+
+        server.createContext("/import_executable", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String filePath = params.get("file_path");
+            String projectFolder = params.get("project_folder");
+            boolean openImportedProgram = parseBooleanParam(params.get("open_imported_program"), true);
+            boolean reuseExisting = parseBooleanParam(params.get("reuse_existing"), true);
+            sendJsonResponse(
+                exchange,
+                importExecutableIntoCurrentProject(filePath, projectFolder, openImportedProgram, reuseExisting)
+            );
+        });
         
         server.createContext("/callgraph_json", exchange -> {
             Map<String, String> qparams = parseQueryParams(exchange);
@@ -1148,6 +1177,193 @@ public class GhidraMCPPlugin extends ProgramPlugin {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private boolean parseBooleanParam(String value, boolean defaultValue) {
+        String normalized = trimToNull(value);
+        if (normalized == null) {
+            return defaultValue;
+        }
+        switch (normalized.toLowerCase(Locale.ROOT)) {
+            case "1":
+            case "true":
+            case "yes":
+            case "on":
+                return true;
+            case "0":
+            case "false":
+            case "no":
+            case "off":
+                return false;
+            default:
+                return defaultValue;
+        }
+    }
+
+    private String normalizeProjectFolderPath(String rawPath) {
+        String trimmed = trimToNull(rawPath);
+        if (trimmed == null || "/".equals(trimmed)) {
+            return "/";
+        }
+        String normalized = trimmed.replace('\\', '/');
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+        while (normalized.contains("//")) {
+            normalized = normalized.replace("//", "/");
+        }
+        if (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    private String getDefaultUnpackedProjectFolderPath(Program program) {
+        String basePath = "/";
+        try {
+            if (program != null && program.getDomainFile() != null && program.getDomainFile().getParent() != null) {
+                basePath = safe(program.getDomainFile().getParent().getPathname());
+            }
+        }
+        catch (Exception ignored) {}
+
+        String normalizedBase = normalizeProjectFolderPath(basePath);
+        if ("/".equals(normalizedBase)) {
+            return "/unpacked";
+        }
+        return normalizedBase + "/unpacked";
+    }
+
+    private DomainFolder ensureProjectFolder(Project project, Program program, String requestedPath)
+            throws IOException, InvalidNameException {
+        DomainFolder folder = project.getProjectData().getRootFolder();
+        String normalizedPath = normalizeProjectFolderPath(
+            trimToNull(requestedPath) != null ? requestedPath : getDefaultUnpackedProjectFolderPath(program)
+        );
+        if ("/".equals(normalizedPath)) {
+            return folder;
+        }
+        String[] parts = normalizedPath.substring(1).split("/");
+        for (String part : parts) {
+            String trimmed = trimToNull(part);
+            if (trimmed == null) {
+                continue;
+            }
+            DomainFolder next = folder.getFolder(trimmed);
+            if (next == null) {
+                next = folder.createFolder(trimmed);
+            }
+            folder = next;
+        }
+        return folder;
+    }
+
+    private Program openDomainFileAsCurrent(DomainFile domainFile) throws InterruptedException, InvocationTargetException {
+        if (domainFile == null) {
+            return null;
+        }
+        ProgramManager pm = tool.getService(ProgramManager.class);
+        if (pm == null) {
+            return null;
+        }
+        final Program[] opened = new Program[1];
+        SwingUtilities.invokeAndWait(() -> opened[0] = pm.openProgram(domainFile, ProgramManager.OPEN_CURRENT));
+        return opened[0];
+    }
+
+    private String importExecutableIntoCurrentProject(
+        String filePath,
+        String projectFolderPath,
+        boolean openImportedProgram,
+        boolean reuseExisting
+    ) {
+        String candidatePath = trimToNull(filePath);
+        if (candidatePath == null) {
+            return jsonError("file_path is required");
+        }
+
+        File sourceFile = new File(candidatePath);
+        if (!sourceFile.isFile()) {
+            return jsonError("file_path does not resolve to an existing file: " + candidatePath);
+        }
+
+        Project project = AppInfo.getActiveProject();
+        if (project == null) {
+            return jsonError("No active Ghidra project is available for import.");
+        }
+
+        Program currentProgram = getCurrentProgram();
+        MessageLog log = new MessageLog();
+
+        try {
+            DomainFolder targetFolder = ensureProjectFolder(project, currentProgram, projectFolderPath);
+            String targetFolderPath = safe(targetFolder.getPathname());
+            String importName = sourceFile.getName();
+            DomainFile existing = targetFolder.getFile(importName);
+            Program openedProgram = null;
+
+            if (existing != null) {
+                if (!reuseExisting) {
+                    return jsonError(
+                        "A project file already exists at " + safe(existing.getPathname()) +
+                        ". Reuse it or choose a different target folder."
+                    );
+                }
+                if (openImportedProgram) {
+                    openedProgram = openDomainFileAsCurrent(existing);
+                }
+                return "{"
+                    + "\"ok\":true,"
+                    + "\"reused_existing\":true,"
+                    + "\"project_folder\":" + jsonStr(targetFolderPath) + ","
+                    + "\"imported_domain_file\":" + jsonStr(safe(existing.getPathname())) + ","
+                    + "\"opened_as_current\":" + (openedProgram != null ? "true" : "false") + ","
+                    + "\"log\":" + jsonStr(log.toString())
+                    + "}";
+            }
+
+            DomainFile savedFile = null;
+            try (LoadResults<Program> results = AutoImporter.importByUsingBestGuess(
+                sourceFile,
+                project,
+                targetFolderPath,
+                this,
+                log,
+                TaskMonitor.DUMMY
+            )) {
+                results.save(TaskMonitor.DUMMY);
+                if (results.getPrimary() != null) {
+                    try {
+                        savedFile = results.getPrimary().getSavedDomainFile();
+                    }
+                    catch (Exception ignored) {}
+                }
+                if (savedFile == null) {
+                    savedFile = targetFolder.getFile(importName);
+                }
+            }
+
+            if (savedFile == null) {
+                return jsonError("Import completed but no saved project file could be resolved. Log: " + log.toString());
+            }
+
+            if (openImportedProgram) {
+                openedProgram = openDomainFileAsCurrent(savedFile);
+            }
+
+            return "{"
+                + "\"ok\":true,"
+                + "\"reused_existing\":false,"
+                + "\"project_folder\":" + jsonStr(targetFolderPath) + ","
+                + "\"imported_domain_file\":" + jsonStr(safe(savedFile.getPathname())) + ","
+                + "\"opened_as_current\":" + (openedProgram != null ? "true" : "false") + ","
+                + "\"log\":" + jsonStr(log.toString())
+                + "}";
+        }
+        catch (Exception e) {
+            Msg.error(this, "Failed to import executable into current project", e);
+            return jsonError("Import failed: " + safe(e.getMessage()));
+        }
     }
 
     // ----------------------------------------------------------------------------------

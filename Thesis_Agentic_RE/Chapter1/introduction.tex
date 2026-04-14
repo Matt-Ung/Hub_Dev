@@ -1,52 +1,33 @@
 \chapter{Introduction}
 \label{sec:intro}
 
-Reverse engineering and malware analysis often require analysts to combine decompilation, string recovery, capability triage, configuration extraction, and selective dynamic investigation. That workflow is tool-rich and evidence-driven, but it is also time-consuming and difficult to automate well. This thesis studies whether an agentic system that explicitly orchestrates multiple tools can produce better binary understanding than weaker baselines that rely on simpler prompting or less structured analysis flows.
+Software reverse engineering often requires analysts to combine decompilation, string recovery, capability triage, configuration extraction, and other artifact-driven inspection steps. That workflow is tool-rich and evidence-driven, but it is also time-consuming and difficult to automate well. This thesis studies whether an agentic system that explicitly orchestrates multiple tools can produce better binary understanding than weaker baselines that rely on simpler prompting or less structured analysis flows. The question is increasingly relevant because public reporting and federal complaint data suggest that AI-enabled cyber operations and AI-assisted cybercrime are already appearing outside laboratory demonstrations \cite{anthropic2025espionage,fbi2025ic3}.
 
-The project in this repository is centered on MCP-style tool orchestration rather than a single monolithic agent. The system under study combines a planner-worker-validator-reporter workflow with integrations for Ghidra, static-analysis utilities, dynamic-analysis or VM-assisted tooling, and supporting artifact-recovery capabilities. The thesis should therefore be framed around both systems questions and empirical questions: how the workflow is designed, why those design choices matter for reverse engineering, and whether they measurably improve task performance.
+The system presented in this thesis is centered on Model Context Protocol (MCP)-style tool orchestration rather than a single monolithic agent. In its maintained form, the workflow combines a light preparatory stage, deterministic presweeps, planning, specialist workers, optional validation, and final reporting, with structured access to Ghidra, supporting static-analysis utilities, and artifact-recovery services. The thesis therefore addresses both systems questions and empirical questions: how such a workflow should be designed for reverse engineering, why those design choices matter, and whether they measurably improve task performance.
 
 \section{Problem Motivation}
 
-\begin{itemize}
-\item Reverse engineering tasks are heterogeneous: some require structural reasoning over control flow, while others depend on recovered strings, decoded configuration blobs, packer handling, or behavioral corroboration.
-\item Single-shot prompting is poorly matched to this setting because useful evidence is distributed across many tools and intermediate artifacts.
-\item Tool-augmented agents may improve coverage and evidence quality, but they also introduce orchestration complexity, failure modes, cost, and reproducibility concerns.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Write the motivating scenario that ties together malware triage, analyst workload, and the need for explicit evidence gathering.}
-\item \TODO{Explain why reverse engineering is a better stress test for tool-using agents than general coding or question-answering benchmarks.}
-\item \TODO{Clarify whether the thesis emphasizes malware analysis specifically, reverse engineering more broadly, or malware analysis as a motivating subdomain.}
-\end{itemize}
+Reverse-engineering tasks are not homogeneous. Some center on control-flow and structural reasoning, while others depend more heavily on recovered strings, decoded configuration data, or packer handling. Because useful evidence is distributed across many tools and intermediate artifacts, and no single model invocation can gather and cross-reference all of it reliably, single-shot prompting is poorly matched to this setting. Tool-augmented agents may improve coverage and evidence quality, but they also introduce orchestration complexity, new failure modes, increased cost, and reproducibility concerns that should be studied rather than assumed.
 
 \section{Research Questions}
 
 \begin{enumerate}
 \item Does a tool-orchestrated agentic workflow improve binary-analysis task performance relative to weaker baselines?
-\item Which parts of the workflow matter most: query shaping, worker specialization, validator topology, or tool availability?
-\item How much of the improvement comes from access to external tooling versus prompt or coordination changes alone?
-\item What failure modes remain even when the workflow is tool-augmented?
+\item Which workflow surfaces appear to matter most in the evaluated experiments: worker specialization, worker prompt shape, response scope, or architecture emphasis?
+\item How consistent are those effects across executables and task types, and when do overall averages hide heterogeneous behavior?
+\item What robustness and orchestration failure modes remain even when the workflow is tool-augmented?
 \end{enumerate}
-
-\begin{itemize}
-\item \TODO{Refine these into the final thesis research questions and explicitly map each one to a chapter or experiment.}
-\item \TODO{State the primary hypothesis and any secondary ablation hypotheses in advisor-approved wording.}
-\end{itemize}
 
 \section{Thesis Scope and Expected Contributions}
 
-\begin{itemize}
-\item A modular agentic reverse-engineering system built around planners, workers, validators, and reporters.
-\item MCP-mediated integration of Ghidra, supporting static-analysis tools, and optional dynamic-analysis infrastructure.
-\item A binary-analysis evaluation harness built around sample-task pairs, baseline-first sweeps, repeated runs, and judge-driven scoring.
-\item A focused empirical investigation of whether tool-augmented agents outperform weaker baselines on reverse-engineering and malware-understanding tasks.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Convert this outline into a final contribution list once the exact claims and chapter boundaries are fixed.}
-\item \TODO{Be explicit about what is not claimed, especially around full malware automation or replacing human analysts.}
-\end{itemize}
+This thesis makes four contributions:
+\begin{enumerate}
+\item A modular agentic reverse-engineering system that separates preparation, planning, specialist evidence collection, optional review, and reporting so those roles can be varied and measured explicitly.
+\item MCP-mediated integration of Ghidra, supporting static-analysis tools, and artifact-recovery services, providing structured tool access rather than ad hoc manual interaction.
+\item A binary-analysis evaluation harness built around sample-task pairs, baseline-first sweeps, repeated runs, and judge-driven scoring, designed to make workflow comparisons reproducible.
+\item A focused empirical investigation of whether tool-augmented agents outperform weaker baselines on reverse-engineering and malware-understanding tasks, with attention to both aggregate performance and executable-level heterogeneity.
+\end{enumerate}
 
 \section{Thesis Organization}
 
-The remainder of this thesis is organized as follows. Chapter~\ref{sec:background} introduces the reverse-engineering problem setting and the technical background needed for the thesis. Chapter~\ref{sec:related} positions the work against prior literature on AI-assisted reverse engineering, malware analysis automation, and tool-using agents. Chapter~\ref{sec:overview} describes the system at a high level, and Chapter~\ref{sec:implementation} details the implementation and tool integrations. Chapter~\ref{sec:evaluation} defines the experimental methodology. Chapter~\ref{sec:results} is reserved for quantitative and qualitative findings. Chapter~\ref{sec:limitations} discusses limitations and threats to validity, and Chapter~\ref{sec:conclusion} concludes with future work.
+The remainder of this thesis is organized as follows. Chapter~\ref{sec:background} introduces the reverse-engineering problem setting and the technical background needed for the thesis. Chapter~\ref{sec:related} positions the work against prior literature on AI-assisted reverse engineering, malware analysis automation, and tool-using agents. Chapter~\ref{sec:overview} describes the system at a high level, and Chapter~\ref{sec:implementation} details the implementation and tool integrations. Chapter~\ref{sec:evaluation} defines the experimental methodology. Chapter~\ref{sec:results} presents quantitative and qualitative findings. Chapter~\ref{sec:limitations} discusses limitations and threats to validity, and Chapter~\ref{sec:conclusion} concludes with future work.

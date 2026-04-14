@@ -1,101 +1,42 @@
 \chapter{Implementation and Tool Integration}
 \label{sec:implementation}
 
-This chapter should translate the high-level workflow into concrete implementation choices. It is the right place to explain which repository components implement the system, how tools are wired into the runtime, how artifacts are stored, and how analysis targets move through the harness.
+This chapter translates the high-level workflow into concrete implementation choices. The focus is on how the architecture is realized in software, how tools are exposed to the runtime, and how artifacts and experiment records are preserved. Detailed file-by-file traceability is collected in the appendix so that the main discussion can stay at the system level.
 
-\section{Repository Structure and Execution Path}
+\section{System Organization and Execution Path}
 
-The implementation is split across the runtime package and the testing harness. The core workflow lives under \texttt{multi\_agent\_wf/}, while reproducible evaluation infrastructure lives under \texttt{Testing/}. This separation is itself important to the thesis because it distinguishes the research system from the measurement apparatus used to study it.
-
-\begin{itemize}
-\item \texttt{multi\_agent\_wf/config.py}: workflow configuration loading and normalization.
-\item \texttt{multi\_agent\_wf/runtime.py}: tool loading, worker topology assembly, and run-time orchestration.
-\item \texttt{multi\_agent\_wf/pipeline.py}: staged execution logic and stage contracts.
-\item \texttt{multi\_agent\_wf/shared\_state.py}: intermediate artifact tracking and run-state mutation.
-\item \texttt{Testing/harness/}: bundles, judging, sweeps, results aggregation, recovery, and viewers.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Describe why the runtime and evaluation harness are separated and what this buys for reproducibility.}
-\item \TODO{Add a diagram that maps code modules to conceptual system responsibilities.}
-\end{itemize}
+The implementation separates the research system from the measurement apparatus used to study it. The core workflow handles configuration, tool loading, worker topology assembly, staged pipeline execution, and shared-state management. The evaluation infrastructure, described in Chapter~\ref{sec:evaluation}, handles bundles, judging, sweeps, results aggregation, and recovery. This separation matters because it keeps workflow logic independent of the harness mechanics, making it possible to vary one without disturbing the other. Appendix~\ref{app:reproduction-commands} and the supplementary provenance material map these ideas back to the concrete artifact layout for readers who need code-level traceability.
 
 \section{Workflow Configuration}
 
-The workflow uses JSON-backed configuration for stage contracts, worker archetypes, architectures, prompts, and pipeline selection. That design is deliberate. It makes ablations and reproducible experiments easier.
+The workflow uses declarative configuration for stage contracts, worker archetypes, architectures, prompts, and pipeline selection. This design is deliberate: it allows ablations and reproducible experiments to be defined by controlled configuration changes rather than by modifying runtime logic.
 
-\begin{itemize}
-\item Pipeline presets determine which stages run and in what order.
-\item Architecture presets determine the available worker mix.
-\item Worker prompt shape, role-prompt mode, and review level tune behavior without rewriting the core runtime.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Explain how configuration is validated and loaded into Python structures.}
-\item \TODO{Discuss why JSON workflow configuration is preferable to hard-coded stage logic for this research setting.}
-\end{itemize}
+Pipeline presets determine which stages run and in what order. Architecture presets determine the available worker mix. Worker prompt shape, role-prompt mode, and review level tune behavior without modifying the core runtime, keeping ablation definitions declarative and auditable.
 
 \section{Ghidra Integration}
 
-Ghidra is the primary structural-analysis backend in the system. The thesis should describe not only that it is used, but how it is used: prepared bundles, exported analysis artifacts, and agent-facing access through tool mediation rather than ad hoc manual interaction.
+Ghidra is the primary structural-analysis backend in the system. What matters here is not only that it is used, but how it is used: through prepared bundles, exported analysis artifacts, and agent-facing access mediated by explicit tooling rather than ad hoc manual interaction.
 
-\begin{itemize}
-\item Ghidra-backed analysis is prepared through bundle generation.
-\item Agent stages consume Ghidra-derived artifacts. Where allowed, they can also query Ghidra-facing tools.
-\item The system explicitly tracks whether analysis is occurring on the original sample or on a derived artifact such as an unpacked UPX binary.
-\end{itemize}
+Ghidra-backed analysis is prepared through bundle generation, which precomputes decompilation and structural metadata before the agent pipeline begins. Agent stages then consume these Ghidra-derived artifacts, and where allowed, they can also query Ghidra-facing tools directly during execution. The system explicitly tracks whether analysis is occurring on the original sample or on a derived artifact such as an unpacked UPX binary so that provenance is preserved across unpacking and re-analysis steps.
 
-\begin{itemize}
-\item \TODO{Document the Ghidra bridge architecture and what metadata is exported into bundles.}
-\item \TODO{Explain how pending Ghidra changes or mutation requests are controlled.}
-\item \TODO{State which Ghidra capabilities are exposed to agents and which remain restricted.}
-\end{itemize}
+At the integration boundary, this work is motivated less by generic chatbot assistance and more by prior evidence that reverse-engineering support tools should improve readability, preserve analyst context, and retain explainable structure \cite{yakdan2016johnny,schwartz2018logic}. Concretely, the system is closest to Ghidra's plugin-mediated extension model \cite{ghidraplugin2025} and to public bridges such as GhidraMCP \cite{ghidramcp2025}. It is also adjacent to assistant-style plugins such as GhidrAssist \cite{ghidrassist2025}, although the emphasis here is not only in-editor assistance. The thesis system uses Ghidra as one component inside a broader staged workflow and evaluation harness, with explicit result capture, replayable bundles, and controlled tool mediation.
 
-\section{Supporting Static and Dynamic Tooling}
+\section{Supporting Static Tooling and Artifact Services}
 
-The broader tool ecosystem matters because much of the thesis is about tool augmentation rather than raw model capability. The implementation chapter should make the tool landscape explicit.
+The broader tool ecosystem matters because much of the thesis is about tool augmentation rather than raw model capability.
 
-\begin{itemize}
-\item Static support tools include strings, FLOSS, and hash lookups.
-\item Additional enrichers include capability extraction, YARA, binwalk, and UPX-oriented support.
-\item Dynamic support infrastructure includes VM-oriented tooling and execution-time instrumentation where the task demands it.
-\item Tool profiles are used to measure how much accuracy depends on the breadth of the tool ecosystem.
-\end{itemize}
+Static support tools include strings, FLOSS, and hash lookups, while additional utilities provide capability extraction, YARA, binwalk, and UPX-oriented support. Tool profiles allow the evaluation to measure how much accuracy depends on the breadth of this static tool ecosystem by comparing full-access runs against restricted-tool configurations. The runtime architecture reserves metadata for distinguishing static from dynamic tool domains, but the active system registers only static-analysis, enrichment, patching, and artifact-management servers. As a result, the evaluated system does not perform live detonation, debugger orchestration, packet capture, process monitoring, or other execution-driven analysis.
 
-\begin{itemize}
-\item \TODO{Describe how tool servers are grouped into static and dynamic partitions.}
-\item \TODO{Explain how tool failures are surfaced back into run state and later analysis.}
-\item \TODO{Clarify which tasks in the benchmark corpus actually require dynamic evidence.}
-\end{itemize}
+Some of the surrounding tool ecosystem is directly integrated, while other pieces serve mainly as reference points for the analyst workflow the system is trying to emulate. This choice is not only practical; it also follows reverse-engineering usability work showing that analysts benefit from multi-phase workflows, visible evidence transitions, and readable context rather than single opaque outputs \cite{mattei2022reusability,yakdan2016johnny}. HashDB \cite{hashdb2025} is representative of hash-resolution services that help connect encoded imports or constants to likely APIs. Detect It Easy \cite{detectiteasy2025} is representative of file-typing and packer-identification utilities that help scope unpacking or triage effort. MalwareBazaar \cite{malwarebazaar2025} is representative of external malware-intelligence feeds that can contextualize hashes and sample provenance, even though the thesis experiments keep evaluator-side corpus control separate from any live feed dependency.
 
 \section{Artifacts, Bundles, and Provenance}
 
-Prepared bundles and run artifacts are central to the system's reproducibility story. Bundles capture analysis inputs and precomputed artifacts for a sample, while run records capture the outputs of one particular workflow configuration. The thesis should describe both layers.
+Tool integration is therefore only one part of the implementation story. The other part is visibility. The runtime records which tools were exposed, which ones were called, how outputs were routed into shared state, and which derived artifacts were retained for later stages or for evaluation. That record is what makes repaired experiments, tool-usage summaries, and failure analysis possible. Without it, the workflow would still produce reports, but it would be much harder to determine whether a weak result reflected poor reasoning, poor tool selection, missing evidence, or an orchestration failure.
 
-\begin{itemize}
-\item Bundles are reused when their generation inputs remain fresh.
-\item Prompt or persona changes do not by themselves invalidate bundles.
-\item Run records preserve final reports, judge outputs, live status, and per-task metadata.
-\item Recovery and repaired-experiment workflows preserve provenance instead of mutating original results in place.
-\end{itemize}
+Prepared bundles and run artifacts are central to the system's reproducibility story. Bundles capture analysis inputs and precomputed artifacts for a sample, while run records capture the outputs of one particular workflow configuration.
 
-\begin{itemize}
-\item \TODO{Explain the bundle lifecycle and why it is important for experiment cost and reproducibility.}
-\item \TODO{Describe how recovery runs and rebuilt experiments preserve provenance.}
-\item \TODO{Add one worked example of the files produced for a single sample-task run.}
-\end{itemize}
+Bundles are reused when their generation inputs remain fresh, and prompt or persona changes do not by themselves invalidate a bundle. Run records preserve final reports, judge outputs, live status, and per-task metadata for each execution. Recovery and repaired-experiment workflows preserve provenance instead of mutating original results in place, ensuring that the distinction between first-pass and recovered runs remains visible in the experiment record.
 
 \section{User-Facing Monitoring and Result Inspection}
 
-The project also includes monitoring and browsing interfaces that expose live state and archived results. These interfaces are worth mentioning because they operationalize the system's provenance model and make failure analysis tractable.
-
-\begin{itemize}
-\item Live monitor for in-progress experiments.
-\item Results browser for archived experiments, per-executable views, and detail panes.
-\item Recovery tooling for failed-task reruns and rebuilt repaired experiments.
-\end{itemize}
-
-\begin{itemize}
-\item \TODO{Briefly justify why these interfaces matter to the thesis instead of treating them as incidental engineering.}
-\item \TODO{Show how run, task, and comparison state become inspectable by the experimenter.}
-\end{itemize}
+The system also includes monitoring and browsing interfaces that operationalize the provenance model and make failure analysis tractable. These interfaces expose in-progress status, archived experiment summaries, per-executable views, and recovery outputs. Their scientific role is not merely convenience: they make it possible to inspect incomplete runs, distinguish analytical weakness from orchestration failure, and preserve the provenance needed for repaired comparisons.

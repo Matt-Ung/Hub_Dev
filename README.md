@@ -36,7 +36,7 @@ The quickstarts below assume your OS prerequisites are already satisfied.
   skills/                   # repo-local Codex skills for tool usage
   third_party/              # optional external rule/signature corpora
   docs/                     # diagrams and implementation-grounded architecture docs
-  GhidraMCP/                # Ghidra plugin source for the live bridge path
+  GhidraMCP/                # live Ghidra bridge plugin, based on LaurieWired/GhidraMCP and extended here
   agent_artifacts/          # generated artifacts written by analysis tools
   logs/                     # tool and worker logs produced during runs
 ```
@@ -54,6 +54,7 @@ Active and maintained:
 Mostly supporting or historical:
 
 - `GhidraMCP/` is still used for the live Ghidra bridge, but not for the artifact-backed testing path
+  - this repo's version is based on LaurieWired's original GhidraMCP project and extends it for Hub_Dev workflows
 - `In_Progress/` is not part of the main runtime or testing workflow
 
 ## Mental Model

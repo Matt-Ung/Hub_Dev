@@ -196,6 +196,12 @@ def _title(prefix: str, value: str) -> str:
     return f"{prefix} {value}".strip() if prefix else value
 
 
+def _chunked(items: List[str], size: int) -> List[List[str]]:
+    if size <= 0:
+        return [items]
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
 def _build_color_map(variant_df) -> Dict[str, str]:
     color_map: Dict[str, str] = {"baseline": BASELINE_COLOR}
     non_baseline_ids = [
@@ -862,6 +868,426 @@ def _plot_effect_size_summary(
     )
 
 
+def _plot_executable_score_panels(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    executable_df,
+    color_map: Dict[str, str],
+    *,
+    title_prefix: str,
+) -> None:
+    plot_df = executable_df.dropna(subset=["mean_score"]).copy()
+    if plot_df.empty:
+        return
+    samples = [str(sample) for sample in plot_df["sample"].drop_duplicates().tolist() if str(sample)]
+    if not samples:
+        return
+    for stale_path in sorted(output_dir.glob("08_per_executable_score_panels*.png")):
+        try:
+            stale_path.unlink()
+        except Exception:
+            pass
+
+    sample_pages = _chunked(samples, 3 if len(samples) > 3 else len(samples))
+    for page_index, page_samples in enumerate(sample_pages, start=1):
+        fig, axes = plt.subplots(len(page_samples), 1, figsize=(11.8, max(4.8, len(page_samples) * 3.6 + 1.6)), squeeze=False)
+        axes_list = [axis_row[0] for axis_row in axes]
+        for ax, sample in zip(axes_list, page_samples):
+            sample_df = plot_df[plot_df["sample"] == sample].copy()
+            sample_df = sample_df.sort_values(["mean_score", "display_label"], ascending=[True, True]).reset_index(drop=True)
+            y_positions = list(range(len(sample_df)))
+            values = [float(row["mean_score"] or 0.0) for _, row in sample_df.iterrows()]
+            errors = [float(row["score_stddev"] or 0.0) if row["score_stddev"] is not None else 0.0 for _, row in sample_df.iterrows()]
+            colors = [color_map.get(str(row["variant_id"]), NEUTRAL_COLOR) for _, row in sample_df.iterrows()]
+            ax.barh(y_positions, values, color=colors, xerr=errors, ecolor="#475569", capsize=3, height=0.60)
+            ax.set_yticks(y_positions)
+            ax.set_yticklabels([_wrap_label(label, width=18) for label in list(sample_df["short_label"])])
+            ax.set_xlim(0, 100)
+            ax.set_title(sample, fontsize=12.8)
+            _style_axes(ax, grid_axis="x")
+            _apply_axis_formatter(ax, axis="x", kind="number")
+            for y_pos, (_, row) in zip(y_positions, sample_df.iterrows()):
+                mean_score = float(row["mean_score"] or 0.0)
+                delta = _safe_float(row.get("score_delta"))
+                delta_text = "baseline" if str(row.get("variant_id") or "") == "baseline" or delta is None else f"Δ {delta:+.1f}"
+                ax.text(
+                    min(mean_score + 1.0, 98.5),
+                    y_pos,
+                    f"{mean_score:.1f} · {delta_text}",
+                    va="center",
+                    ha="left",
+                    fontsize=8.7,
+                    color="#1f2937",
+                )
+        page_title = _title(title_prefix, "Per-Executable Mean Score")
+        if len(sample_pages) > 1:
+            page_title = f"{page_title} (Page {page_index} of {len(sample_pages)})"
+        fig.suptitle(page_title, y=0.98, fontsize=16, fontweight="semibold")
+        fig.text(
+            0.5,
+            0.94,
+            "Each panel isolates one executable so global averages do not hide baseline-versus-variant shifts. Error bars show repetition variance.",
+            ha="center",
+            va="center",
+            fontsize=9.4,
+            color="#475569",
+        )
+        filename = (
+            "08_per_executable_score_panels.png"
+            if len(sample_pages) == 1
+            else f"08_per_executable_score_panels_page_{page_index:02d}.png"
+        )
+        title = "Per-Executable Mean Score" if len(sample_pages) == 1 else f"Per-Executable Mean Score (Page {page_index})"
+        _save_figure(
+            fig,
+            output_dir,
+            created_files,
+            filename,
+            title,
+            "Per-executable score panels showing how each configuration performs on each executable independently, with repetition-level variance shown as error bars. Large sample sets are paged for thesis-scale readability.",
+            tight_rect=(0.02, 0.02, 0.98, 0.92),
+        )
+
+
+def _plot_executable_delta_rankings(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    executable_df,
+    color_map: Dict[str, str],
+    *,
+    title_prefix: str,
+) -> None:
+    plot_df = executable_df[(executable_df["variant_id"] != "baseline")].dropna(subset=["score_delta"]).copy()
+    if plot_df.empty:
+        return
+    samples = [str(sample) for sample in plot_df["sample"].drop_duplicates().tolist() if str(sample)]
+    if not samples:
+        return
+    for stale_path in sorted(output_dir.glob("09_per_executable_delta_rankings*.png")):
+        try:
+            stale_path.unlink()
+        except Exception:
+            pass
+
+    max_abs = max(abs(float(value or 0.0)) for value in plot_df["score_delta"].tolist())
+    max_abs = max(max_abs, 1.0)
+    sample_pages = _chunked(samples, 3 if len(samples) > 3 else len(samples))
+    for page_index, page_samples in enumerate(sample_pages, start=1):
+        fig, axes = plt.subplots(len(page_samples), 1, figsize=(11.8, max(4.8, len(page_samples) * 3.6 + 1.6)), squeeze=False)
+        axes_list = [axis_row[0] for axis_row in axes]
+        for ax, sample in zip(axes_list, page_samples):
+            sample_df = plot_df[plot_df["sample"] == sample].copy()
+            sample_df = sample_df.sort_values(["score_delta", "display_label"], ascending=[True, True]).reset_index(drop=True)
+            y_positions = list(range(len(sample_df)))
+            values = [float(row["score_delta"] or 0.0) for _, row in sample_df.iterrows()]
+            colors = [POSITIVE_COLOR if value >= 0.0 else NEGATIVE_COLOR for value in values]
+            ax.barh(y_positions, values, color=colors, height=0.60)
+            ax.axvline(0.0, color="#475569", linestyle="--", linewidth=1.1)
+            ax.set_yticks(y_positions)
+            ax.set_yticklabels([_wrap_label(label, width=18) for label in list(sample_df["short_label"])])
+            ax.set_xlim(-(max_abs * 1.15), max_abs * 1.15)
+            ax.set_title(f"{sample} ranking", fontsize=12.8)
+            _style_axes(ax, grid_axis="x")
+            _apply_axis_formatter(ax, axis="x", kind="number")
+            for y_pos, value in zip(y_positions, values):
+                anchor = value + (0.4 if value >= 0 else -0.4)
+                ax.text(
+                    anchor,
+                    y_pos,
+                    f"{value:+.1f}",
+                    va="center",
+                    ha="left" if value >= 0 else "right",
+                    fontsize=8.7,
+                    color="#1f2937",
+                )
+        page_title = _title(title_prefix, "Per-Executable Delta Ranking")
+        if len(sample_pages) > 1:
+            page_title = f"{page_title} (Page {page_index} of {len(sample_pages)})"
+        fig.suptitle(page_title, y=0.98, fontsize=16, fontweight="semibold")
+        fig.text(
+            0.5,
+            0.94,
+            "Bars are ranked within each executable by score delta versus baseline so local wins and regressions stay visible.",
+            ha="center",
+            va="center",
+            fontsize=9.4,
+            color="#475569",
+        )
+        filename = (
+            "09_per_executable_delta_rankings.png"
+            if len(sample_pages) == 1
+            else f"09_per_executable_delta_rankings_page_{page_index:02d}.png"
+        )
+        title = "Per-Executable Delta Ranking" if len(sample_pages) == 1 else f"Per-Executable Delta Ranking (Page {page_index})"
+        _save_figure(
+            fig,
+            output_dir,
+            created_files,
+            filename,
+            title,
+            "Executable-by-executable ranking of score deltas versus baseline, paged when necessary so sample-specific wins and losses remain readable at thesis scale.",
+            tight_rect=(0.02, 0.02, 0.98, 0.92),
+        )
+
+
+def _plot_cross_executable_delta_heatmap(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    executable_df,
+    consistency_df,
+    *,
+    title_prefix: str,
+) -> None:
+    import pandas as pd
+
+    plot_df = executable_df[(executable_df["variant_id"] != "baseline")].dropna(subset=["score_delta"]).copy()
+    if plot_df.empty:
+        return
+    plot_df["sample"] = plot_df["sample"].astype(str)
+    plot_df["short_label"] = plot_df["display_label"].map(_short_config_label)
+    sample_order = sorted(plot_df["sample"].drop_duplicates().tolist())
+    if consistency_df is not None and not consistency_df.empty:
+        ordered_labels = [
+            _short_config_label(label)
+            for label in consistency_df["display_label"].tolist()
+            if _short_config_label(label) in set(plot_df["short_label"].tolist())
+        ]
+    else:
+        ordered_labels = (
+            plot_df.groupby("short_label")["score_delta"]
+            .mean()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+    heatmap_df = plot_df.pivot_table(index="short_label", columns="sample", values="score_delta", aggfunc="mean")
+    heatmap_df = heatmap_df.reindex(index=ordered_labels, columns=sample_order)
+    if heatmap_df.empty:
+        return
+    values = heatmap_df.values
+    max_abs = max(abs(float(value)) for row in values for value in row if value == value) if values.size else 1.0
+    max_abs = max(max_abs, 1.0)
+    fig, ax = plt.subplots(figsize=(max(8.2, len(sample_order) * 1.6 + 3.0), max(4.8, len(heatmap_df.index) * 0.56 + 2.0)))
+    im = ax.imshow(heatmap_df.values, cmap="RdBu_r", vmin=-max_abs, vmax=max_abs, aspect="auto")
+    ax.set_xticks(range(len(sample_order)))
+    ax.set_xticklabels([_wrap_label(label, width=18) for label in sample_order], rotation=20, ha="right")
+    ax.set_yticks(range(len(heatmap_df.index)))
+    ax.set_yticklabels([_wrap_label(label, width=18) for label in list(heatmap_df.index)])
+    ax.set_title(_title(title_prefix, "Cross-Executable Score Delta Heatmap"))
+    for y_index, row_label in enumerate(list(heatmap_df.index)):
+        for x_index, sample in enumerate(sample_order):
+            value = heatmap_df.loc[row_label, sample]
+            if value != value:
+                ax.text(x_index, y_index, "—", ha="center", va="center", fontsize=8.4, color="#475569")
+            else:
+                ax.text(
+                    x_index,
+                    y_index,
+                    f"{float(value):+.1f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8.4,
+                    color="white" if abs(float(value)) > max_abs * 0.45 else "#111827",
+                )
+    cbar = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.03)
+    cbar.ax.set_ylabel("Score delta vs baseline", rotation=90, va="bottom")
+    _save_figure(
+        fig,
+        output_dir,
+        created_files,
+        "10_cross_executable_delta_heatmap.png",
+        "Cross-Executable Score Delta Heatmap",
+        "Heatmap showing how each configuration shifts score relative to baseline on each executable, which makes heterogeneous or masked-by-average behavior visible at a glance.",
+    )
+
+
+def _plot_executable_redundancy_heatmap(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    executable_df,
+    *,
+    title_prefix: str,
+) -> None:
+    import pandas as pd
+
+    plot_df = executable_df.dropna(subset=["mean_tool_semantic_duplicate_calls"]).copy()
+    if plot_df.empty:
+        return
+    plot_df["sample"] = plot_df["sample"].astype(str)
+    plot_df["short_label"] = plot_df["display_label"].map(_short_config_label)
+    sample_order = sorted(plot_df["sample"].drop_duplicates().tolist())
+    row_order = (
+        plot_df.groupby("short_label")["mean_tool_semantic_duplicate_calls"]
+        .mean()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
+    heatmap_df = plot_df.pivot_table(index="short_label", columns="sample", values="mean_tool_semantic_duplicate_calls", aggfunc="mean")
+    heatmap_df = heatmap_df.reindex(index=row_order, columns=sample_order)
+    if heatmap_df.empty:
+        return
+    vmax = max(float(value) for row in heatmap_df.values for value in row if value == value) if heatmap_df.values.size else 1.0
+    vmax = max(vmax, 1.0)
+    fig, ax = plt.subplots(figsize=(max(8.2, len(sample_order) * 1.5 + 3.0), max(4.8, len(heatmap_df.index) * 0.56 + 2.0)))
+    im = ax.imshow(heatmap_df.values, cmap="YlOrRd", vmin=0.0, vmax=vmax, aspect="auto")
+    ax.set_xticks(range(len(sample_order)))
+    ax.set_xticklabels([_wrap_label(label, width=18) for label in sample_order], rotation=20, ha="right")
+    ax.set_yticks(range(len(heatmap_df.index)))
+    ax.set_yticklabels([_wrap_label(label, width=18) for label in list(heatmap_df.index)])
+    ax.set_title(_title(title_prefix, "Per-Executable Redundant Tool Usage"))
+    for y_index, row_label in enumerate(list(heatmap_df.index)):
+        for x_index, sample in enumerate(sample_order):
+            value = heatmap_df.loc[row_label, sample]
+            if value != value:
+                ax.text(x_index, y_index, "—", ha="center", va="center", fontsize=8.4, color="#475569")
+            else:
+                ax.text(
+                    x_index,
+                    y_index,
+                    f"{float(value):.1f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8.4,
+                    color="white" if float(value) > vmax * 0.45 else "#111827",
+                )
+    cbar = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.03)
+    cbar.ax.set_ylabel("Mean semantic duplicate calls", rotation=90, va="bottom")
+    _save_figure(
+        fig,
+        output_dir,
+        created_files,
+        "11_per_executable_redundant_tool_usage.png",
+        "Per-Executable Redundant Tool Usage",
+        "Heatmap of repeated or near-equivalent tool-call load by configuration and executable, which helps identify whether waste is concentrated on specific samples.",
+    )
+
+
+def _plot_tool_redundancy_by_variant(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    redundancy_variant_df,
+    *,
+    title_prefix: str,
+) -> None:
+    import pandas as pd
+
+    plot_df = redundancy_variant_df.dropna(subset=["mean_semantic_duplicate_calls_per_executable"]).copy()
+    if plot_df.empty:
+        return
+    top_tools = (
+        plot_df.groupby("tool_family")["semantic_duplicate_calls"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(8)
+        .index.tolist()
+    )
+    plot_df = plot_df[plot_df["tool_family"].isin(top_tools)].copy()
+    plot_df["short_label"] = plot_df["display_label"].map(_short_config_label)
+    row_order = (
+        plot_df.groupby("short_label")["mean_semantic_duplicate_calls_per_executable"]
+        .mean()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
+    heatmap_df = plot_df.pivot_table(
+        index="short_label",
+        columns="tool_family",
+        values="mean_semantic_duplicate_calls_per_executable",
+        aggfunc="mean",
+    )
+    heatmap_df = heatmap_df.reindex(index=row_order, columns=top_tools)
+    if heatmap_df.empty:
+        return
+    vmax = max(float(value) for row in heatmap_df.values for value in row if value == value) if heatmap_df.values.size else 1.0
+    vmax = max(vmax, 1.0)
+    fig, ax = plt.subplots(figsize=(max(9.0, len(top_tools) * 1.45 + 3.0), max(4.8, len(heatmap_df.index) * 0.56 + 2.0)))
+    im = ax.imshow(heatmap_df.values, cmap="YlOrRd", vmin=0.0, vmax=vmax, aspect="auto")
+    ax.set_xticks(range(len(top_tools)))
+    ax.set_xticklabels([_wrap_label(_short_category_label(label), width=16) for label in top_tools], rotation=20, ha="right")
+    ax.set_yticks(range(len(heatmap_df.index)))
+    ax.set_yticklabels([_wrap_label(label, width=18) for label in list(heatmap_df.index)])
+    ax.set_title(_title(title_prefix, "Redundant Tool Usage By Configuration"))
+    for y_index, row_label in enumerate(list(heatmap_df.index)):
+        for x_index, tool_family in enumerate(top_tools):
+            value = heatmap_df.loc[row_label, tool_family]
+            if value != value:
+                ax.text(x_index, y_index, "—", ha="center", va="center", fontsize=8.2, color="#475569")
+            else:
+                ax.text(
+                    x_index,
+                    y_index,
+                    f"{float(value):.1f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8.2,
+                    color="white" if float(value) > vmax * 0.45 else "#111827",
+                )
+    cbar = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.03)
+    cbar.ax.set_ylabel("Mean duplicate calls per executable", rotation=90, va="bottom")
+    _save_figure(
+        fig,
+        output_dir,
+        created_files,
+        "12_redundant_tool_usage_by_configuration.png",
+        "Redundant Tool Usage By Configuration",
+        "Heatmap of the tool families that generate the most repeated work for each configuration, which helps distinguish whole-sample rescans from narrower follow-up lookups.",
+    )
+
+
+def _plot_likely_wasteful_hotspots(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    redundancy_target_df,
+    *,
+    title_prefix: str,
+) -> None:
+    plot_df = redundancy_target_df[redundancy_target_df["likely_wasteful"] == True].copy()  # noqa: E712
+    if plot_df.empty:
+        return
+    plot_df = plot_df.sort_values(["duplicate_calls", "call_count"], ascending=[False, False]).head(12)
+    labels = [
+        _wrap_label(
+            f"{row['sample']} · {_short_config_label(row['display_label'])} · {_short_category_label(row['tool_family'])} · {row['semantic_target_label']}",
+            width=36,
+        )
+        for _, row in plot_df.iterrows()
+    ]
+    values = [float(row["duplicate_calls"] or 0.0) for _, row in plot_df.iterrows()]
+    fig, ax = plt.subplots(figsize=(12.8, max(5.0, len(plot_df) * 0.58 + 2.0)))
+    y_positions = list(range(len(plot_df)))
+    ax.barh(y_positions, values, color="#d97706", height=0.62)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Duplicate calls")
+    ax.set_title(_title(title_prefix, "Likely Wasteful Duplicate Targets"))
+    _style_axes(ax, grid_axis="x")
+    _apply_axis_formatter(ax, axis="x", kind="number")
+    for y_pos, (_, row) in zip(y_positions, plot_df.iterrows()):
+        ax.text(
+            float(row["duplicate_calls"] or 0.0) + 0.4,
+            y_pos,
+            str(row.get("duplication_assessment") or ""),
+            va="center",
+            ha="left",
+            fontsize=8.4,
+            color="#1f2937",
+        )
+    _save_figure(
+        fig,
+        output_dir,
+        created_files,
+        "13_likely_wasteful_duplicate_targets.png",
+        "Likely Wasteful Duplicate Targets",
+        "Top repeated targets that look most like avoidable duplication, using a simple heuristic that flags broad rescans and exact same-target loops separately from possible cross-stage refreshes.",
+    )
+
+
 def generate_experiment_visuals(
     output_dir: Path,
     *,
@@ -870,6 +1296,11 @@ def generate_experiment_visuals(
     task_rows: List[Dict[str, Any]],
     difficulty_rows: List[Dict[str, Any]],
     technique_rows: List[Dict[str, Any]],
+    executable_rows: List[Dict[str, Any]] | None = None,
+    executable_consistency_rows: List[Dict[str, Any]] | None = None,
+    redundancy_variant_rows: List[Dict[str, Any]] | None = None,
+    redundancy_executable_rows: List[Dict[str, Any]] | None = None,
+    redundancy_target_rows: List[Dict[str, Any]] | None = None,
     significance_overall_rows: List[Dict[str, Any]] | None = None,
     significance_difficulty_rows: List[Dict[str, Any]] | None = None,
     significance_task_rows: List[Dict[str, Any]] | None = None,
@@ -907,6 +1338,10 @@ def generate_experiment_visuals(
     task_df = pd.DataFrame(task_rows or [])
     technique_df = pd.DataFrame(technique_rows or [])
     timing_tag_df = pd.DataFrame(timing_task_tag_rows or [])
+    executable_df = pd.DataFrame(executable_rows or [])
+    executable_consistency_df = pd.DataFrame(executable_consistency_rows or [])
+    redundancy_variant_df = pd.DataFrame(redundancy_variant_rows or [])
+    redundancy_target_df = pd.DataFrame(redundancy_target_rows or [])
 
     if not variant_df.empty:
         variant_df = variant_df.copy()
@@ -968,6 +1403,67 @@ def generate_experiment_visuals(
             ["mean_task_wall_clock_duration_sec", "task_wall_clock_delta_sec"],
         )
 
+    if not executable_df.empty:
+        executable_df = executable_df.copy()
+        executable_df["display_label"] = executable_df["display_label"].fillna(executable_df["variant_id"])
+        executable_df["short_label"] = executable_df["display_label"].map(_short_config_label)
+        executable_df = _coerce_numeric_frame(
+            executable_df,
+            [
+                "mean_score",
+                "score_stddev",
+                "score_delta",
+                "mean_task_success_rate",
+                "task_success_rate_stddev",
+                "mean_tool_semantic_duplicate_calls",
+                "tool_semantic_duplicate_calls_stddev",
+                "mean_tool_semantic_duplicate_rate",
+                "tool_semantic_duplicate_rate_stddev",
+                "mean_task_wall_clock_duration_sec",
+                "baseline_score_mean",
+                "baseline_task_success_rate",
+            ],
+        )
+
+    if not executable_consistency_df.empty:
+        executable_consistency_df = executable_consistency_df.copy()
+        executable_consistency_df["display_label"] = executable_consistency_df["display_label"].fillna(executable_consistency_df["variant_id"])
+        executable_consistency_df["short_label"] = executable_consistency_df["display_label"].map(_short_config_label)
+        executable_consistency_df = _coerce_numeric_frame(
+            executable_consistency_df,
+            [
+                "mean_score_delta",
+                "score_delta_stddev",
+                "min_score_delta",
+                "max_score_delta",
+                "delta_span",
+            ],
+        )
+
+    if not redundancy_variant_df.empty:
+        redundancy_variant_df = redundancy_variant_df.copy()
+        redundancy_variant_df["display_label"] = redundancy_variant_df["display_label"].fillna(redundancy_variant_df["variant_id"])
+        redundancy_variant_df = _coerce_numeric_frame(
+            redundancy_variant_df,
+            [
+                "total_calls",
+                "semantic_duplicate_calls",
+                "exact_duplicate_calls",
+                "semantic_duplicate_rate",
+                "mean_semantic_duplicate_calls_per_executable",
+                "likely_wasteful_duplicate_calls",
+            ],
+        )
+
+    if not redundancy_target_df.empty:
+        redundancy_target_df = redundancy_target_df.copy()
+        redundancy_target_df["display_label"] = redundancy_target_df["display_label"].fillna(redundancy_target_df["variant_id"])
+        redundancy_target_df = _coerce_numeric_frame(
+            redundancy_target_df,
+            ["call_count", "duplicate_calls", "record_count", "unique_exact_call_shapes"],
+        )
+        redundancy_target_df["likely_wasteful"] = redundancy_target_df["likely_wasteful"].astype(str).str.lower().isin({"1", "true", "yes"})
+
     color_map = _build_color_map(variant_df) if not variant_df.empty else {"baseline": BASELINE_COLOR}
     variant_order = list(variant_df["variant_id"]) if not variant_df.empty else []
 
@@ -979,6 +1475,12 @@ def generate_experiment_visuals(
         ("task category runtime", lambda: _plot_task_category_runtime(plt, output_dir, created_files, timing_tag_df, color_map, title_prefix=title_prefix)),
         ("task score distribution", lambda: _plot_task_score_distribution(plt, output_dir, created_files, task_df, color_map, variant_order, title_prefix=title_prefix)),
         ("effect size summary", lambda: _plot_effect_size_summary(plt, output_dir, created_files, list(significance_overall_rows or []), color_map, title_prefix=title_prefix)),
+        ("per-executable score panels", lambda: _plot_executable_score_panels(plt, output_dir, created_files, executable_df, color_map, title_prefix=title_prefix)),
+        ("per-executable delta rankings", lambda: _plot_executable_delta_rankings(plt, output_dir, created_files, executable_df, color_map, title_prefix=title_prefix)),
+        ("cross-executable delta heatmap", lambda: _plot_cross_executable_delta_heatmap(plt, output_dir, created_files, executable_df, executable_consistency_df, title_prefix=title_prefix)),
+        ("per-executable redundancy heatmap", lambda: _plot_executable_redundancy_heatmap(plt, output_dir, created_files, executable_df, title_prefix=title_prefix)),
+        ("tool redundancy by configuration", lambda: _plot_tool_redundancy_by_variant(plt, output_dir, created_files, redundancy_variant_df, title_prefix=title_prefix)),
+        ("likely wasteful duplicate targets", lambda: _plot_likely_wasteful_hotspots(plt, output_dir, created_files, redundancy_target_df, title_prefix=title_prefix)),
     ]
 
     for label, plot_job in plot_jobs:

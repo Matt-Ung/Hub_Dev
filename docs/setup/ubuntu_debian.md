@@ -34,20 +34,12 @@ Optional but useful:
 sudo apt install -y upx-ucl
 ```
 
-Optional analysis enrichers:
-
-```bash
-sudo apt install -y ssdeep
-```
-
 Notes:
 
 - `python3-venv` is required for `python3 -m venv`
 - `mingw-w64` provides `x86_64-w64-mingw32-gcc`
 - `default-jdk` is for Ghidra; match it to your installed Ghidra version if you
   are managing Java manually
-- `ssdeep` enables the optional `ssdeepmcp` fuzzy-hashing server
-
 ## Clone And Enter The Repo
 
 ```bash

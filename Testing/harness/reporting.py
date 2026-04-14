@@ -109,11 +109,19 @@ def _tool_redundancy_metrics(agent_result: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "tool_exact_duplicate_calls": int(summary.get("exact_duplicate_calls") or 0),
         "tool_semantic_duplicate_calls": int(summary.get("semantic_duplicate_calls") or 0),
+        "tool_same_source_exact_duplicate_calls": int(summary.get("same_source_exact_duplicate_calls") or 0),
+        "tool_same_source_semantic_duplicate_calls": int(summary.get("same_source_semantic_duplicate_calls") or 0),
         "tool_exact_duplicate_rate": (
             float(summary.get("exact_duplicate_rate")) if summary.get("exact_duplicate_rate") is not None else 0.0
         ),
         "tool_semantic_duplicate_rate": (
             float(summary.get("semantic_duplicate_rate")) if summary.get("semantic_duplicate_rate") is not None else 0.0
+        ),
+        "tool_same_source_exact_duplicate_rate": (
+            float(summary.get("same_source_exact_duplicate_rate")) if summary.get("same_source_exact_duplicate_rate") is not None else 0.0
+        ),
+        "tool_same_source_semantic_duplicate_rate": (
+            float(summary.get("same_source_semantic_duplicate_rate")) if summary.get("same_source_semantic_duplicate_rate") is not None else 0.0
         ),
         "tool_unique_semantic_targets": int(summary.get("unique_semantic_targets") or 0),
         "tool_cache_hit_count": int(cache_counts.get("tool_cache_hit") or 0),
@@ -238,7 +246,25 @@ def _refresh_record_tool_metrics(record: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(normalized_calls, list) or not normalized_calls:
             normalized_calls = normalize_tool_call_entries(parsed_entries)
             agent_result["normalized_tool_calls"] = normalized_calls
-        if not isinstance(agent_result.get("tool_redundancy"), dict) or not agent_result.get("tool_redundancy"):
+        redundancy_summary = agent_result.get("tool_redundancy")
+        targets = (
+            list(redundancy_summary.get("top_duplicate_targets") or [])
+            if isinstance(redundancy_summary, dict)
+            else []
+        )
+        needs_redundancy_refresh = (
+            not isinstance(redundancy_summary, dict)
+            or not redundancy_summary
+            or any(
+                isinstance(target, dict)
+                and (
+                    "source_count" not in target
+                    or "same_source_duplicate_calls" not in target
+                )
+                for target in targets
+            )
+        )
+        if needs_redundancy_refresh:
             agent_result["tool_redundancy"] = summarize_tool_call_redundancy(
                 parsed_entries,
                 normalized_calls=normalized_calls,
@@ -258,8 +284,12 @@ def _refresh_record_tool_metrics(record: Dict[str, Any]) -> Dict[str, Any]:
                 "matched_target_tool_count": target_tool_metrics["matched_target_tool_count"],
                 "tool_exact_duplicate_calls": redundancy_metrics["tool_exact_duplicate_calls"],
                 "tool_semantic_duplicate_calls": redundancy_metrics["tool_semantic_duplicate_calls"],
+                "tool_same_source_exact_duplicate_calls": redundancy_metrics["tool_same_source_exact_duplicate_calls"],
+                "tool_same_source_semantic_duplicate_calls": redundancy_metrics["tool_same_source_semantic_duplicate_calls"],
                 "tool_exact_duplicate_rate": redundancy_metrics["tool_exact_duplicate_rate"],
                 "tool_semantic_duplicate_rate": redundancy_metrics["tool_semantic_duplicate_rate"],
+                "tool_same_source_exact_duplicate_rate": redundancy_metrics["tool_same_source_exact_duplicate_rate"],
+                "tool_same_source_semantic_duplicate_rate": redundancy_metrics["tool_same_source_semantic_duplicate_rate"],
                 "tool_unique_semantic_targets": redundancy_metrics["tool_unique_semantic_targets"],
                 "tool_cache_hit_count": redundancy_metrics["tool_cache_hit_count"],
                 "tool_cache_wait_count": redundancy_metrics["tool_cache_wait_count"],
@@ -371,8 +401,12 @@ def build_sample_record(
         "matched_target_tool_count": target_tool_metrics["matched_target_tool_count"],
         "tool_exact_duplicate_calls": redundancy_metrics["tool_exact_duplicate_calls"],
         "tool_semantic_duplicate_calls": redundancy_metrics["tool_semantic_duplicate_calls"],
+        "tool_same_source_exact_duplicate_calls": redundancy_metrics["tool_same_source_exact_duplicate_calls"],
+        "tool_same_source_semantic_duplicate_calls": redundancy_metrics["tool_same_source_semantic_duplicate_calls"],
         "tool_exact_duplicate_rate": redundancy_metrics["tool_exact_duplicate_rate"],
         "tool_semantic_duplicate_rate": redundancy_metrics["tool_semantic_duplicate_rate"],
+        "tool_same_source_exact_duplicate_rate": redundancy_metrics["tool_same_source_exact_duplicate_rate"],
+        "tool_same_source_semantic_duplicate_rate": redundancy_metrics["tool_same_source_semantic_duplicate_rate"],
         "tool_unique_semantic_targets": redundancy_metrics["tool_unique_semantic_targets"],
         "tool_cache_hit_count": redundancy_metrics["tool_cache_hit_count"],
         "tool_cache_wait_count": redundancy_metrics["tool_cache_wait_count"],
@@ -447,8 +481,20 @@ def _aggregate_bucket(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     tool_calls = [record.get("metrics", {}).get("tool_calls_total") for record in records]
     exact_duplicate_calls = [record.get("metrics", {}).get("tool_exact_duplicate_calls") for record in records]
     semantic_duplicate_calls = [record.get("metrics", {}).get("tool_semantic_duplicate_calls") for record in records]
+    same_source_exact_duplicate_calls = [
+        record.get("metrics", {}).get("tool_same_source_exact_duplicate_calls") for record in records
+    ]
+    same_source_semantic_duplicate_calls = [
+        record.get("metrics", {}).get("tool_same_source_semantic_duplicate_calls") for record in records
+    ]
     exact_duplicate_rates = [record.get("metrics", {}).get("tool_exact_duplicate_rate") for record in records]
     semantic_duplicate_rates = [record.get("metrics", {}).get("tool_semantic_duplicate_rate") for record in records]
+    same_source_exact_duplicate_rates = [
+        record.get("metrics", {}).get("tool_same_source_exact_duplicate_rate") for record in records
+    ]
+    same_source_semantic_duplicate_rates = [
+        record.get("metrics", {}).get("tool_same_source_semantic_duplicate_rate") for record in records
+    ]
     cache_hit_counts = [record.get("metrics", {}).get("tool_cache_hit_count") for record in records]
     target_hits = [record.get("metrics", {}).get("target_tool_hit_rate") for record in records]
     analysis_durations = [record.get("metrics", {}).get("analysis_duration_sec") for record in records]
@@ -482,8 +528,12 @@ def _aggregate_bucket(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "mean_tool_calls": _mean_or_none(tool_calls),
         "mean_tool_exact_duplicate_calls": _mean_or_none(exact_duplicate_calls),
         "mean_tool_semantic_duplicate_calls": _mean_or_none(semantic_duplicate_calls),
+        "mean_tool_same_source_exact_duplicate_calls": _mean_or_none(same_source_exact_duplicate_calls),
+        "mean_tool_same_source_semantic_duplicate_calls": _mean_or_none(same_source_semantic_duplicate_calls),
         "mean_tool_exact_duplicate_rate": _mean_or_none(exact_duplicate_rates),
         "mean_tool_semantic_duplicate_rate": _mean_or_none(semantic_duplicate_rates),
+        "mean_tool_same_source_exact_duplicate_rate": _mean_or_none(same_source_exact_duplicate_rates),
+        "mean_tool_same_source_semantic_duplicate_rate": _mean_or_none(same_source_semantic_duplicate_rates),
         "mean_tool_cache_hit_count": _mean_or_none(cache_hit_counts),
         "mean_target_tool_hit_rate": _mean_or_none(target_hits),
         "mean_analysis_duration_sec": _mean_or_none(analysis_durations),
@@ -577,8 +627,20 @@ def aggregate_records(run_metadata: Dict[str, Any], records: List[Dict[str, Any]
         "mean_tool_calls": _mean_or_none(record.get("metrics", {}).get("tool_calls_total") for record in records),
         "mean_tool_exact_duplicate_calls": _mean_or_none(record.get("metrics", {}).get("tool_exact_duplicate_calls") for record in records),
         "mean_tool_semantic_duplicate_calls": _mean_or_none(record.get("metrics", {}).get("tool_semantic_duplicate_calls") for record in records),
+        "mean_tool_same_source_exact_duplicate_calls": _mean_or_none(
+            record.get("metrics", {}).get("tool_same_source_exact_duplicate_calls") for record in records
+        ),
+        "mean_tool_same_source_semantic_duplicate_calls": _mean_or_none(
+            record.get("metrics", {}).get("tool_same_source_semantic_duplicate_calls") for record in records
+        ),
         "mean_tool_exact_duplicate_rate": _mean_or_none(record.get("metrics", {}).get("tool_exact_duplicate_rate") for record in records),
         "mean_tool_semantic_duplicate_rate": _mean_or_none(record.get("metrics", {}).get("tool_semantic_duplicate_rate") for record in records),
+        "mean_tool_same_source_exact_duplicate_rate": _mean_or_none(
+            record.get("metrics", {}).get("tool_same_source_exact_duplicate_rate") for record in records
+        ),
+        "mean_tool_same_source_semantic_duplicate_rate": _mean_or_none(
+            record.get("metrics", {}).get("tool_same_source_semantic_duplicate_rate") for record in records
+        ),
         "mean_tool_cache_hit_count": _mean_or_none(record.get("metrics", {}).get("tool_cache_hit_count") for record in records),
         "mean_target_tool_hit_rate": _mean_or_none(record.get("metrics", {}).get("target_tool_hit_rate") for record in records),
         "mean_analysis_duration_sec": _mean_or_none(record.get("metrics", {}).get("analysis_duration_sec") for record in records),
@@ -620,6 +682,7 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
         "architecture",
         "response_scope_variant",
         "analysis_hint_variant",
+        "deep_agent_request_limit",
         "subagent_profile",
         "worker_persona_profile",
         "worker_role_prompt_mode",
@@ -654,8 +717,12 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
         "tool_calls_total",
         "tool_exact_duplicate_calls",
         "tool_semantic_duplicate_calls",
+        "tool_same_source_exact_duplicate_calls",
+        "tool_same_source_semantic_duplicate_calls",
         "tool_exact_duplicate_rate",
         "tool_semantic_duplicate_rate",
+        "tool_same_source_exact_duplicate_rate",
+        "tool_same_source_semantic_duplicate_rate",
         "tool_cache_hit_count",
         "tool_cache_wait_count",
         "tool_cache_store_count",
@@ -695,6 +762,7 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
                 "architecture": run_metadata.get("architecture", ""),
                 "response_scope_variant": run_metadata.get("response_scope_variant", ""),
                 "analysis_hint_variant": run_metadata.get("analysis_hint_variant", ""),
+                "deep_agent_request_limit": run_metadata.get("deep_agent_request_limit"),
                 "subagent_profile": run_metadata.get("subagent_profile", ""),
                 "worker_persona_profile": run_metadata.get("worker_persona_profile", ""),
                 "worker_role_prompt_mode": run_metadata.get("worker_role_prompt_mode", ""),
@@ -729,8 +797,12 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
                 "tool_calls_total": metrics.get("tool_calls_total", ""),
                 "tool_exact_duplicate_calls": metrics.get("tool_exact_duplicate_calls", ""),
                 "tool_semantic_duplicate_calls": metrics.get("tool_semantic_duplicate_calls", ""),
+                "tool_same_source_exact_duplicate_calls": metrics.get("tool_same_source_exact_duplicate_calls", ""),
+                "tool_same_source_semantic_duplicate_calls": metrics.get("tool_same_source_semantic_duplicate_calls", ""),
                 "tool_exact_duplicate_rate": metrics.get("tool_exact_duplicate_rate", ""),
                 "tool_semantic_duplicate_rate": metrics.get("tool_semantic_duplicate_rate", ""),
+                "tool_same_source_exact_duplicate_rate": metrics.get("tool_same_source_exact_duplicate_rate", ""),
+                "tool_same_source_semantic_duplicate_rate": metrics.get("tool_same_source_semantic_duplicate_rate", ""),
                 "tool_cache_hit_count": metrics.get("tool_cache_hit_count", ""),
                 "tool_cache_wait_count": metrics.get("tool_cache_wait_count", ""),
                 "tool_cache_store_count": metrics.get("tool_cache_store_count", ""),
@@ -779,6 +851,7 @@ def write_markdown_report(path, aggregate: Dict[str, Any]) -> None:
     lines.append(f"- Architecture: `{run_metadata.get('architecture', '')}`")
     lines.append(f"- Response-scope variant: `{run_metadata.get('response_scope_variant', '')}`")
     lines.append(f"- Analysis-hint variant: `{run_metadata.get('analysis_hint_variant', '')}`")
+    lines.append(f"- Deep-agent request limit: `{run_metadata.get('deep_agent_request_limit', '')}`")
     lines.append(f"- Subagent profile: `{run_metadata.get('subagent_profile', '')}`")
     lines.append(f"- Worker persona profile: `{run_metadata.get('worker_persona_profile', '')}`")
     lines.append(f"- Worker role prompt mode: `{run_metadata.get('worker_role_prompt_mode', '')}`")
@@ -807,7 +880,16 @@ def write_markdown_report(path, aggregate: Dict[str, Any]) -> None:
     lines.append(f"- Mean tool calls: `{aggregate.get('mean_tool_calls')}`")
     lines.append(f"- Mean exact duplicate tool calls: `{aggregate.get('mean_tool_exact_duplicate_calls')}`")
     lines.append(f"- Mean semantic duplicate tool calls: `{aggregate.get('mean_tool_semantic_duplicate_calls')}`")
+    lines.append(
+        f"- Mean same-source exact duplicate tool calls: `{aggregate.get('mean_tool_same_source_exact_duplicate_calls')}`"
+    )
+    lines.append(
+        f"- Mean same-source semantic duplicate tool calls: `{aggregate.get('mean_tool_same_source_semantic_duplicate_calls')}`"
+    )
     lines.append(f"- Mean semantic duplicate rate: `{aggregate.get('mean_tool_semantic_duplicate_rate')}`")
+    lines.append(
+        f"- Mean same-source semantic duplicate rate: `{aggregate.get('mean_tool_same_source_semantic_duplicate_rate')}`"
+    )
     lines.append(f"- Mean tool cache hits: `{aggregate.get('mean_tool_cache_hit_count')}`")
     lines.append(f"- Mean analysis duration (s): `{aggregate.get('mean_analysis_duration_sec')}`")
     lines.append(f"- Mean judge duration (s): `{aggregate.get('mean_judge_duration_sec')}`")

@@ -17,6 +17,8 @@ more OS-level prerequisites:
 - `x86_64-w64-mingw32-gcc` for the maintained Windows PE corpus
 - Java plus a local Ghidra installation for bundle preparation
 - optional CLI tools such as `upx`
+  - `upx` is also used by the live Ghidra bridge if you want managed unpack +
+    import of packed executables into the current project
 
 There is currently no maintained Docker-first setup path. The documented and
 tested path is direct installation on the host OS or inside a Linux VM.

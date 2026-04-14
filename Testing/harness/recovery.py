@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .paths import REPO_ROOT, ensure_dir, read_json, repo_python_executable, slugify, write_json
 from .result_store import iter_record_paths as iter_case_record_paths, resolve_catalog_run_dir, resolve_task_case_dir
+from .runtime_limits import parse_optional_request_limit, request_limit_env_value
 from .samples import (
     build_evaluation_tasks,
     list_sample_binaries,
@@ -105,7 +106,7 @@ def _fallback_run_manifest(
 ) -> Dict[str, Any]:
     if not run_entry and not experiment_manifest:
         return {}
-    return {
+    payload = {
         "run_id": str(run_entry.get("run_id") or run_dir.name),
         "corpus": str(experiment_manifest.get("corpus") or run_entry.get("corpus") or ""),
         "pipeline": str(run_entry.get("pipeline") or ""),
@@ -137,6 +138,13 @@ def _fallback_run_manifest(
         "enable_budget_guardrails": False,
         "budget_config": {},
     }
+    if "deep_agent_request_limit" in run_entry:
+        payload["deep_agent_request_limit"] = parse_optional_request_limit(run_entry.get("deep_agent_request_limit"))
+    elif "deep_agent_request_limit" in experiment_manifest:
+        payload["deep_agent_request_limit"] = parse_optional_request_limit(
+            experiment_manifest.get("deep_agent_request_limit")
+        )
+    return payload
 
 
 def _load_run_manifest(
@@ -440,6 +448,7 @@ def build_recovery_command(
     session_id: str,
     session_dir: Path,
     task_failure_retries: int = 0,
+    deep_agent_request_limit: int | None = None,
 ) -> Dict[str, Any]:
     run_manifest = dict(inspection.get("run_manifest") or {})
     retry_tasks = list(inspection.get("retryable_tasks") or [])
@@ -448,6 +457,15 @@ def build_recovery_command(
     recovery_run_dir = ensure_dir(session_dir / "runs" / recovery_run_id)
     retry_exact_keys = [str(task.get("sample_task_id") or "").strip() for task in retry_tasks if str(task.get("sample_task_id") or "").strip()]
     retry_samples = list(dict.fromkeys(str(task.get("sample") or "").strip() for task in retry_tasks if str(task.get("sample") or "").strip()))
+    if deep_agent_request_limit is not None:
+        effective_request_limit = parse_optional_request_limit(deep_agent_request_limit)
+        request_limit_defined = True
+    elif "deep_agent_request_limit" in run_manifest:
+        effective_request_limit = parse_optional_request_limit(run_manifest.get("deep_agent_request_limit"))
+        request_limit_defined = True
+    else:
+        effective_request_limit = None
+        request_limit_defined = False
 
     command: List[str] = [
         repo_python_executable(),
@@ -488,6 +506,8 @@ def build_recovery_command(
         "--skip-build",
         "--skip-prepare",
     ]
+    if request_limit_defined:
+        command.extend(["--deep-agent-request-limit", request_limit_env_value(effective_request_limit)])
     if str(run_manifest.get("experiment_id") or "").strip():
         command.extend(["--experiment-id", str(run_manifest.get("experiment_id") or "").strip()])
     if str(run_manifest.get("variant_name") or "").strip():
@@ -598,6 +618,7 @@ def execute_recovery_plan(
     timeout_sec: int = 0,
     task_failure_retries: int = 0,
     max_concurrent_recovery_runs: int = 1,
+    deep_agent_request_limit: int | None = None,
 ) -> Dict[str, Any]:
     plan = plan_recovery(target_path, retry_policy=retry_policy)
     target = Path(str(plan.get("target_path") or target_path)).resolve()
@@ -620,6 +641,7 @@ def execute_recovery_plan(
             session_id=session_id,
             session_dir=session_dir,
             task_failure_retries=max(0, int(task_failure_retries or 0)),
+            deep_agent_request_limit=deep_agent_request_limit,
         )
         inspection["recovery_command"] = command_payload
         if plan_only:

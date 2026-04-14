@@ -2,9 +2,11 @@
 %\documentclass[economy,twoside,bind]{inithesis}
 
 \usepackage{amsmath, amssymb, amsfonts, amsthm}
+\usepackage{array}
 \usepackage{graphicx}
 \usepackage{color}
 \usepackage{bm}
+\usepackage{longtable}
 \usepackage{mathabx}
 \usepackage{multirow}
 \usepackage{setspace}
@@ -19,15 +21,13 @@
 \newtheorem{corollary}[theorem]{Corollary}
 \newtheorem{result}[theorem]{Result}
 
-\newcommand{\TODO}[1]{\textbf{TODO:} #1}
-
 \graphicspath{{./Pictures/}}
 
 \author{Matthew Ung}
 \title{Tool-Orchestrated Agentic Reverse Engineering and Malware Analysis}
 \department{Information Networking Institute}
 \program{Information Security}
-\previousdegreelist{TODO: add prior degree information}
+\previousdegreelist{B.S. in Computer Science, Tufts University, 2024}
 \fulldate{April, 2026}
 \degreeyear{2026}
 \copyrighttext{All Rights Reserved}
@@ -44,37 +44,36 @@
 
 \maketitle
 
-\include{./Acknowledgements/acknowledgements}
-\include{./Abstract/abstract}
+\input{./Acknowledgements/acknowledgements}
+\input{./Abstract/abstract}
 
 \tableofcontents
 \newpage
 % Enable these once the draft contains formal tables and figures.
-%\listoftables
+%\listoftables 
 %\addcontentsline{toc}{chapter}{List of Tables}%
 %\newpage
 %\listoffigures
 %\addcontentsline{toc}{chapter}{List of Figures}%
 %\newpage
-%\include{./Symbols/listofsymbols}
+%\input{./Symbols/listofsymbols}
 
-\include{./Chapter1/introduction}
-\include{./Chapter2/background}
-\include{./Chapter3/related}
-\include{./Chapter4/overview}
-\include{./Chapter5/implementation}
-\include{./Chapter6/evaluation}
-\include{./Chapter7/results}
-\include{./Chapter8/limitations}
-\include{./Chapter9/conclusion}
+\input{./Chapter1/introduction}
+\input{./Chapter2/background}
+\input{./Chapter3/related}
+\input{./Chapter4/overview}
+\input{./Chapter5/implementation}
+\input{./Chapter6/evaluation}
+\input{./Chapter7/results}
+\input{./Chapter8/limitations}
+\input{./Chapter9/conclusion}
 
 \cleardoublepage
 \normalbaselines
-\chapter*{Bibliography}
-\addcontentsline{toc}{chapter}{Bibliography}
-\TODO{Add curated related-work, tooling, and methodology citations here once the literature review chapter is fully drafted. Re-enable BibTeX after real citations are inserted into the document.}
+\bibliographystyle{IEEEtran}
+\bibliography{Bibliography/References}
 
 \appendix
-\include{./Appendix/appendix1}
+\input{./Appendix/appendix1}
 
 \end{document}

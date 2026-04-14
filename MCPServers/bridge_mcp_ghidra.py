@@ -6,17 +6,42 @@
 # ]
 # ///
 
+"""
+File: bridge_mcp_ghidra.py
+Author: Matt-Ung
+Last Updated: 2026-04-09
+Purpose:
+  Expose the live Ghidra HTTP bridge as an MCP server with guarded fallback
+  behavior and managed side effects.
+
+Summary:
+  This server fronts the live Ghidra plugin used by the Hub_Dev app. It is
+  based on LaurieWired's original GhidraMCP project and extended here with the
+  repo's fallback behavior, guarded mutation flow, and managed unpack/import
+  helpers for the live reverse-engineering workflow.
+"""
+
 import argparse
+import hashlib
+import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import requests
 from fastmcp import FastMCP
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import artifactGhidraMCP as artifact_mcp
+from artifact_paths import get_agent_artifact_dir, resolve_agent_artifact_path
 
 DEFAULT_GHIDRA_SERVER = "http://127.0.0.1:8080/"
 DEFAULT_FALLBACK_MODE = "live_only"
@@ -42,6 +67,9 @@ _artifact_bundle_loaded = False
 _FUNCTION_SELECTOR_WITH_ADDRESS_RE = re.compile(
     r"^\s*(?P<name>.+?)\s*@\s*(?P<address>(?:0x)?[0-9A-Fa-f]+)\s*$"
 )
+_SAFE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_GHIDRA_UNPACK_STORAGE_SUBDIR = "unpacked_binaries"
+_GHIDRA_UNPACK_PROJECT_FOLDER_NAME = "unpacked"
 
 
 def _normalize_fallback_mode(raw_mode: str) -> str:
@@ -148,6 +176,182 @@ def _canonicalize_function_selector(value: str) -> str:
     if match:
         return match.group("name").strip()
     return candidate
+
+
+def _normalize_pagination_aliases(
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    pageOffset: int | None = None,
+    maxResults: int | None = None,
+) -> tuple[int, int]:
+    resolved_offset = int(pageOffset) if pageOffset is not None else int(offset or 0)
+    resolved_limit = int(maxResults) if maxResults is not None else int(limit or 0)
+    return resolved_offset, resolved_limit
+
+
+def _safe_slug(value: str, default: str) -> str:
+    cleaned = _SAFE_COMPONENT_RE.sub("_", str(value or "").strip()).strip("._-")
+    return cleaned or default
+
+
+def _parse_json_text(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _safe_get_json(endpoint: str, params: dict | None = None) -> dict:
+    if params is None:
+        params = {}
+    try:
+        url = urljoin(_validated_ghidra_server_url(ghidra_server_url), endpoint)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    try:
+        response = requests.get(url, params=params, timeout=5)
+        response.encoding = "utf-8"
+        if not response.ok:
+            return {"ok": False, "error": f"Error {response.status_code}: {response.text.strip()}"}
+        parsed = response.json()
+        if isinstance(parsed, dict):
+            return {"ok": True, "payload": parsed}
+        return {"ok": False, "error": "Live Ghidra endpoint returned non-object JSON."}
+    except Exception as exc:
+        return {"ok": False, "error": f"Request failed: {exc}"}
+
+
+def _safe_post_json(endpoint: str, data: dict) -> dict:
+    try:
+        url = urljoin(_validated_ghidra_server_url(ghidra_server_url), endpoint)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    try:
+        response = requests.post(url, data=data, timeout=15)
+        response.encoding = "utf-8"
+        if not response.ok:
+            return {"ok": False, "error": f"Error {response.status_code}: {response.text.strip()}"}
+        parsed = response.json()
+        if isinstance(parsed, dict):
+            return parsed
+        return {"ok": False, "error": "Live Ghidra endpoint returned non-object JSON."}
+    except Exception as exc:
+        return {"ok": False, "error": f"Request failed: {exc}"}
+
+
+def _compute_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _default_unpacked_project_folder(current_project_path: str) -> str:
+    raw = str(current_project_path or "").strip()
+    if not raw or raw == "/":
+        return f"/{_GHIDRA_UNPACK_PROJECT_FOLDER_NAME}"
+    parent = Path(raw).parent.as_posix()
+    if not parent or parent == ".":
+        parent = "/"
+    if parent.endswith("/"):
+        return f"{parent}{_GHIDRA_UNPACK_PROJECT_FOLDER_NAME}"
+    if parent == "/":
+        return f"/{_GHIDRA_UNPACK_PROJECT_FOLDER_NAME}"
+    return f"{parent}/{_GHIDRA_UNPACK_PROJECT_FOLDER_NAME}"
+
+
+def _managed_unpack_paths(program_info: dict) -> dict[str, Path]:
+    program = program_info.get("program") if isinstance(program_info.get("program"), dict) else {}
+    executable_path = Path(str(program.get("executablePath") or "").strip()).expanduser().resolve()
+    sample_stem = _safe_slug(executable_path.stem or str(program.get("name") or "sample"), "sample")
+    suffix = executable_path.suffix or ".bin"
+    sample_sha256 = str(program.get("executableSHA256") or "").strip().lower()
+    if len(sample_sha256) != 64 or any(ch not in "0123456789abcdef" for ch in sample_sha256):
+        sample_sha256 = _compute_sha256(executable_path)
+    digest_prefix = sample_sha256[:12]
+    subdir = f"{_GHIDRA_UNPACK_STORAGE_SUBDIR}/{sample_stem}_{digest_prefix}"
+    output_path = resolve_agent_artifact_path(
+        "ghidra",
+        filename=f"{sample_stem}_upx_unpacked{suffix}",
+        default_stem=f"{sample_stem}_upx_unpacked",
+        subdir=subdir,
+    )
+    metadata_path = resolve_agent_artifact_path(
+        "ghidra",
+        filename=f"{sample_stem}_upx_unpacked.metadata.json",
+        default_stem=f"{sample_stem}_upx_unpacked_metadata",
+        default_extension=".json",
+        subdir=subdir,
+    )
+    return {
+        "input_path": executable_path,
+        "output_path": output_path,
+        "metadata_path": metadata_path,
+    }
+
+
+def _run_managed_upx_unpack(
+    input_path: Path,
+    output_path: Path,
+    *,
+    timeout_sec: int = 180,
+    force_unpack: bool = False,
+) -> dict:
+    if shutil.which("upx") is None:
+        return {"ok": False, "error": "upx not found on PATH", "output_path": str(output_path)}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if force_unpack and output_path.exists():
+        output_path.unlink()
+    if output_path.exists() and not force_unpack:
+        return {
+            "ok": True,
+            "reused_existing_output": True,
+            "file_path": str(input_path),
+            "output_path": str(output_path),
+            "output_exists": True,
+            "command": ["upx", "-d", "-o", str(output_path), str(input_path)],
+        }
+    command = ["upx", "-d", "-o", str(output_path), str(input_path)]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=max(1, int(timeout_sec or 1)),
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "file_path": str(input_path), "output_path": str(output_path)}
+    stdout = str(completed.stdout or "").strip()
+    stderr = str(completed.stderr or "").strip()
+    output_exists = output_path.exists()
+    return {
+        "ok": completed.returncode == 0 and output_exists,
+        "returncode": completed.returncode,
+        "command": command,
+        "file_path": str(input_path),
+        "output_path": str(output_path),
+        "output_exists": output_exists,
+        "stdout": stdout,
+        "stderr": stderr,
+        "error": "" if (completed.returncode == 0 and output_exists) else (stderr or stdout or "UPX unpack failed"),
+    }
+
+
+def _write_unpack_metadata(metadata_path: Path, payload: dict) -> None:
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 def safe_get(endpoint: str, params: dict = None) -> list:
     """
@@ -412,7 +616,7 @@ def set_local_variable_type(function_address: str, variable_name: str, new_type:
     )
 
 @mcp.tool()
-def get_xrefs_to(address: str, offset: int = 0, limit: int = 100) -> list:
+def get_xrefs_to(address: str, offset: int = 0, limit: int = 100, pageOffset: int | None = None, maxResults: int | None = None) -> list:
     """
     Get all references to the specified address (xref to).
     
@@ -424,6 +628,12 @@ def get_xrefs_to(address: str, offset: int = 0, limit: int = 100) -> list:
     Returns:
         List of references to the specified address
     """
+    offset, limit = _normalize_pagination_aliases(
+        offset=offset,
+        limit=limit,
+        pageOffset=pageOffset,
+        maxResults=maxResults,
+    )
     return _call_with_fallback(
         "get_xrefs_to",
         lambda: safe_get("xrefs_to", {"address": address, "offset": offset, "limit": limit}),
@@ -433,7 +643,7 @@ def get_xrefs_to(address: str, offset: int = 0, limit: int = 100) -> list:
     )
 
 @mcp.tool()
-def get_xrefs_from(address: str, offset: int = 0, limit: int = 100) -> list:
+def get_xrefs_from(address: str, offset: int = 0, limit: int = 100, pageOffset: int | None = None, maxResults: int | None = None) -> list:
     """
     Get all references from the specified address (xref from).
     
@@ -445,6 +655,12 @@ def get_xrefs_from(address: str, offset: int = 0, limit: int = 100) -> list:
     Returns:
         List of references from the specified address
     """
+    offset, limit = _normalize_pagination_aliases(
+        offset=offset,
+        limit=limit,
+        pageOffset=pageOffset,
+        maxResults=maxResults,
+    )
     return _call_with_fallback(
         "get_xrefs_from",
         lambda: safe_get("xrefs_from", {"address": address, "offset": offset, "limit": limit}),
@@ -454,7 +670,7 @@ def get_xrefs_from(address: str, offset: int = 0, limit: int = 100) -> list:
     )
 
 @mcp.tool()
-def get_function_xrefs(name: str, offset: int = 0, limit: int = 100) -> list:
+def get_function_xrefs(name: str, offset: int = 0, limit: int = 100, pageOffset: int | None = None, maxResults: int | None = None) -> list:
     """
     Get all references to the specified function by name.
     
@@ -467,6 +683,12 @@ def get_function_xrefs(name: str, offset: int = 0, limit: int = 100) -> list:
         List of references to the specified function
     """
     canonical_name = _canonicalize_function_selector(name)
+    offset, limit = _normalize_pagination_aliases(
+        offset=offset,
+        limit=limit,
+        pageOffset=pageOffset,
+        maxResults=maxResults,
+    )
     return _call_with_fallback(
         "get_function_xrefs",
         lambda: safe_get("function_xrefs", {"name": canonical_name, "offset": offset, "limit": limit}),
@@ -521,6 +743,94 @@ def get_program_info() -> list:
         - "Image Base: <program.getImageBase().toString() or ''>\\n"
     """
     return _call_with_fallback("get_program_info", lambda: safe_get("program_info"))
+
+@mcp.tool()
+def upx_unpack_current_program(
+    project_folder: str = "",
+    open_imported_program: bool = True,
+    force_unpack: bool = False,
+    timeout_sec: int = 180,
+) -> dict:
+    """
+    Unpack the current program's executable into a managed Hub_Dev artifact path
+    and import the unpacked copy into the active Ghidra project.
+
+    The original program remains in the project. The unpacked copy is written
+    under the repo-managed Ghidra artifact root and then imported into the
+    current project's `unpacked/` folder by default.
+    """
+
+    def _live_callable() -> dict:
+        program_response = _safe_get_json("program_info")
+        if not program_response.get("ok"):
+            return {
+                "ok": False,
+                "error": str(program_response.get("error") or "Unable to query current Ghidra program info."),
+            }
+        payload = program_response.get("payload") if isinstance(program_response.get("payload"), dict) else {}
+        if not bool(payload.get("loaded")):
+            return {"ok": False, "error": str(payload.get("error") or "No program loaded")}
+        program = payload.get("program") if isinstance(payload.get("program"), dict) else {}
+        executable_path = Path(str(program.get("executablePath") or "").strip()).expanduser()
+        if not executable_path.exists():
+            return {
+                "ok": False,
+                "error": "Current Ghidra program does not expose an existing executablePath to unpack.",
+            }
+
+        paths = _managed_unpack_paths(payload)
+        unpack_result = _run_managed_upx_unpack(
+            executable_path.resolve(),
+            paths["output_path"],
+            timeout_sec=timeout_sec,
+            force_unpack=force_unpack,
+        )
+        if not bool(unpack_result.get("ok")):
+            response = dict(unpack_result)
+            response["artifact_root"] = str(get_agent_artifact_dir("ghidra"))
+            return response
+
+        resolved_project_folder = str(project_folder or _default_unpacked_project_folder(str(program.get("ghidraProjectPath") or ""))).strip()
+        import_result = _safe_post_json(
+            "import_executable",
+            {
+                "file_path": str(paths["output_path"]),
+                "project_folder": resolved_project_folder,
+                "open_imported_program": "true" if open_imported_program else "false",
+                "reuse_existing": "true",
+            },
+        )
+        result = {
+            "ok": bool(import_result.get("ok")),
+            "original_program_name": str(program.get("name") or ""),
+            "original_executable_path": str(executable_path.resolve()),
+            "original_executable_sha256": str(program.get("executableSHA256") or ""),
+            "unpacked_executable_path": str(paths["output_path"]),
+            "metadata_path": str(paths["metadata_path"]),
+            "artifact_root": str(get_agent_artifact_dir("ghidra")),
+            "project_folder": resolved_project_folder,
+            "open_imported_program": bool(open_imported_program),
+            "original_preserved": True,
+            "upx_unpack": unpack_result,
+            "ghidra_import": import_result,
+        }
+        _write_unpack_metadata(
+            paths["metadata_path"],
+            {
+                "original_program": dict(program),
+                "managed_storage": {
+                    "artifact_root": str(get_agent_artifact_dir("ghidra")),
+                    "output_path": str(paths["output_path"]),
+                    "metadata_path": str(paths["metadata_path"]),
+                },
+                "upx_unpack": unpack_result,
+                "ghidra_import": import_result,
+                "original_preserved": True,
+            },
+        )
+        return result
+
+    return _call_mutating_with_fallback("upx_unpack_current_program", _live_callable)
 
 @mcp.tool()
 def get_call_graph(maxDepth: int, maxNodes: int = 3) -> list:

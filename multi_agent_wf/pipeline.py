@@ -14,6 +14,7 @@ Summary:
 
 import asyncio
 from datetime import datetime
+import hashlib
 import html
 import json
 import re
@@ -21,8 +22,15 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic_ai import ModelMessage
+try:
+    from pydantic_ai.usage import UsageLimits
+except Exception:  # pragma: no cover - lightweight test stubs may not expose submodules
+    class UsageLimits:  # type: ignore[override]
+        def __init__(self, *, request_limit: int | None = None, **_: Any) -> None:
+            self.request_limit = request_limit
 
 from .config import (
+    DEEP_AGENT_REQUEST_LIMIT,
     DEFAULT_SHELL_EXECUTION_MODE,
     HOST_PARALLEL_WORKER_EXECUTION,
     GHIDRA_CHANGE_PROPOSALS_END,
@@ -117,6 +125,52 @@ _HOST_WORKER_MAX_TRANSIENT_RETRIES = 2
 _HOST_WORKER_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
 _HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES = 1
 _HOST_WORKER_STAGE_RETRY_BACKOFF_SECONDS = (2.0,)
+
+
+def _current_usage_limits() -> UsageLimits | None:
+    request_limit = DEEP_AGENT_REQUEST_LIMIT
+    if request_limit is None:
+        return None
+    return UsageLimits(request_limit=int(request_limit))
+
+
+def _supports_usage_limits_type_error(error: TypeError) -> bool:
+    message = str(error or "")
+    return "usage_limits" in message and "unexpected keyword" in message
+
+
+def _stage_agent_run_sync(agent: Any, prompt: str, *, message_history: Any, deps: Any) -> Any:
+    usage_limits = _current_usage_limits()
+    if usage_limits is None:
+        return agent.run_sync(prompt, message_history=message_history, deps=deps)
+    try:
+        return agent.run_sync(
+            prompt,
+            message_history=message_history,
+            deps=deps,
+            usage_limits=usage_limits,
+        )
+    except TypeError as error:
+        if not _supports_usage_limits_type_error(error):
+            raise
+        return agent.run_sync(prompt, message_history=message_history, deps=deps)
+
+
+async def _stage_agent_run_async(agent: Any, prompt: str, *, message_history: Any, deps: Any) -> Any:
+    usage_limits = _current_usage_limits()
+    if usage_limits is None:
+        return await agent.run(prompt, message_history=message_history, deps=deps)
+    try:
+        return await agent.run(
+            prompt,
+            message_history=message_history,
+            deps=deps,
+            usage_limits=usage_limits,
+        )
+    except TypeError as error:
+        if not _supports_usage_limits_type_error(error):
+            raise
+        return await agent.run(prompt, message_history=message_history, deps=deps)
 _HOST_WORKER_NON_RETRYABLE_ERROR_MARKERS = (
     "status_code: 400",
     "invalid_request_error",
@@ -318,6 +372,7 @@ def _classify_runtime_error(error: Exception | str) -> Dict[str, Any]:
     elif any(marker in lowered for marker in _INVALID_REQUEST_ERROR_MARKERS):
         if any(marker in lowered for marker in _INVALID_JSON_BODY_ERROR_MARKERS):
             category = "invalid_request_payload"
+            retryable = True
         else:
             category = "invalid_request"
     elif any(marker in lowered for marker in _RATE_LIMIT_ERROR_MARKERS):
@@ -363,6 +418,40 @@ def _with_sync_only_retry_guidance(prompt: str) -> str:
     return f"{str(prompt or '').rstrip()}\n\n{guidance}"
 
 
+def _short_sha256(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8", "ignore")).hexdigest()[:12]
+
+
+def _build_stage_request_fingerprint(
+    *,
+    stage: Any,
+    stage_prompt: str,
+    old_history: List[ModelMessage],
+    attempt: int,
+) -> Dict[str, Any]:
+    history_items = list(old_history or [])
+    history_serialized = "\n".join(f"{type(item).__name__}:{str(item)}" for item in history_items)
+    prompt_text = str(stage_prompt or "")
+    model_name = str(
+        getattr(stage, "model", "")
+        or getattr(getattr(stage, "agent", None), "model_name", "")
+        or getattr(getattr(stage, "agent", None), "model", "")
+        or ""
+    ).strip()
+    fingerprint = {
+        "stage_name": str(getattr(stage, "name", "") or "").strip(),
+        "attempt": int(attempt),
+        "model_name": model_name,
+        "prompt_chars": len(prompt_text),
+        "prompt_sha256": _short_sha256(prompt_text),
+        "history_messages": len(history_items),
+        "history_chars": len(history_serialized),
+        "history_sha256": _short_sha256(history_serialized) if history_serialized else "",
+    }
+    fingerprint["fingerprint_id"] = _short_sha256(json.dumps(fingerprint, sort_keys=True))
+    return fingerprint
+
+
 def _run_stage_agent_sync_with_guardrails(
     *,
     stage: Any,
@@ -373,16 +462,30 @@ def _run_stage_agent_sync_with_guardrails(
     max_attempts = 1 + max(0, int(_STAGE_MAX_TRANSIENT_RETRIES))
     attempt = 1
     async_misuse_retry_used = False
+    shared = state.setdefault("shared_state", {})
 
     while True:
+        request_fingerprint = _build_stage_request_fingerprint(
+            stage=stage,
+            stage_prompt=stage_prompt,
+            old_history=old_history,
+            attempt=attempt,
+        )
+        shared["last_stage_request_fingerprint"] = dict(request_fingerprint)
         try:
-            return stage.agent.run_sync(
+            return _stage_agent_run_sync(
+                stage.agent,
                 stage_prompt,
                 message_history=old_history if old_history else None,
                 deps=stage.deps,
             )
         except Exception as error:
             classification = _classify_runtime_error(error)
+            shared["last_stage_request_fingerprint"] = {
+                **dict(request_fingerprint),
+                "error_category": str(classification.get("category") or ""),
+                "retryable": bool(classification.get("retryable")),
+            }
             if classification["category"] == "async_task_tool_misuse" and not async_misuse_retry_used:
                 async_misuse_retry_used = True
                 append_status(
@@ -392,7 +495,8 @@ def _run_stage_agent_sync_with_guardrails(
                         "without a valid async task context; retrying synchronously without prior history."
                     ),
                 )
-                retry_result = stage.agent.run_sync(
+                retry_result = _stage_agent_run_sync(
+                    stage.agent,
                     _with_sync_only_retry_guidance(stage_prompt),
                     message_history=None,
                     deps=stage.deps,
@@ -402,13 +506,20 @@ def _run_stage_agent_sync_with_guardrails(
                     f"Stage retry recovered: {stage.name} completed after async task-management misuse.",
                 )
                 return retry_result
-            if classification["retryable"] and attempt < max_attempts and not bool(state.get("cancel_requested")):
+            allowed_attempts = max_attempts
+            if classification["category"] == "invalid_request_payload":
+                # Some malformed-body 400s appear to come from intermittent client
+                # request serialization rather than deterministic prompt content.
+                # Give them one guarded replay before failing the task.
+                allowed_attempts = min(max_attempts, 2)
+            if classification["retryable"] and attempt < allowed_attempts and not bool(state.get("cancel_requested")):
                 backoff_sec = _retry_backoff_sec(attempt - 1, _STAGE_RETRY_BACKOFF_SECONDS)
                 append_status(
                     state,
                     (
                         f"Stage transient failure: {stage.name} attempt {attempt}/{max_attempts} "
-                        f"category={classification['category']} ({classification['error_text']}); "
+                        f"category={classification['category']} request_fp={request_fingerprint['fingerprint_id']} "
+                        f"({classification['error_text']}); "
                         f"retrying in {backoff_sec:.1f}s"
                     ),
                 )
@@ -2313,6 +2424,71 @@ def _plan_host_worker_assignments(
     return assignments
 
 
+_HOST_WORKER_SHARED_CONTEXT_KEYS = (
+    "selected_pipeline_name",
+    "deep_pipeline",
+    "deep_architecture_name",
+    "validated_sample_path",
+    "validated_sample_path_source",
+    "validated_sample_md5",
+    "validated_sample_sha256",
+    "validated_sample_image_base",
+    "validated_sample_metadata_source",
+    "analysis_target_kind",
+    "analysis_target_reason",
+    "analysis_target_original_path",
+    "analysis_target_original_sha256",
+    "analysis_target_packer",
+    "analysis_target_packed_detected",
+    "available_static_tools",
+    "available_dynamic_tools",
+    "available_sandbox_tools",
+    "supports_dynamic_analysis",
+    "supports_sandboxed_execution",
+    "allow_parent_input",
+    "shell_execution_mode",
+    "validator_review_level",
+    "auto_triage_status",
+    "auto_triage_context_summary",
+    "auto_triage_pre_sweep_summary",
+    "auto_triage_sample_path",
+    "auto_triage_sample_sha256",
+    "validation_retry_count",
+    "validation_max_retries",
+    "validation_last_decision",
+    "validation_replan_feedback",
+)
+
+
+def _compact_host_worker_context_text(text: str, *, max_chars: int) -> str:
+    raw = str(text or "").strip()
+    if not raw or len(raw) <= max_chars:
+        return raw
+    return raw[: max_chars - 15].rstrip() + "\n...[truncated]..."
+
+
+def _narrow_host_worker_shared_state(shared_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    source = dict(shared_state or {})
+    narrowed: Dict[str, Any] = {}
+    for key in _HOST_WORKER_SHARED_CONTEXT_KEYS:
+        if key in source:
+            narrowed[key] = source.get(key)
+    narrowed["planned_work_items"] = []
+    narrowed["auto_triage_context_summary"] = _compact_host_worker_context_text(
+        str(narrowed.get("auto_triage_context_summary") or ""),
+        max_chars=4000,
+    )
+    narrowed["auto_triage_pre_sweep_summary"] = _compact_host_worker_context_text(
+        str(narrowed.get("auto_triage_pre_sweep_summary") or ""),
+        max_chars=2500,
+    )
+    narrowed["validation_replan_feedback"] = _compact_host_worker_context_text(
+        str(narrowed.get("validation_replan_feedback") or ""),
+        max_chars=2000,
+    )
+    return narrowed
+
+
 def _build_host_worker_prompt(
     *,
     stage_name: str,
@@ -2324,12 +2500,14 @@ def _build_host_worker_prompt(
     prior_stage_outputs: Dict[str, str],
     shared_state: Optional[Dict[str, Any]],
 ) -> str:
-    narrowed_shared = dict(shared_state or {})
-    narrowed_shared["planned_work_items"] = []
+    narrowed_shared = _narrow_host_worker_shared_state(shared_state)
     trimmed_prior_outputs: Dict[str, str] = {}
     preflight_output = str(prior_stage_outputs.get("preflight") or "").strip()
     if preflight_output:
-        trimmed_prior_outputs["preflight"] = preflight_output
+        trimmed_prior_outputs["preflight"] = _compact_host_worker_context_text(
+            preflight_output,
+            max_chars=3500,
+        )
     base_prompt = build_stage_prompt(
         stage_name=f"{stage_name}.{slot_name}",
         stage_kind=stage_kind,
@@ -2458,7 +2636,8 @@ async def _run_host_worker_assignment(
                 ],
             )
             model_t0 = time.perf_counter()
-            result = await agent.run(
+            result = await _stage_agent_run_async(
+                agent,
                 prompt,
                 message_history=None,
                 deps=deps,
@@ -3063,6 +3242,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["validation_history"] = []
     shared["pipeline_duration_sec"] = 0.0
     shared["last_pipeline_error"] = {}
+    shared["last_stage_request_fingerprint"] = {}
     shared["model_usage_totals"] = _empty_usage_snapshot()
     shared["model_usage_by_stage"] = {}
     shared["model_usage_events"] = []
@@ -3175,6 +3355,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 "error_text": str(error_info.get("error_text") or ""),
                 "category": str(error_info.get("category") or "unknown"),
                 "retryable": bool(error_info.get("retryable")),
+                "request_fingerprint": dict(shared.get("last_stage_request_fingerprint") or {}),
                 "occurred_at": datetime.now().isoformat(timespec="seconds"),
             }
             if stage_meta["supports_parallel_assignments"]:

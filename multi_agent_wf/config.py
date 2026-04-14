@@ -87,6 +87,16 @@ def _parse_path_list(raw: str) -> List[str]:
     return [p.strip() for p in raw.split(sep) if p.strip()]
 
 
+def _parse_optional_positive_int(raw: Any, default: int | None = None) -> int | None:
+    if raw is None:
+        return default
+    text = str(raw).strip()
+    if not text:
+        return default
+    value = int(text)
+    return value if value > 0 else None
+
+
 def _parse_lower_marker_list(raw: str) -> Tuple[str, ...]:
     return tuple(marker.strip().lower() for marker in str(raw or "").split(",") if marker.strip())
 
@@ -371,6 +381,7 @@ def _build_runtime_settings(
         "DEEP_SKILL_DIRS": _parse_path_list(str(env.get("DEEP_SKILL_DIRS", ""))),
         "HOST_PARALLEL_WORKER_EXECUTION": _env_flag_from(env, "HOST_PARALLEL_WORKER_EXECUTION", True),
         "DEEP_CONTEXT_MAX_TOKENS": int(env.get("DEEP_CONTEXT_MAX_TOKENS", "18000")),
+        "DEEP_AGENT_REQUEST_LIMIT": _parse_optional_positive_int(env.get("DEEP_AGENT_REQUEST_LIMIT"), 50),
         "MAX_STATUS_LOG_LINES": int(env.get("MAX_STATUS_LOG_LINES", "400")),
         "STATUS_LOG_STDOUT": _env_flag_from(env, "STATUS_LOG_STDOUT", True),
         "DEEP_AGENT_RETRIES": int(env.get("DEEP_AGENT_RETRIES", "4")),

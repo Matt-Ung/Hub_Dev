@@ -19,11 +19,6 @@
     "command": "python",
     "args": ["hashDBMCP.py", "--transport", "stdio"]
   },
-  "ssdeepmcp": {
-    "transport": "stdio",
-    "command": "python",
-    "args": ["ssdeepMCP.py", "--transport", "stdio"]
-  },
   "CapaMCP": {
     "transport": "stdio",
     "command": "python",

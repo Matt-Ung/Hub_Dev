@@ -135,6 +135,11 @@ Testing/results/doctor/
 Testing/results/experiments/
 Testing/results/preflight/
 Testing/results/runs/
+Testing/tests/
 # Archived legacy result trees remain local-only. They are inspectable through
 # the archive viewer but are not treated as active repo outputs.
 Testing/archive/results_legacy/
+
+# Thesis defense deck working artifacts and generated visuals.
+Thesis_Agentic_RE/Agentic RE.pptx.txt
+Thesis_Agentic_RE/Pictures/defense_visuals/

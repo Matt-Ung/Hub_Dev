@@ -107,6 +107,18 @@ def _canonicalize_function_selector(value: str) -> str:
     return candidate
 
 
+def _normalize_pagination_aliases(
+    *,
+    offset: int = 0,
+    limit: int = 100,
+    pageOffset: int | None = None,
+    maxResults: int | None = None,
+) -> tuple[int, int]:
+    resolved_offset = int(pageOffset) if pageOffset is not None else int(offset or 0)
+    resolved_limit = int(maxResults) if maxResults is not None else int(limit or 0)
+    return resolved_offset, resolved_limit
+
+
 @mcp.tool()
 def list_methods(offset: int = 0, limit: int = 100) -> list[str]:
     return _paginate([str(item.get("name") or "") for item in _bundle().functions if item.get("name")], offset, limit)
@@ -242,19 +254,37 @@ def set_local_variable_type(function_address: str, variable_name: str, new_type:
 
 
 @mcp.tool()
-def get_xrefs_to(address: str, offset: int = 0, limit: int = 100) -> list:
+def get_xrefs_to(address: str, offset: int = 0, limit: int = 100, pageOffset: int | None = None, maxResults: int | None = None) -> list:
+    offset, limit = _normalize_pagination_aliases(
+        offset=offset,
+        limit=limit,
+        pageOffset=pageOffset,
+        maxResults=maxResults,
+    )
     refs = _bundle().refs_to.get(str(address or "").strip(), [])
     return _paginate(list(refs), offset, limit)
 
 
 @mcp.tool()
-def get_xrefs_from(address: str, offset: int = 0, limit: int = 100) -> list:
+def get_xrefs_from(address: str, offset: int = 0, limit: int = 100, pageOffset: int | None = None, maxResults: int | None = None) -> list:
+    offset, limit = _normalize_pagination_aliases(
+        offset=offset,
+        limit=limit,
+        pageOffset=pageOffset,
+        maxResults=maxResults,
+    )
     refs = _bundle().refs_from.get(str(address or "").strip(), [])
     return _paginate(list(refs), offset, limit)
 
 
 @mcp.tool()
-def get_function_xrefs(name: str, offset: int = 0, limit: int = 100) -> list:
+def get_function_xrefs(name: str, offset: int = 0, limit: int = 100, pageOffset: int | None = None, maxResults: int | None = None) -> list:
+    offset, limit = _normalize_pagination_aliases(
+        offset=offset,
+        limit=limit,
+        pageOffset=pageOffset,
+        maxResults=maxResults,
+    )
     canonical_name = _canonicalize_function_selector(name)
     function = _bundle().function_by_name(canonical_name)
     if not function:
