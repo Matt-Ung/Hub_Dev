@@ -19,8 +19,11 @@ from pathlib import Path
 
 
 TESTING_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = TESTING_ROOT.parent
 
-# All maintained script entrypoints import this module first so `harness.*`
-# resolves relative to the repository layout rather than the caller's cwd.
-if str(TESTING_ROOT) not in sys.path:
-    sys.path.insert(0, str(TESTING_ROOT))
+# All maintained script entrypoints import this module first so both
+# `harness.*` and repository-root packages such as `multi_agent_wf.*`
+# resolve relative to the repository layout rather than the caller's cwd.
+for root in (TESTING_ROOT, REPO_ROOT):
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))

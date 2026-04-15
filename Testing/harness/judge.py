@@ -287,7 +287,7 @@ def _build_non_result_judge_result(
         ).strip()
     elif status == "worker_assignment_failed":
         technical_summary = (
-            "The run produced a provisional report, but one or more host-parallel worker assignments failed. "
+            "The run did not produce a usable final result after fatal host-parallel worker assignment failures. "
             + technical_summary
         ).strip()
     elif status == "analysis_error":

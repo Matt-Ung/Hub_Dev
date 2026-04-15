@@ -13,6 +13,13 @@ Use this MCP server when the agent should persist helper artifacts instead of le
 
 Generated YARA rules should still be written with `yaraWriteRule(...)` from `yaraMCP.py`, but they use the same shared artifact-root policy.
 
+The server can also generate structured malware analysis report bundles that
+include:
+
+- normalized JSON input
+- filled Markdown report output
+- rendered PDF deliverable
+
 ## Directory Layout
 
 The shared path logic lives in `artifact_paths.py`.
@@ -54,6 +61,8 @@ Security note:
 - `writeTextArtifact(artifact_type, content, filename="", overwrite=False, subdir="", description="")`
 - `writePythonArtifact(content, filename="", overwrite=False, subdir="", description="", ghidra_script=False)`
 - `writeJavaArtifact(content, filename="", overwrite=False, subdir="", description="", ghidra_script=False)`
+- `malwareReportSchema()`
+- `generateMalwareReport(report, filename="", overwrite=False, subdir="", emit_json=True, emit_markdown=True, emit_pdf=True)`
 - `listAgentArtifacts(artifact_type="", max_results=200)`
 - `agentArtifactHelp()`
 
@@ -90,9 +99,52 @@ writeJavaArtifact(
 )
 ```
 
+Generate a malware analysis report bundle:
+
+```python
+generateMalwareReport(
+    report={
+        "title": "Malware Analysis Report",
+        "sample_name": "sample.exe",
+        "analyst": "Hub_Dev",
+        "executive_summary": "Packed Windows payload with encoded strings and HTTP beaconing.",
+        "file_details": {
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "family": "ExampleFamily",
+            "packer": "UPX",
+        },
+        "stage_descriptions": [
+            {
+                "title": "Stage 1 - Loader",
+                "description": "Unpacks and resolves imports dynamically.",
+                "evidence": ["Recovered stack strings for WinINet imports."],
+            }
+        ],
+        "command_and_control": {
+            "urls": ["http://example[.]com/gate.php"],
+        },
+        "conclusion": "Static evidence supports staged delivery and beaconing behavior.",
+    },
+    filename="sample_report",
+    subdir="engagement_alpha",
+)
+```
+
+Typical output bundle:
+
+```text
+agent_artifacts/reports/engagement_alpha/malware_reports/sample_report/
+  report.json
+  report.md
+  report.pdf
+```
+
 ## Notes
 
 - Filenames are sanitized and must be simple file names, not arbitrary paths.
 - Optional `subdir` lets you group artifacts by sample or workflow, such as `labos/` or `rswe/task2/`.
 - Directories are created automatically.
 - The server enforces the artifact root in code; prompts or client conventions are not trusted as the security boundary.
+- `generateMalwareReport(...)` validates the payload against a structured schema before writing anything.
+- Missing sections are omitted from the generated Markdown and PDF instead of emitting blank placeholders.
+- PDF rendering requires `fpdf2` in the active Python environment.

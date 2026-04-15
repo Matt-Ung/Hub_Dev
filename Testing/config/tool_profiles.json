@@ -6,9 +6,10 @@
       "description": "All default MCP servers available."
     },
     "core_static": {
-      "description": "Keep the core static-analysis lane (Ghidra, strings, FLOSS, capa) but disable specialty enrichers such as hashdb, binwalk, UPX, YARA, model gateway, patching, and artifact writers.",
+      "description": "Keep the core static-analysis lane (Ghidra, strings, FLOSS, capa) but disable specialty enrichers such as hashdb, sdhash, binwalk, UPX, YARA, model gateway, patching, and artifact writers.",
       "disabled_servers": [
         "hashdbmcp",
+        "sdhashmcp",
         "binwalkmcp",
         "upxmcp",
         "yaramcp",
@@ -27,6 +28,7 @@
         "flareflossmcp",
         "CapaMCP",
         "hashdbmcp",
+        "sdhashmcp",
         "binwalkmcp",
         "upxmcp",
         "yaramcp",

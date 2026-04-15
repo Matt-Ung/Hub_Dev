@@ -27,6 +27,8 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict
 
+from multi_agent_wf.runtime_defaults import DEFAULT_DEEP_AGENT_REQUEST_LIMIT, REQUEST_LIMIT_ERROR_MARKER
+
 from .artifacts import (
     build_artifact_servers_manifest,
     inspect_bundle_dir,
@@ -85,7 +87,11 @@ def _fresh_harness_runtime(manifest_path: Path):
             "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS",
             True,
         ),
-        "DEEP_AGENT_REQUEST_LIMIT": getattr(config_mod, "DEEP_AGENT_REQUEST_LIMIT", 50),
+        "DEEP_AGENT_REQUEST_LIMIT": getattr(
+            config_mod,
+            "DEEP_AGENT_REQUEST_LIMIT",
+            DEFAULT_DEEP_AGENT_REQUEST_LIMIT,
+        ),
     }
 
     imported: Dict[str, Any] = {}
@@ -109,6 +115,7 @@ def _fresh_harness_runtime(manifest_path: Path):
         runtime_mod = importlib.import_module("multi_agent_wf.runtime")
         shared_state_mod = importlib.import_module("multi_agent_wf.shared_state")
         imported = {
+            "build_run_local_pipeline_runtime": runtime_mod.build_run_local_pipeline_runtime,
             "run_deepagent_pipeline": pipeline_mod.run_deepagent_pipeline,
             "get_runtime_sync": runtime_mod.get_runtime_sync,
             "shutdown_runtime_sync": runtime_mod.shutdown_runtime_sync,
@@ -158,8 +165,6 @@ def _build_initial_state(shared_state_factory):
         "status_log": "",
         "active_run_id": "",
         "cancel_requested": False,
-        "allow_parent_input": False,
-        "shell_execution_mode": "none",
         "validator_review_level": "default",
         "shared_state": shared_state_factory(),
     }
@@ -234,7 +239,7 @@ def _validation_summary(shared: Dict[str, Any]) -> Dict[str, Any]:
     last_decision = str(shared.get("validation_last_decision") or "").strip().lower()
     feedback = str(shared.get("validation_replan_feedback") or "").strip()
     latest = history[-1] if history else {}
-    blocked = bool(history) and last_decision == "reject" and retry_count >= max_retries and max_retries >= 0
+    blocked = bool(history) and last_decision in {"reject", "revise"} and retry_count >= max_retries and max_retries >= 0
     rejection_reasons = list(latest.get("rejection_reasons") or []) if isinstance(latest, dict) else []
     return {
         "history": history,
@@ -263,9 +268,42 @@ def _worker_assignment_summary(shared: Dict[str, Any]) -> Dict[str, Any]:
     Side Effects:
       None.
     """
+    host_summary = shared.get("host_worker_assignment_summary") if isinstance(shared.get("host_worker_assignment_summary"), dict) else {}
+    if host_summary:
+        raw_failed_items = host_summary.get("failed_work_items") or host_summary.get("failed_items") or []
+        failed_items = []
+        failure_categories = host_summary.get("failure_categories") if isinstance(host_summary.get("failure_categories"), dict) else {}
+        for raw_item in raw_failed_items:
+            item = raw_item if isinstance(raw_item, dict) else {}
+            failed_items.append(
+                {
+                    "work_item_id": str(item.get("work_item_id") or ""),
+                    "slot_name": str(item.get("slot_name") or ""),
+                    "error": str(item.get("error") or ""),
+                    "status": str(item.get("status") or "blocked"),
+                    "duration_sec": item.get("duration_sec"),
+                    "error_category": str(item.get("error_category") or ""),
+                    "retryable": bool(item.get("retryable")),
+                }
+            )
+        return {
+            "stage_name": str(host_summary.get("stage_name") or ""),
+            "total_assignments": int(host_summary.get("total_assignments") or 0),
+            "completed_assignments": int(host_summary.get("completed_assignments") or 0),
+            "failed_assignments": int(host_summary.get("failed_assignments") or 0),
+            "all_assignments_failed": bool(host_summary.get("all_assignments_failed")),
+            "partial_assignment_failures": bool(host_summary.get("partial_assignment_failures")),
+            "retryable_failed_assignments": int(host_summary.get("retryable_failed_assignments") or 0),
+            "nonretryable_failed_assignments": int(host_summary.get("nonretryable_failed_assignments") or 0),
+            "failure_categories": {str(key): int(value) for key, value in failure_categories.items()},
+            "failed_items": failed_items,
+        }
+
     status_map = shared.get("planned_work_item_status") if isinstance(shared.get("planned_work_item_status"), dict) else {}
     failed_items = []
     completed = 0
+    failure_categories: Dict[str, int] = {}
+    retryable_failed_assignments = 0
     for work_item_id, raw_entry in status_map.items():
         entry = raw_entry if isinstance(raw_entry, dict) else {}
         status = str(entry.get("status") or "").strip().lower()
@@ -273,20 +311,79 @@ def _worker_assignment_summary(shared: Dict[str, Any]) -> Dict[str, Any]:
             completed += 1
             continue
         if status in {"blocked", "failed"}:
+            error = str(entry.get("error") or "")
+            failure = _classify_failure_reason(error, shared)
+            category = str(failure.get("failure_category") or "unknown")
+            failure_categories[category] = failure_categories.get(category, 0) + 1
+            if bool(failure.get("failure_retryable")):
+                retryable_failed_assignments += 1
             failed_items.append(
                 {
                     "work_item_id": str(work_item_id or ""),
                     "slot_name": str(entry.get("slot_name") or ""),
-                    "error": str(entry.get("error") or ""),
+                    "error": error,
                     "status": status,
                     "duration_sec": entry.get("duration_sec"),
+                    "error_category": category,
+                    "retryable": bool(failure.get("failure_retryable")),
                 }
             )
+    failed_assignments = len(failed_items)
+    total_assignments = len(status_map)
     return {
-        "total_assignments": len(status_map),
+        "total_assignments": total_assignments,
         "completed_assignments": completed,
-        "failed_assignments": len(failed_items),
+        "failed_assignments": failed_assignments,
+        "all_assignments_failed": bool(total_assignments) and failed_assignments == total_assignments,
+        "partial_assignment_failures": bool(failed_assignments) and failed_assignments < total_assignments,
+        "retryable_failed_assignments": retryable_failed_assignments,
+        "nonretryable_failed_assignments": max(0, failed_assignments - retryable_failed_assignments),
+        "failure_categories": failure_categories,
         "failed_items": failed_items,
+    }
+
+
+def _summarize_worker_failure_details(worker_summary: Dict[str, Any], failure_reason: str) -> Dict[str, Any]:
+    failed_items = [item for item in (worker_summary.get("failed_items") or []) if isinstance(item, dict)]
+    category_counts = worker_summary.get("failure_categories") if isinstance(worker_summary.get("failure_categories"), dict) else {}
+    normalized_counts = {
+        str(category).strip(): int(count)
+        for category, count in category_counts.items()
+        if str(category).strip()
+    }
+    if not normalized_counts:
+        for item in failed_items:
+            category = str(item.get("error_category") or "").strip() or "unknown"
+            normalized_counts[category] = normalized_counts.get(category, 0) + 1
+
+    failure_category = ""
+    if len(normalized_counts) == 1:
+        failure_category = next(iter(normalized_counts))
+    elif normalized_counts:
+        ordered = sorted(normalized_counts.items(), key=lambda item: (-int(item[1]), item[0]))
+        failure_category = ordered[0][0] if len(ordered) == 1 else "mixed_worker_failures"
+
+    retryable_failed_assignments = int(worker_summary.get("retryable_failed_assignments") or 0)
+    failed_assignments = int(worker_summary.get("failed_assignments") or 0)
+    retryable = retryable_failed_assignments > 0 and failed_assignments > 0
+    if not failure_category:
+        fallback = _classify_failure_reason(
+            failure_reason,
+            {
+                "last_pipeline_error": {
+                    "stage_name": "workers",
+                    "error_text": failure_reason,
+                }
+            },
+        )
+        failure_category = str(fallback.get("failure_category") or "")
+        retryable = retryable or bool(fallback.get("failure_retryable"))
+
+    return {
+        "failure_category": failure_category or "worker_assignment_failed",
+        "failure_retryable": retryable,
+        "failure_source": "worker_assignments",
+        "failure_stage": "workers",
     }
 
 
@@ -296,11 +393,13 @@ def _classify_failure_reason(error: str, shared: Dict[str, Any] | None = None) -
     text = str(error or pipeline_error.get("error_text") or "").strip()
     lowered = text.lower()
 
-    category = "unknown"
-    retryable = False
+    category = str(pipeline_error.get("category") or "").strip() or "unknown"
+    retryable = bool(pipeline_error.get("retryable")) if "retryable" in pipeline_error else False
     source = "analysis"
 
-    if "bundle is missing required files" in lowered:
+    if category != "unknown":
+        source = "pipeline"
+    elif "bundle is missing required files" in lowered:
         category = "bundle_missing_required"
         source = "bundle"
     elif "failed to resolve the effective analysis bundle" in lowered:
@@ -309,10 +408,13 @@ def _classify_failure_reason(error: str, shared: Dict[str, Any] | None = None) -
     elif "wait_tasks" in lowered and "exceeded max retries count" in lowered:
         category = "async_task_tool_misuse"
         source = "pipeline"
+    elif "attempted to exit a cancel scope" in lowered or "cancel scope in a different task" in lowered:
+        category = "cancel_scope_mismatch"
+        source = "pipeline"
     elif "pipeline canceled by user" in lowered or "cancelled by user" in lowered or "canceled by user" in lowered:
         category = "cancelled"
         source = "pipeline"
-    elif "usagelimitexceeded" in lowered or "request_limit of 50" in lowered:
+    elif "usagelimitexceeded" in lowered or REQUEST_LIMIT_ERROR_MARKER in lowered:
         category = "usage_limit_exceeded"
         source = "pipeline"
     elif "context_length_exceeded" in lowered or "input tokens exceed the configured limit" in lowered:
@@ -399,37 +501,6 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
             "worker_assignment_summary": worker_summary,
             **failure_details,
         }
-    if int(worker_summary.get("failed_assignments") or 0) > 0:
-        failed_items = list(worker_summary.get("failed_items") or [])
-        failure_reason = "; ".join(
-            (
-                f"{item.get('work_item_id') or 'work_item'} -> "
-                f"{item.get('slot_name') or 'worker'} ({item.get('error') or item.get('status') or 'failed'})"
-            )
-            for item in failed_items
-        ) or "One or more host-parallel worker assignments failed."
-        failure_details = _classify_failure_reason(
-            failure_reason,
-            {
-                "last_pipeline_error": {
-                    "stage_name": "workers",
-                    "error_text": failure_reason,
-                }
-            },
-        )
-        failure_category = str(failure_details.get("failure_category") or "").strip() or "worker_assignment_failed"
-        return {
-            "status": "worker_assignment_failed",
-            "produced_result": False,
-            "accepted_final_output": False,
-            "failure_reason": failure_reason,
-            "validation": validation,
-            "worker_assignment_summary": worker_summary,
-            "failure_category": failure_category,
-            "failure_retryable": bool(failure_details.get("failure_retryable")),
-            "failure_source": str(failure_details.get("failure_source") or "worker_assignments"),
-            "failure_stage": str(failure_details.get("failure_stage") or "workers"),
-        }
     if validation["blocked"]:
         latest = validation.get("latest") or {}
         reasons = list(validation.get("rejection_reasons") or [])
@@ -453,6 +524,42 @@ def _derive_result_status(shared: Dict[str, Any], final_report: str, *, error: s
             "failure_retryable": False,
             "failure_source": "validator",
             "failure_stage": "",
+        }
+    if int(worker_summary.get("failed_assignments") or 0) > 0:
+        failed_items = list(worker_summary.get("failed_items") or [])
+        failure_reason = "; ".join(
+            (
+                f"{item.get('work_item_id') or 'work_item'} -> "
+                f"{item.get('slot_name') or 'worker'} ({item.get('error') or item.get('status') or 'failed'})"
+            )
+            for item in failed_items
+        ) or "One or more host-parallel worker assignments failed."
+        failure_details = _summarize_worker_failure_details(worker_summary, failure_reason)
+        all_assignments_failed = bool(worker_summary.get("all_assignments_failed"))
+        if report_text and not all_assignments_failed:
+            return {
+                "status": "completed_with_worker_failures",
+                "produced_result": True,
+                "accepted_final_output": True,
+                "failure_reason": failure_reason,
+                "validation": validation,
+                "worker_assignment_summary": worker_summary,
+                "failure_category": str(failure_details.get("failure_category") or ""),
+                "failure_retryable": bool(failure_details.get("failure_retryable")),
+                "failure_source": str(failure_details.get("failure_source") or "worker_assignments"),
+                "failure_stage": str(failure_details.get("failure_stage") or "workers"),
+            }
+        return {
+            "status": "worker_assignment_failed",
+            "produced_result": False,
+            "accepted_final_output": False,
+            "failure_reason": failure_reason,
+            "validation": validation,
+            "worker_assignment_summary": worker_summary,
+            "failure_category": str(failure_details.get("failure_category") or ""),
+            "failure_retryable": bool(failure_details.get("failure_retryable")),
+            "failure_source": str(failure_details.get("failure_source") or "worker_assignments"),
+            "failure_stage": str(failure_details.get("failure_stage") or "workers"),
         }
     if report_text:
         return {
@@ -623,6 +730,7 @@ def run_agent_case(
         with _fresh_harness_runtime(manifest_output) as runtime_parts:
             run_deepagent_pipeline = runtime_parts["run_deepagent_pipeline"]
             get_runtime_sync = runtime_parts["get_runtime_sync"]
+            build_run_local_pipeline_runtime = runtime_parts["build_run_local_pipeline_runtime"]
             _new_shared_state = runtime_parts["_new_shared_state"]
             apply_automation_payload_to_state = runtime_parts["apply_automation_payload_to_state"]
 
@@ -714,7 +822,9 @@ def run_agent_case(
                 )
                 partial_writer_thread.start()
             try:
-                runtime = get_runtime_sync(pipeline, architecture_name=architecture)
+                runtime = build_run_local_pipeline_runtime(
+                    get_runtime_sync(pipeline, architecture_name=architecture)
+                )
                 report = run_deepagent_pipeline(runtime, effective_query, state)
                 shared = state.get("shared_state") or {}
                 parsed_tool_entries = parse_tool_log_sections(state.get("tool_log_sections") or {})

@@ -726,6 +726,7 @@ Only add a new `tool_domain` if the existing choices are insufficient:
 
 - `none`
 - `preflight`
+- `artifact_only`
 - `static`
 - `dynamic`
 - `all`

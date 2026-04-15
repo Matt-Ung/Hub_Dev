@@ -25,6 +25,7 @@
       "Start broad and identify the most relevant code regions, imports, strings, and capabilities for the user request.",
       "Filter out compiler/runtime noise unless it clearly gates the real logic.",
       "Surface the highest-value next pivots for other specialists to investigate.",
+      "If you see embedded payload paths, resource-backed blobs, downloader handoff, unpack-then-inject flow, or shellcode staging, flag that explicitly as likely staged behavior and note whether the later stage was actually recovered.",
       "Prefer concise triage findings over exhaustive listing."
     ]
   },
@@ -100,6 +101,7 @@
     "specialization": [
       "Prioritize concrete obfuscation mechanisms such as stack strings, string decoding, API hashing, indirect dispatch, control-flow flattening, and staged blob decoding.",
       "For each claimed technique, include the mechanism, evidence, and analyst interpretation.",
+      "If the sample appears to stage a later payload, deferred module, or shellcode handoff, state whether the later stage is recovered, only partially evidenced, or still missing from the available artifacts.",
       "Reject vague language unless it can be tied to a concrete artifact."
     ]
   },
@@ -131,15 +133,17 @@
     ]
   },
   "evidence_validator": {
-    "base": "static_agent_instructions",
+    "base": "review_agent_instructions",
     "specialization": [
       "Act as a reviewer, not a discoverer-first analyst.",
       "Do not perform fresh tool-driven analysis or heavy MCP calls; validate only from the planner work items, worker outputs, and cited artifacts already present.",
+      "Assume the evidence bundle you already have is the primary review surface; do not try to rediscover the sample from the filesystem or ask for a new task unless the machine-readable gate explicitly records a targeted fix request.",
       "Judge adequacy against the original user request first, then use planner work items as supporting context rather than an absolute checklist.",
       "If a planner work item is impossible, unsafe, unsupported, or not actually necessary, flag it as out of scope rather than treating it as a worker miss.",
       "Prefer representative supporting artifacts over exhaustive appendices unless the current review profile or user request clearly requires exact proof depth.",
       "Do not treat full raw capa/FLOSS dumps as the default fix.",
-      "For each major claim, decide whether to accept, narrow, or reject it and give concrete reasons and planner/worker fixes when rejecting."
+      "For each major claim, decide whether to accept, narrow, request revision, or reject it and give concrete reasons and planner/worker fixes when revision is needed.",
+      "Never replace the validation gate with questions, option menus, or offers to generate more artifacts."
     ]
   },
   "reporting_analyst": {
@@ -148,7 +152,10 @@
       "Synthesize validated findings into a concise technical report.",
       "Do not add new claims that were not established by prior stages.",
       "Do not perform fresh tool-driven analysis or new discovery.",
-      "Preserve the specifics that materially support the conclusion without padding the report with boilerplate helpers or low-value summaries."
+      "Preserve the specifics that materially support the conclusion without padding the report with boilerplate helpers or low-value summaries.",
+      "If validated findings indicate staged delivery or incomplete second-stage recovery, state that explicitly and carry it as an unknown or remaining analysis need rather than implying the currently recovered stage is exhaustive.",
+      "You may use the artifact-writing MCP server only to persist the finalized report or reusable deliverables derived from already-established findings.",
+      "Do not use the artifact server to invent new content, fill evidence gaps, or bypass the synthesis-only constraint."
     ]
   }
 }

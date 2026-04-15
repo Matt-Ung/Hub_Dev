@@ -1,4 +1,3 @@
-import html
 import json
 import os
 import re
@@ -6,7 +5,7 @@ import time
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
-from threading import Event, Lock
+from threading import Lock
 from uuid import uuid4
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,8 +25,6 @@ from .config import (
     DEEP_AGENT_ARCHITECTURE_NAME,
     DEEP_AGENT_AUTO_SELECT_PIPELINE,
     DEEP_AGENT_PIPELINE_NAME,
-    DEFAULT_ALLOW_PARENT_INPUT,
-    DEFAULT_SHELL_EXECUTION_MODE,
     DEFAULT_VALIDATOR_REVIEW_LEVEL,
     GHIDRA_CHANGE_PROPOSALS_END,
     GHIDRA_CHANGE_PROPOSALS_START,
@@ -53,8 +50,6 @@ _LIVE_TOOL_LOG_STATE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     default=None,
 )
 _STATE_MUTATION_LOCK = Lock()
-_PARENT_INPUT_LOCK = Lock()
-_PARENT_INPUT_REQUESTS: Dict[str, Dict[str, Any]] = {}
 _SERVER_RUN_TOOL_LOG_LOCK = Lock()
 _SERVER_RUN_TOOL_LOG_DIR: Optional[Path] = None
 _SERVER_RUN_TOOL_LOG_STAMP = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{os.getpid()}_{uuid4().hex[:6]}"
@@ -518,180 +513,6 @@ def compact_shared_state(state: Dict[str, Any]) -> None:
         shared["generated_yara_rules"] = generated_yara_rules[-12:]
 
 
-def _pending_parent_input(state: Dict[str, Any]) -> Dict[str, Any]:
-    pending = state.get("pending_parent_input")
-    if not isinstance(pending, dict):
-        pending = _empty_parent_input()
-        state["pending_parent_input"] = pending
-    return pending
-
-
-def _clear_pending_parent_input(state: Dict[str, Any], *, request_id: str = "") -> None:
-    pending = _pending_parent_input(state)
-    if request_id and str(pending.get("request_id") or "") != request_id:
-        return
-    state["pending_parent_input"] = _empty_parent_input()
-    _store_ui_snapshot(state=state)
-
-
-def _start_parent_input_request(
-    state: Dict[str, Any],
-    *,
-    question: str,
-    options: List[Dict[str, str]],
-    source: str,
-) -> Tuple[str, Event, str]:
-    pending = _pending_parent_input(state)
-    current_id = str(pending.get("request_id") or "")
-    if current_id and str(pending.get("status") or "") == "waiting":
-        return "", Event(), "Error: Another parent-input question is already pending"
-
-    request_id = uuid4().hex
-    event = Event()
-    with _PARENT_INPUT_LOCK:
-        _PARENT_INPUT_REQUESTS[request_id] = {
-            "event": event,
-            "response": None,
-        }
-
-    state["pending_parent_input"] = {
-        "request_id": request_id,
-        "question": str(question or "").strip(),
-        "options": list(options or []),
-        "response": "",
-        "source": source,
-        "asked_at": datetime.now().isoformat(timespec="seconds"),
-        "status": "waiting",
-    }
-    append_status(state, f"Parent input requested by {source}")
-    _store_ui_snapshot(state=state)
-    return request_id, event, ""
-
-
-def _resolve_parent_input_request(
-    state: Dict[str, Any],
-    *,
-    response: str,
-    declined: bool = False,
-) -> bool:
-    pending = _pending_parent_input(state)
-    request_id = str(pending.get("request_id") or "")
-    if not request_id:
-        return False
-
-    with _PARENT_INPUT_LOCK:
-        request = _PARENT_INPUT_REQUESTS.get(request_id)
-    if request is None:
-        _clear_pending_parent_input(state, request_id=request_id)
-        return False
-
-    text = (response or "").strip()
-    final_response = "Error: Parent declined to provide input" if declined else (text or "Error: Parent provided an empty response")
-    request["response"] = final_response
-    event = request.get("event")
-    if isinstance(event, Event):
-        event.set()
-
-    append_status(
-        state,
-        "Parent input declined" if declined else "Parent input submitted",
-    )
-    _clear_pending_parent_input(state, request_id=request_id)
-    return True
-
-
-def _wait_for_parent_input_response(
-    state: Dict[str, Any],
-    *,
-    question: str,
-    options: List[Dict[str, str]],
-    source: str,
-    timeout_sec: float = 300.0,
-) -> str:
-    request_id, event, error = _start_parent_input_request(
-        state,
-        question=question,
-        options=options,
-        source=source,
-    )
-    if error:
-        return error
-
-    if not event.wait(timeout_sec):
-        with _PARENT_INPUT_LOCK:
-            _PARENT_INPUT_REQUESTS.pop(request_id, None)
-        append_status(state, f"Parent input timed out for {source}")
-        _clear_pending_parent_input(state, request_id=request_id)
-        return "Error: Parent did not respond in time"
-
-    with _PARENT_INPUT_LOCK:
-        request = _PARENT_INPUT_REQUESTS.pop(request_id, None)
-
-    response = str((request or {}).get("response") or "").strip()
-    if not response:
-        response = "Error: Parent response was unavailable"
-    _clear_pending_parent_input(state, request_id=request_id)
-    return response
-
-
-def _make_parent_input_callback(state: Dict[str, Any], source: str):
-    async def _callback(question: str, options: List[Dict[str, str]]) -> str:
-        if bool(state.get("cancel_requested")):
-            return "Error: Pipeline canceled by user"
-        if not bool(state.get("allow_parent_input")):
-            return "Error: Parent input is disabled for this run"
-        normalized_options: List[Dict[str, str]] = []
-        for item in options or []:
-            if not isinstance(item, dict):
-                continue
-            normalized_options.append({str(k): str(v) for k, v in item.items()})
-        return await asyncio.to_thread(
-            _wait_for_parent_input_response,
-            state,
-            question=str(question or ""),
-            options=normalized_options,
-            source=source,
-        )
-
-    return _callback
-
-
-def render_parent_input_panel(state: Dict[str, Any]) -> str:
-    pending = _pending_parent_input(state or {})
-    if str(pending.get("status") or "") != "waiting":
-        return ""
-
-    question = html.escape(str(pending.get("question") or ""))
-    source = html.escape(str(pending.get("source") or "agent"))
-    asked_at = html.escape(str(pending.get("asked_at") or ""))
-    options = pending.get("options") or []
-    options_html = ""
-    if options:
-        rows: List[str] = []
-        for item in options:
-            if not isinstance(item, dict):
-                continue
-            label = html.escape(str(item.get("label") or "option"))
-            description = html.escape(str(item.get("description") or ""))
-            rows.append(f"<li><strong>{label}</strong>{': ' + description if description else ''}</li>")
-        if rows:
-            options_html = (
-                "<div style='margin-top: 8px; color: #202124;'>Suggested options:</div>"
-                f"<ul style='margin-top: 4px; padding-left: 18px;'>{''.join(rows)}</ul>"
-            )
-
-    return (
-        "<div style='padding: 12px; border: 1px solid #f0c36d; border-radius: 10px; background: #fff8e1; margin-top: 12px;'>"
-        "<div style='display: flex; justify-content: space-between; gap: 12px; align-items: baseline;'>"
-        "<strong>Follow-up Question</strong>"
-        f"<span style='color: #5f6368; font-size: 12px;'>{source} | {asked_at}</span>"
-        "</div>"
-        f"<div style='margin-top: 8px; color: #202124;'>{question}</div>"
-        + options_html
-        + "</div>"
-    )
-
-
 def _normalize_path_candidate(candidate: str) -> str:
     value = (candidate or "").strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
@@ -904,6 +725,7 @@ def apply_automation_payload_to_state(state: Dict[str, Any], payload: Dict[str, 
         or candidate_path
         or ""
     ).strip()
+    shared["analysis_target_bundle_dir"] = str(analysis_target.get("effective_bundle_dir") or "").strip()
     shared["analysis_target_original_path"] = _validate_existing_sample_path(str(original_sample.get("path") or "")) or str(
         original_sample.get("path") or ""
     ).strip()
@@ -911,6 +733,14 @@ def apply_automation_payload_to_state(state: Dict[str, Any], payload: Dict[str, 
     shared["analysis_target_original_sha256"] = _normalize_digest(str(original_sample.get("sha256") or ""), 64)
     shared["analysis_target_packed_detected"] = bool(analysis_target.get("packed_detected"))
     shared["analysis_target_packer"] = str(analysis_target.get("packer") or "").strip()
+    shared["analysis_target_apply_requires_live_switch"] = bool(
+        analysis_target.get("kind") and str(analysis_target.get("kind") or "").strip().lower().replace("-", "_") != "original"
+    )
+    shared["analysis_target_apply_warning"] = (
+        "Before applying the Ghidra change queue, manually open the matching derived analysis target in live Ghidra."
+        if shared["analysis_target_apply_requires_live_switch"]
+        else ""
+    )
     shared["upx_detection"] = _json_safe(payload.get("upx_detection") or {})
     shared["upx_unpack"] = _json_safe(payload.get("upx_unpack") or {})
 
@@ -1105,11 +935,14 @@ def _new_shared_state() -> Dict[str, Any]:
         "analysis_target_kind": "",
         "analysis_target_reason": "",
         "analysis_target_path": "",
+        "analysis_target_bundle_dir": "",
         "analysis_target_original_path": "",
         "analysis_target_original_md5": "",
         "analysis_target_original_sha256": "",
         "analysis_target_packed_detected": False,
         "analysis_target_packer": "",
+        "analysis_target_apply_requires_live_switch": False,
+        "analysis_target_apply_warning": "",
         "upx_detection": {},
         "upx_unpack": {},
         "planned_work_items": [],
@@ -1151,7 +984,6 @@ def _new_shared_state() -> Dict[str, Any]:
         "auto_triage_sample_path": "",
         "auto_triage_sample_sha256": "",
         "auto_triage_runs": [],
-        "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": "default",
         "validation_retry_count": 0,
         "validation_max_retries": MAX_VALIDATION_REPLAN_RETRIES,
@@ -1163,20 +995,6 @@ def _new_shared_state() -> Dict[str, Any]:
         "model_usage_by_stage": {},
         "model_usage_events": [],
     }
-
-
-def _empty_parent_input() -> Dict[str, Any]:
-    return {
-        "request_id": "",
-        "question": "",
-        "options": [],
-        "response": "",
-        "source": "",
-        "asked_at": "",
-        "status": "idle",
-    }
-
-
 _UI_SNAPSHOT_LOCK = Lock()
 _UI_SNAPSHOT: Dict[str, Any] = {
     "chat_history": [],
@@ -1189,10 +1007,7 @@ _UI_SNAPSHOT: Dict[str, Any] = {
         "status_log": "",
         "active_run_id": "",
         "cancel_requested": False,
-        "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
-        "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
-        "pending_parent_input": _empty_parent_input(),
         "shared_state": _new_shared_state(),
     },
     "tool_log": "",
@@ -1217,13 +1032,10 @@ def _snapshot_state_default() -> Dict[str, Any]:
         "status_log": "",
         "active_run_id": "",
         "cancel_requested": False,
-        "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
-        "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
         "deep_agent_auto_select_pipeline": DEEP_AGENT_AUTO_SELECT_PIPELINE,
         "deep_agent_architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,
         "deep_agent_pipeline_name": default_pipeline_selector_value,
-        "pending_parent_input": _empty_parent_input(),
         "shared_state": _new_shared_state(),
     }
 

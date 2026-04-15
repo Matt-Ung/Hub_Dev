@@ -3,78 +3,85 @@
 \contentsline {chapter}{\numberline {1}Introduction}{1}{chapter.1}%
 \contentsline {section}{\numberline {1.1}Problem Motivation}{2}{section.1.1}%
 \contentsline {section}{\numberline {1.2}Research Questions}{2}{section.1.2}%
-\contentsline {section}{\numberline {1.3}Thesis Scope and Expected Contributions}{2}{section.1.3}%
+\contentsline {section}{\numberline {1.3}Thesis Scope and Expected Contributions}{3}{section.1.3}%
 \contentsline {section}{\numberline {1.4}Thesis Organization}{3}{section.1.4}%
-\contentsline {chapter}{\numberline {2}Background and Problem Setting}{4}{chapter.2}%
-\contentsline {section}{\numberline {2.1}Reverse Engineering as an Evidence-Gathering Problem}{4}{section.2.1}%
-\contentsline {section}{\numberline {2.2}LLM Agents, Tool Use, and Orchestration}{5}{section.2.2}%
-\contentsline {section}{\numberline {2.3}MCP-Style Tool Integration}{6}{section.2.3}%
-\contentsline {section}{\numberline {2.4}Binary Analysis Tooling in Scope}{7}{section.2.4}%
-\contentsline {section}{\numberline {2.5}Problem Formulation for the Thesis}{7}{section.2.5}%
-\contentsline {chapter}{\numberline {3}Related Work}{8}{chapter.3}%
-\contentsline {section}{\numberline {3.1}AI-Assisted Reverse Engineering and Malware Analysis}{8}{section.3.1}%
-\contentsline {section}{\numberline {3.2}Tool-Using Agents and Multi-Agent Orchestration}{10}{section.3.2}%
-\contentsline {section}{\numberline {3.3}Program Analysis Toolchains and Human Analyst Workflows}{11}{section.3.3}%
-\contentsline {section}{\numberline {3.4}Evaluation of Security and Reverse-Engineering Systems}{12}{section.3.4}%
-\contentsline {section}{\numberline {3.5}Thesis Positioning}{12}{section.3.5}%
-\contentsline {chapter}{\numberline {4}System Overview}{13}{chapter.4}%
-\contentsline {section}{\numberline {4.1}End-to-End Workflow}{13}{section.4.1}%
-\contentsline {section}{\numberline {4.2}Planner, Worker, Validator, and Reporter Roles}{14}{section.4.2}%
-\contentsline {section}{\numberline {4.3}Configuration Surfaces}{14}{section.4.3}%
-\contentsline {section}{\numberline {4.4}Shared State and Evidence Flow}{15}{section.4.4}%
-\contentsline {section}{\numberline {4.5}Why This Architecture Fits Reverse Engineering}{16}{section.4.5}%
-\contentsline {chapter}{\numberline {5}Implementation and Tool Integration}{17}{chapter.5}%
-\contentsline {section}{\numberline {5.1}System Organization and Execution Path}{17}{section.5.1}%
-\contentsline {section}{\numberline {5.2}Workflow Configuration}{18}{section.5.2}%
-\contentsline {section}{\numberline {5.3}Ghidra Integration}{18}{section.5.3}%
-\contentsline {section}{\numberline {5.4}Supporting Static Tooling and Artifact Services}{19}{section.5.4}%
-\contentsline {section}{\numberline {5.5}Artifacts, Bundles, and Provenance}{20}{section.5.5}%
-\contentsline {section}{\numberline {5.6}User-Facing Monitoring and Result Inspection}{20}{section.5.6}%
-\contentsline {chapter}{\numberline {6}Evaluation Methodology and Experimental Design}{22}{chapter.6}%
-\contentsline {section}{\numberline {6.1}Evaluation Goals}{22}{section.6.1}%
-\contentsline {section}{\numberline {6.2}Benchmark Corpus and Task Model}{22}{section.6.2}%
-\contentsline {section}{\numberline {6.3}Single Runs, Sweeps, and Repetitions}{23}{section.6.3}%
-\contentsline {section}{\numberline {6.4}Broad Coverage and Final Held-Out Malware Evaluation}{24}{section.6.4}%
-\contentsline {section}{\numberline {6.5}Baselines and Experimental Variables}{25}{section.6.5}%
-\contentsline {section}{\numberline {6.6}Judging and Scoring}{26}{section.6.6}%
-\contentsline {section}{\numberline {6.7}Statistical Treatment and Comparison Strategy}{26}{section.6.7}%
-\contentsline {chapter}{\numberline {7}Results and Analysis}{27}{chapter.7}%
-\contentsline {section}{\numberline {7.1}Development-Stage Archive Evidence}{27}{section.7.1}%
-\contentsline {subsection}{\numberline {7.1.1}Broad Coverage Pilot}{28}{subsection.7.1.1}%
-\contentsline {subsection}{\numberline {7.1.2}Focused Decoder-Depth Case Study}{29}{subsection.7.1.2}%
-\contentsline {section}{\numberline {7.2}Final Held-Out Evaluation}{30}{section.7.2}%
-\contentsline {subsection}{\numberline {7.2.1}Overall Performance After Recovery}{31}{subsection.7.2.1}%
-\contentsline {subsection}{\numberline {7.2.2}Executable-Level Heterogeneity}{33}{subsection.7.2.2}%
-\contentsline {subsection}{\numberline {7.2.3}Efficiency and Repeated Tool Use}{34}{subsection.7.2.3}%
-\contentsline {subsection}{\numberline {7.2.4}Robustness Caveat from the Original Held-Out Sweep}{37}{subsection.7.2.4}%
-\contentsline {section}{\numberline {7.3}Discussion and Claim Boundaries}{37}{section.7.3}%
-\contentsline {subsection}{\numberline {7.3.1}Findings Directly Supported by the Data}{37}{subsection.7.3.1}%
-\contentsline {subsection}{\numberline {7.3.2}Plausible Interpretations}{38}{subsection.7.3.2}%
-\contentsline {subsection}{\numberline {7.3.3}Open Uncertainties and Measurement Gaps}{38}{subsection.7.3.3}%
-\contentsline {chapter}{\numberline {8}Limitations and Threats to Validity}{41}{chapter.8}%
-\contentsline {section}{\numberline {8.1}Benchmark Scope and External Validity}{41}{section.8.1}%
-\contentsline {section}{\numberline {8.2}Statistical Power and Repetition Count}{42}{section.8.2}%
-\contentsline {section}{\numberline {8.3}Model Scope}{42}{section.8.3}%
-\contentsline {section}{\numberline {8.4}Recovery and One-Shot Robustness}{43}{section.8.4}%
-\contentsline {section}{\numberline {8.5}Tool-Call Redundancy Measurement}{43}{section.8.5}%
-\contentsline {section}{\numberline {8.6}Judging and Measurement Proxies}{45}{section.8.6}%
-\contentsline {section}{\numberline {8.7}Operational and Ethical Considerations}{45}{section.8.7}%
-\contentsline {chapter}{\numberline {9}Conclusion and Future Work}{46}{chapter.9}%
-\contentsline {section}{\numberline {9.1}Conclusion}{46}{section.9.1}%
-\contentsline {section}{\numberline {9.2}Future Work}{48}{section.9.2}%
-\contentsline {paragraph}{Broader benchmarks.}{48}{section*.3}%
-\contentsline {paragraph}{Better instrumentation.}{48}{section*.4}%
-\contentsline {paragraph}{Model-class generalization.}{48}{section*.5}%
-\contentsline {paragraph}{Dynamic analysis.}{49}{section*.6}%
-\contentsline {chapter}{Bibliography}{50}{section*.7}%
-\contentsline {chapter}{Appendix \numberline {A}Supplementary Evaluation Material}{53}{appendix.A}%
-\contentsline {section}{\numberline {A.1}Sample and Variant Traceability}{53}{section.A.1}%
-\contentsline {subsection}{\numberline {A.1.1}Broad Coverage Pilot Executables}{54}{subsection.A.1.1}%
-\contentsline {subsection}{\numberline {A.1.2}Focused Decoder-Depth Executables}{55}{subsection.A.1.2}%
-\contentsline {subsection}{\numberline {A.1.3}Final Held-Out Executables}{56}{subsection.A.1.3}%
-\contentsline {subsection}{\numberline {A.1.4}Maintained Variant and Configuration Labels}{56}{subsection.A.1.4}%
-\contentsline {section}{\numberline {A.2}Judge and Prompt Artifacts}{57}{section.A.2}%
-\contentsline {section}{\numberline {A.3}Configuration and Experiment Provenance}{58}{section.A.3}%
-\contentsline {section}{\numberline {A.4}Held-Out Failure Accounting}{60}{section.A.4}%
-\contentsline {section}{\numberline {A.5}Detailed Final Per-Executable Panels}{60}{section.A.5}%
-\contentsline {section}{\numberline {A.6}Reproduction Commands}{62}{section.A.6}%
+\contentsline {chapter}{\numberline {2}Background and Problem Setting}{5}{chapter.2}%
+\contentsline {section}{\numberline {2.1}Reverse Engineering as an Evidence-Gathering Problem}{5}{section.2.1}%
+\contentsline {section}{\numberline {2.2}LLM Agents, Tool Use, and Orchestration}{6}{section.2.2}%
+\contentsline {section}{\numberline {2.3}MCP-Style Tool Integration}{7}{section.2.3}%
+\contentsline {section}{\numberline {2.4}Binary Analysis Tooling in Scope}{8}{section.2.4}%
+\contentsline {section}{\numberline {2.5}Problem Formulation for the Thesis}{8}{section.2.5}%
+\contentsline {chapter}{\numberline {3}Related Work}{10}{chapter.3}%
+\contentsline {section}{\numberline {3.1}AI-Assisted Reverse Engineering and Malware Analysis}{10}{section.3.1}%
+\contentsline {section}{\numberline {3.2}Tool-Using Agents and Multi-Agent Orchestration}{12}{section.3.2}%
+\contentsline {section}{\numberline {3.3}Program Analysis Toolchains and Human Analyst Workflows}{13}{section.3.3}%
+\contentsline {section}{\numberline {3.4}Evaluation of Security and Reverse-Engineering Systems}{14}{section.3.4}%
+\contentsline {section}{\numberline {3.5}Thesis Positioning}{14}{section.3.5}%
+\contentsline {chapter}{\numberline {4}System Overview}{15}{chapter.4}%
+\contentsline {section}{\numberline {4.1}End-to-End Workflow}{15}{section.4.1}%
+\contentsline {section}{\numberline {4.2}Planner, Worker, Validator, and Reporter Roles}{16}{section.4.2}%
+\contentsline {section}{\numberline {4.3}Configuration Surfaces}{16}{section.4.3}%
+\contentsline {section}{\numberline {4.4}Shared State and Evidence Flow}{17}{section.4.4}%
+\contentsline {section}{\numberline {4.5}Why This Architecture Fits Reverse Engineering}{18}{section.4.5}%
+\contentsline {chapter}{\numberline {5}Implementation and Tool Integration}{19}{chapter.5}%
+\contentsline {section}{\numberline {5.1}System Organization and Execution Path}{19}{section.5.1}%
+\contentsline {section}{\numberline {5.2}Workflow Configuration}{20}{section.5.2}%
+\contentsline {section}{\numberline {5.3}Ghidra Integration}{20}{section.5.3}%
+\contentsline {section}{\numberline {5.4}Supporting Static Tooling and Artifact Services}{21}{section.5.4}%
+\contentsline {section}{\numberline {5.5}Artifacts, Bundles, and Provenance}{22}{section.5.5}%
+\contentsline {section}{\numberline {5.6}User-Facing Monitoring and Result Inspection}{22}{section.5.6}%
+\contentsline {chapter}{\numberline {6}Evaluation Methodology and Experimental Design}{24}{chapter.6}%
+\contentsline {section}{\numberline {6.1}Evaluation Goals}{24}{section.6.1}%
+\contentsline {section}{\numberline {6.2}Benchmark Corpus and Task Model}{25}{section.6.2}%
+\contentsline {section}{\numberline {6.3}Single Runs, Sweeps, and Repetitions}{25}{section.6.3}%
+\contentsline {section}{\numberline {6.4}Broad Coverage and Final Held-Out Malware Evaluation}{26}{section.6.4}%
+\contentsline {section}{\numberline {6.5}Baselines and Experimental Variables}{28}{section.6.5}%
+\contentsline {section}{\numberline {6.6}Judging and Scoring}{28}{section.6.6}%
+\contentsline {section}{\numberline {6.7}Statistical Treatment and Comparison Strategy}{29}{section.6.7}%
+\contentsline {section}{\numberline {6.8}Mapping Experimental Evidence to the Research Questions}{29}{section.6.8}%
+\contentsline {chapter}{\numberline {7}Results and Analysis}{31}{chapter.7}%
+\contentsline {section}{\numberline {7.1}Development-Stage Archive Evidence}{31}{section.7.1}%
+\contentsline {subsection}{\numberline {7.1.1}Broad Coverage Pilot}{32}{subsection.7.1.1}%
+\contentsline {subsection}{\numberline {7.1.2}Focused Decoder-Depth Case Study}{33}{subsection.7.1.2}%
+\contentsline {section}{\numberline {7.2}Final Held-Out Evaluation}{34}{section.7.2}%
+\contentsline {subsection}{\numberline {7.2.1}RQ1: Capability Gaps on Obfuscated Binaries}{35}{subsection.7.2.1}%
+\contentsline {subsection}{\numberline {7.2.2}RQ2: Workflow Variables and Performance}{37}{subsection.7.2.2}%
+\contentsline {subsection}{\numberline {7.2.3}RQ3: Artifact-Backed Claims}{41}{subsection.7.2.3}%
+\contentsline {subsection}{\numberline {7.2.4}Robustness Caveat from the Original Held-Out Sweep}{42}{subsection.7.2.4}%
+\contentsline {section}{\numberline {7.3}Discussion and Claim Boundaries}{43}{section.7.3}%
+\contentsline {subsection}{\numberline {7.3.1}Direct Answers to the Research Questions}{43}{subsection.7.3.1}%
+\contentsline {paragraph}{RQ1.}{43}{section*.3}%
+\contentsline {paragraph}{RQ2.}{43}{section*.4}%
+\contentsline {paragraph}{RQ3.}{43}{section*.5}%
+\contentsline {subsection}{\numberline {7.3.2}Plausible Interpretations}{43}{subsection.7.3.2}%
+\contentsline {subsection}{\numberline {7.3.3}Open Uncertainties and Measurement Gaps}{44}{subsection.7.3.3}%
+\contentsline {chapter}{\numberline {8}Limitations and Threats to Validity}{46}{chapter.8}%
+\contentsline {section}{\numberline {8.1}Benchmark Scope and External Validity}{46}{section.8.1}%
+\contentsline {section}{\numberline {8.2}Statistical Power and Repetition Count}{47}{section.8.2}%
+\contentsline {section}{\numberline {8.3}Model Scope}{48}{section.8.3}%
+\contentsline {section}{\numberline {8.4}Recovery and One-Shot Robustness}{48}{section.8.4}%
+\contentsline {section}{\numberline {8.5}Tool-Call Redundancy Measurement}{49}{section.8.5}%
+\contentsline {section}{\numberline {8.6}Judging and Measurement Proxies}{50}{section.8.6}%
+\contentsline {section}{\numberline {8.7}Operational and Ethical Considerations}{51}{section.8.7}%
+\contentsline {chapter}{\numberline {9}Conclusion and Future Work}{52}{chapter.9}%
+\contentsline {section}{\numberline {9.1}Conclusion}{52}{section.9.1}%
+\contentsline {paragraph}{RQ1.}{54}{section*.6}%
+\contentsline {paragraph}{RQ2.}{54}{section*.7}%
+\contentsline {paragraph}{RQ3.}{54}{section*.8}%
+\contentsline {section}{\numberline {9.2}Future Work}{55}{section.9.2}%
+\contentsline {paragraph}{Broader benchmarks.}{55}{section*.9}%
+\contentsline {paragraph}{Better instrumentation.}{55}{section*.10}%
+\contentsline {paragraph}{Model-class generalization.}{55}{section*.11}%
+\contentsline {paragraph}{Dynamic analysis.}{55}{section*.12}%
+\contentsline {chapter}{Bibliography}{57}{section*.13}%
+\contentsline {chapter}{Appendix \numberline {A}Supplementary Evaluation Material}{60}{appendix.A}%
+\contentsline {section}{\numberline {A.1}Sample and Variant Traceability}{60}{section.A.1}%
+\contentsline {subsection}{\numberline {A.1.1}Broad Coverage Pilot Executables}{61}{subsection.A.1.1}%
+\contentsline {subsection}{\numberline {A.1.2}Focused Decoder-Depth Executables}{62}{subsection.A.1.2}%
+\contentsline {subsection}{\numberline {A.1.3}Final Held-Out Executables}{63}{subsection.A.1.3}%
+\contentsline {subsection}{\numberline {A.1.4}Maintained Variant and Configuration Labels}{63}{subsection.A.1.4}%
+\contentsline {section}{\numberline {A.2}Judge and Prompt Artifacts}{64}{section.A.2}%
+\contentsline {section}{\numberline {A.3}Configuration and Experiment Provenance}{65}{section.A.3}%
+\contentsline {section}{\numberline {A.4}Held-Out Failure Accounting}{67}{section.A.4}%
+\contentsline {section}{\numberline {A.5}Detailed Final Per-Executable Panels}{67}{section.A.5}%
+\contentsline {section}{\numberline {A.6}Reproduction Commands}{69}{section.A.6}%

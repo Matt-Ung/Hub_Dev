@@ -30,11 +30,15 @@ The system exposes several configuration families that are central to the evalua
 
 These are not merely engineering options; they are the intervention points used by the evaluation harness to compare baseline and variant behavior. Some of them primarily change how work is organized, such as worker subagent profiles, architecture presets, and pipeline presets. Others change how evidence is requested or summarized, such as response-scope variants and worker-prompt surfaces. Tool profiles matter most when asking how much performance depends on breadth of tool access rather than on orchestration alone. The full mapping of variant labels to configuration changes is provided in Table~\ref{tab:evaluation-variants}.
 
+This distinction becomes important later in the thesis because these configuration surfaces are the main objects of RQ2. The experimental question is not whether the system has options, but whether changing those options materially affects analysis quality, task success, or evidence quality on the benchmark.
+
 \section{Shared State and Evidence Flow}
 
 The system maintains shared run state so that later stages can inspect earlier findings, tool outputs, and failure metadata. This matters because reverse engineering benefits from explicit provenance: shared state determines what later stages can trust, what evidence survives handoff between agents, and what ultimately appears in final reports and judge inputs.
 
 Shared state captures four categories of information: intermediate tool outputs and structured findings from earlier stages; stage status logs and work-item tracking; the final analysis report and supporting artifacts; and run metadata used by the evaluation harness, including bundle provenance and comparison context.
+
+That evidence flow is also central to RQ3. If artifacts are not preserved clearly enough to survive handoff from workers to validators and reporters, then the system may still produce a plausible report while failing the more important question of whether its claims remain visibly grounded.
 
 \section{Why This Architecture Fits Reverse Engineering}
 

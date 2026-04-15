@@ -40,6 +40,7 @@ except Exception:  # pragma: no cover - lightweight test stubs may not expose su
 
 import pydantic_deep as pydantic_deep_pkg
 from pydantic_deep import create_deep_agent, create_default_deps, create_sliding_window_processor
+from artifact_paths import get_agent_artifact_dir, resolve_tool_output_path
 
 from .config import (
     AGENT_ARCHETYPE_PROMPTS,
@@ -60,6 +61,7 @@ from .config import (
     DEEP_BACKEND_ROOT,
     DEEP_CONTEXT_MAX_TOKENS,
     DEEP_ENABLE_MEMORY,
+    DEEP_REPORTER_ENABLE_ARTIFACTS,
     DEEP_ENABLE_SKILLS,
     DEEP_FORCE_MODEL_ID,
     DEEP_INCLUDE_BUNDLED_SKILLS,
@@ -69,7 +71,6 @@ from .config import (
     DEEP_WORKER_PERSONA_PROFILE,
     DEEP_WORKER_ROLE_PROMPT_MODE,
     DEEP_WORKER_SUBAGENT_PROFILE,
-    DEFAULT_SHELL_EXECUTION_MODE,
     GHIDRA_CHANGE_PROPOSALS_END,
     GHIDRA_CHANGE_PROPOSALS_START,
     MAX_TOOL_RESULT_CACHE_ENTRIES,
@@ -81,7 +82,6 @@ from .config import (
     PIPELINE_STAGE_OUTPUT_CONTRACTS,
     REPO_ROOT,
     SERIAL_MCP_SERVER_MARKERS,
-    SHELL_EXECUTION_MODE_LABELS,
     stage_kind_flag,
     get_stage_kind_metadata,
     TOOL_RESULT_CACHE_SERVER_MARKERS,
@@ -89,7 +89,6 @@ from .config import (
     WORKER_PERSONA_PROFILES,
     YARA_RULE_PROPOSALS_END,
     YARA_RULE_PROPOSALS_START,
-    _normalize_shell_execution_mode,
     _normalize_validator_review_level,
     _normalize_worker_role_prompt_mode,
     _resolve_repo_relative_path,
@@ -102,7 +101,6 @@ from .shared_state import (
     _json_safe,
     _sanitize_user_facing_output,
     _shorten,
-    _wait_for_parent_input_response,
     append_status,
     make_live_tool_event_handler,
 )
@@ -114,7 +112,6 @@ _PIPELINE_ROUTER_AGENT: Agent | None = None
 _ARCHITECTURE_ROUTER_AGENT: Agent | None = None
 _AUTO_TRIAGE_HASHDB_ALGORITHMS = ("crc32", "fnv1a32", "djb2", "sdbm")
 _HASHLIKE_STRING_RE = re.compile(r"(?i)\b(?:0x)?([0-9a-f]{8,16})\b")
-_AUTO_TRIAGE_UPX_OUTPUT_DIR = REPO_ROOT / ".deep" / "auto_triage_unpack"
 _FUNCTION_NAME_LIKE_RE = re.compile(r"^(?:FUN_|sub_|LAB_|thunk_)?[A-Za-z_~?][A-Za-z0-9_@$?~:<>\.-]*$")
 _FUNCTION_SELECTOR_WITH_ADDRESS_RE = re.compile(
     r"^\s*(?P<name>.+?)\s*@\s*(?P<address>(?:0x)?[0-9A-Fa-f]+)\s*$"
@@ -551,7 +548,7 @@ def load_mcp_servers(path: str) -> List[MCPServerStdio]:
 def partition_toolsets(toolsets: List[MCPServerStdio]) -> Tuple[List[MCPServerStdio], List[MCPServerStdio]]:
     """
     Heuristic split:
-    - static: ghidra/strings/floss/hashdb/capa/binwalk/upx/yara (if static)
+    - static: ghidra/strings/floss/hashdb/sdhash/capa/binwalk/upx/yara (if static)
     - dynamic: vm/procmon/wireshark/sandbox/run/execute
     """
     static_tools: List[MCPServerStdio] = []
@@ -559,7 +556,7 @@ def partition_toolsets(toolsets: List[MCPServerStdio]) -> Tuple[List[MCPServerSt
 
     for s in toolsets:
         sid = (s.id or "").lower()
-        if any(k in sid for k in ["ghidra", "string", "floss", "hashdb", "capa", "binwalk", "upx", "yara", "modelgateway", "altmodel", "inference", "artifact"]):
+        if any(k in sid for k in ["ghidra", "string", "floss", "hashdb", "sdhash", "capa", "binwalk", "upx", "yara", "modelgateway", "altmodel", "inference", "artifact"]):
             static_tools.append(s)
         elif any(k in sid for k in ["vm", "procmon", "wireshark", "sandbox", "run", "exec"]):
             dynamic_tools.append(s)
@@ -652,6 +649,19 @@ def _prune_tool_result_cache(state: Dict[str, Any]) -> None:
         if oldest_key is None:
             break
         cache.pop(oldest_key, None)
+
+
+def _clear_tool_result_cache_for_server_marker(state: Optional[Dict[str, Any]], server_marker: str) -> None:
+    if not isinstance(state, dict):
+        return
+    marker = str(server_marker or "").strip().lower()
+    if not marker:
+        return
+    cache = state.setdefault("tool_result_cache", {})
+    for cache_key, entry in list(cache.items()):
+        server_id = str((entry or {}).get("server_id") or "").strip().lower()
+        if marker in server_id:
+            cache.pop(cache_key, None)
 
 
 def _is_cacheable_tool_result(result: Any) -> bool:
@@ -910,6 +920,26 @@ def _clone_mcp_server(server: MCPServerStdio) -> MCPServerStdio:
     )
 
 
+def _clone_mcp_toolsets(toolsets: List[MCPServerStdio]) -> List[MCPServerStdio]:
+    return [_clone_mcp_server(tool) for tool in list(toolsets or [])]
+
+
+def _cloned_toolsets_for_domain(
+    tool_domain: str,
+    static_tools: List[MCPServerStdio],
+    dynamic_tools: List[MCPServerStdio],
+) -> List[MCPServerStdio]:
+    """Return isolated MCP clients for one agent instance.
+
+    `MCPServerStdio` keeps an async exit stack on the server object itself, so
+    sharing one instance across concurrent tasks can make the final `__aexit__`
+    run in a different task than the opening `__aenter__`. That shows up as the
+    AnyIO cancel-scope warning seen during teardown. Cloning at the agent or
+    worker boundary keeps context ownership local to that one execution path.
+    """
+    return _clone_mcp_toolsets(_toolsets_for_domain(tool_domain, static_tools, dynamic_tools))
+
+
 async def _close_mcp_toolsets_async(
     static_tools: List[MCPServerStdio],
     dynamic_tools: List[MCPServerStdio],
@@ -994,6 +1024,43 @@ def build_loop_local_host_worker_runtime(runtime: "MultiAgentRuntime") -> "Multi
     )
 
 
+def build_run_local_pipeline_runtime(runtime: "MultiAgentRuntime") -> "MultiAgentRuntime":
+    """Clone toolsets and rebuild stages for one isolated pipeline run.
+
+    Pipeline execution can mutate run-local tool configuration during
+    deterministic presweeps, for example switching later Ghidra reads onto an
+    artifact-backed unpacked bundle. Rebuilding the stage runtimes here keeps
+    those mutations scoped to one run and avoids poisoning the cached shared
+    runtime used by later turns.
+    """
+    cloned_static_tools = [_clone_mcp_server(tool) for tool in runtime.static_tools]
+    cloned_dynamic_tools = [_clone_mcp_server(tool) for tool in runtime.dynamic_tools]
+    stages = [
+        build_stage_runtime(
+            stage_definition,
+            cloned_static_tools,
+            cloned_dynamic_tools,
+            runtime.skill_directories,
+            runtime.deep_backend,
+        )
+        for stage_definition in runtime.pipeline_definition
+    ]
+    return MultiAgentRuntime(
+        pipeline_name=runtime.pipeline_name,
+        worker_architecture_name=runtime.worker_architecture_name,
+        worker_architecture=list(runtime.worker_architecture),
+        pipeline_definition=list(runtime.pipeline_definition),
+        stages=stages,
+        static_tool_ids=list(runtime.static_tool_ids),
+        dynamic_tool_ids=list(runtime.dynamic_tool_ids),
+        sandbox_tool_ids=list(runtime.sandbox_tool_ids),
+        static_tools=cloned_static_tools,
+        dynamic_tools=cloned_dynamic_tools,
+        skill_directories=list(runtime.skill_directories),
+        deep_backend=runtime.deep_backend,
+    )
+
+
 def _toolsets_for_domain(
     tool_domain: str,
     static_tools: List[MCPServerStdio],
@@ -1011,6 +1078,15 @@ def _toolsets_for_domain(
             if any(marker in (tool.id or "").lower() for marker in ("ghidra", "string", "hashdb", "upx"))
         ]
         return preferred or static_tools
+    if tool_domain == "artifact_only":
+        if not DEEP_REPORTER_ENABLE_ARTIFACTS:
+            return []
+        preferred = [
+            tool
+            for tool in static_tools
+            if "agentartifact" in (tool.id or "").lower()
+        ]
+        return preferred
     if tool_domain == "static":
         return static_tools
     if tool_domain == "dynamic":
@@ -1027,6 +1103,15 @@ def _toolsets_for_domain(
             deduped.append(tool)
         return deduped
     raise RuntimeError(f"Unknown tool_domain={tool_domain!r}")
+
+
+def _tool_domain_requires_configured_toolset(tool_domain: str) -> bool:
+    normalized = str(tool_domain or "").strip().lower()
+    if normalized == "none":
+        return False
+    if normalized == "artifact_only" and not DEEP_REPORTER_ENABLE_ARTIFACTS:
+        return False
+    return True
 
 
 def _string_or_empty(value: Any) -> str:
@@ -1391,6 +1476,43 @@ def apply_ghidra_change_proposal_sync(
             "error": prepared.get("reason") or "Change is not auto-applicable.",
         }
 
+    live_program_info = _live_ghidra_program_info_sync(pipeline_name=pipeline_name)
+    if not bool(live_program_info.get("ok")):
+        return {
+            "ok": False,
+            "status": "failed",
+            "summary": prepared.get("summary") or "proposal",
+            "tool_name": prepared.get("tool_name") or "",
+            "tool_args": dict(prepared.get("tool_args") or {}),
+            "result_text": "",
+            "error": str(live_program_info.get("error") or "Unable to query the live Ghidra program."),
+        }
+    payload = live_program_info.get("payload") if isinstance(live_program_info.get("payload"), dict) else {}
+    program = payload.get("program") if isinstance(payload.get("program"), dict) else {}
+    active_program_path = str(program.get("executablePath") or "").strip()
+    if isinstance(state, dict):
+        shared = state.get("shared_state") or {}
+        analysis_target_kind = str(shared.get("analysis_target_kind") or "").strip().lower().replace("-", "_")
+        expected_path = str(shared.get("analysis_target_path") or "").strip()
+        requires_switch = bool(shared.get("analysis_target_apply_requires_live_switch"))
+        if requires_switch or analysis_target_kind == "upx_unpacked":
+            if not _path_resolves_to_same_file(active_program_path, expected_path):
+                current_path_text = active_program_path or "<no active live program path reported>"
+                return {
+                    "ok": False,
+                    "status": "needs_active_program_switch",
+                    "summary": prepared.get("summary") or "proposal",
+                    "tool_name": prepared.get("tool_name") or "",
+                    "tool_args": dict(prepared.get("tool_args") or {}),
+                    "result_text": "",
+                    "error": (
+                        "This queue was generated against an unpacked headless analysis target. "
+                        f"Open the matching unpacked program in live Ghidra before applying changes.\n\n"
+                        f"Expected active program: {expected_path or '<unknown>'}\n"
+                        f"Current active program: {current_path_text}"
+                    ),
+                }
+
     runtime = get_runtime_sync(pipeline_name=pipeline_name)
     ghidra_server = next(
         (tool for tool in runtime.static_tools if "ghidra" in (tool.id or "").lower()),
@@ -1481,17 +1603,18 @@ def build_subagent_architecture(
 
         spec = AGENT_ARCHETYPE_SPECS[archetype_name]
         resolved_model = _resolve_model_id(spec.get("model"), stage_model, OPENAI_MODEL_ID)
-        toolsets = _toolsets_for_domain(spec["tool_domain"], static_tools, dynamic_tools)
-        if spec["tool_domain"] != "none" and not toolsets:
+        selected_toolsets = _toolsets_for_domain(spec["tool_domain"], static_tools, dynamic_tools)
+        if _tool_domain_requires_configured_toolset(spec["tool_domain"]) and not selected_toolsets:
             raise RuntimeError(
                 f"Deep-agent architecture requested {archetype_name!r}, but no {spec['tool_domain']} MCP toolsets are configured."
             )
 
         for idx in range(quantity):
+            toolsets = _clone_mcp_toolsets(selected_toolsets)
             instance_name = archetype_name if quantity == 1 else f"{archetype_name}_{idx + 1}"
             instructions = _worker_instruction_block(stage_name, archetype_name)
-            can_ask_questions = archetype_name not in {"evidence_validator", "reporting_analyst"}
-            max_questions = 1 if can_ask_questions else 0
+            can_ask_questions = False
+            max_questions = 0
             if quantity > 1:
                 instructions += (
                     "\n\nCollaboration note:\n"
@@ -1622,6 +1745,8 @@ def build_stage_prompt(
     analysis_target_original_sha256 = str(shared.get("analysis_target_original_sha256") or "").strip()
     analysis_target_packer = str(shared.get("analysis_target_packer") or "").strip()
     analysis_target_packed_detected = bool(shared.get("analysis_target_packed_detected"))
+    analysis_target_bundle_dir = str(shared.get("analysis_target_bundle_dir") or "").strip()
+    analysis_target_apply_requires_live_switch = bool(shared.get("analysis_target_apply_requires_live_switch"))
     auto_triage_status = str(shared.get("auto_triage_status") or "").strip()
     auto_triage_context_summary = str(shared.get("auto_triage_context_summary") or "").strip()
     auto_triage_pre_sweep_summary = str(shared.get("auto_triage_pre_sweep_summary") or "").strip()
@@ -1675,20 +1800,25 @@ def build_stage_prompt(
             sections.append(f"- original_sample_path: {analysis_target_original_path}")
         if analysis_target_original_sha256:
             sections.append(f"- original_sample_sha256: {analysis_target_original_sha256}")
+        if analysis_target_bundle_dir:
+            sections.append(f"- analysis_target_bundle_dir: {analysis_target_bundle_dir}")
         sections.append(
             "- Analysis-target rule: if the shared context indicates an unpacked derived sample, analyze the unpacked target as canonical for this run while preserving the original packed sample as provenance."
         )
+        if analysis_target_apply_requires_live_switch:
+            sections.append(
+                "- Change-application rule: any Ghidra rename/type/comment proposals produced from this unpacked headless target remain proposal-only until the live Ghidra session is manually switched to the same unpacked program."
+            )
 
     available_static_tools = [str(x).strip() for x in (shared.get("available_static_tools") or []) if str(x).strip()]
     available_dynamic_tools = [str(x).strip() for x in (shared.get("available_dynamic_tools") or []) if str(x).strip()]
     available_sandbox_tools = [str(x).strip() for x in (shared.get("available_sandbox_tools") or []) if str(x).strip()]
+    reporter_artifact_output_enabled = bool(
+        DEEP_REPORTER_ENABLE_ARTIFACTS
+        and any("agentartifact" in item.lower() for item in available_static_tools)
+    )
     supports_dynamic_analysis = bool(shared.get("supports_dynamic_analysis"))
     supports_sandboxed_execution = bool(shared.get("supports_sandboxed_execution"))
-    allow_parent_input = bool(shared.get("allow_parent_input"))
-    shell_execution_mode = _normalize_shell_execution_mode(
-        shared.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)
-    )
-    shell_execution_label = SHELL_EXECUTION_MODE_LABELS.get(shell_execution_mode, shell_execution_mode)
     validator_review_level = _normalize_validator_review_level(
         shared.get("validator_review_level", shared.get("validator_strict_mode", "default"))
     )
@@ -1699,15 +1829,12 @@ def build_stage_prompt(
     sections.append(f"- sandbox_tools: {', '.join(available_sandbox_tools) if available_sandbox_tools else 'none'}")
     sections.append(f"- supports_dynamic_analysis: {'yes' if supports_dynamic_analysis else 'no'}")
     sections.append(f"- supports_sandboxed_execution: {'yes' if supports_sandboxed_execution else 'no'}")
-    sections.append(f"- allow_parent_input: {'yes' if allow_parent_input else 'no'}")
-    sections.append(f"- shell_execution_mode: {shell_execution_mode}")
-    sections.append(f"- shell_execution_profile: {shell_execution_label}")
     sections.append(f"- validator_review_level: {validator_review_level}")
     sections.append(f"- validator_review_profile: {validator_review_label}")
-    if allow_parent_input:
-        sections.append("- Clarification rule: if a critical ambiguity remains after reading provided context, you may ask at most one concise parent question.")
-    else:
-        sections.append("- Clarification rule: parent input is disabled for this run; do not rely on follow-up questions.")
+    if stage_kind == "reporter":
+        sections.append(
+            f"- reporter_artifact_output: {'enabled' if reporter_artifact_output_enabled else 'disabled'}"
+        )
 
     same_sample_auto_triage = bool(
         auto_triage_context_summary
@@ -1774,7 +1901,7 @@ def build_stage_prompt(
                     "- Use the deterministic pre-sweep bundle and automation bootstrap metadata as the primary starting point.",
                     "- Do not rerun full strings/FLOSS/capa/YARA/binwalk sweeps unless the stage context shows that one of them failed, was unavailable, or is materially insufficient.",
                     "- Treat capa-derived analysis leads as concrete hypotheses to confirm or narrow in code, not as mere labels to repeat back.",
-                    "- Explicitly assess whether the sample appears packed, whether any unpacked output from the deterministic stage materially changes interpretation, whether the sample seems previously encountered from the available hash/intel context, and whether hashed APIs or encoded strings deserve follow-up.",
+                    "- Explicitly assess whether the sample appears packed, whether any unpacked output from the deterministic stage materially changes interpretation, whether the sample seems previously encountered from the available hash/intel context, and whether hashed APIs or encoded strings warrant closer inspection.",
                     "- If you identify useful rename/type suggestions, candidate struct declarations, function names, or variable names, keep them evidence-backed and proposal-first.",
                     "- When the evidence is strong enough to justify analyst review, emit those naming/type/struct improvements as approval-queue proposals rather than burying them in prose.",
                     "- If you emit a YARA proposal, anchor it to the distinct combination of behaviors, strings, constants, imports, or decode logic confirmed during analysis rather than generic PE/CRT/startup patterns.",
@@ -1790,6 +1917,14 @@ def build_stage_prompt(
                     "- Do not propose a YARA rule that mainly keys on generic starter code, DOS stub text, CRT/runtime scaffolding, or other broad compiler boilerplate.",
                 ]
             )
+            if reporter_artifact_output_enabled:
+                sections.append(
+                    "- Reporter artifact output is enabled. You may persist a finalized structured malware-report bundle through agentartifactsmcp, but only from already-established findings."
+                )
+            else:
+                sections.append(
+                    "- Reporter artifact output is disabled for this run. Do not attempt to persist report bundles or other generated artifacts."
+                )
         if auto_triage_pre_sweep_summary:
             sections.extend(["", "Deterministic pre-sweep bundle:", auto_triage_pre_sweep_summary])
     elif same_sample_auto_triage:
@@ -1804,15 +1939,6 @@ def build_stage_prompt(
         )
         if auto_triage_status and auto_triage_status != "succeeded":
             sections.append(f"- Prior auto-triage status: {auto_triage_status}")
-    if shell_execution_mode == "none":
-        sections.append("- Shell rule: do not call `execute`. Shell command execution is disabled for this run.")
-    elif shell_execution_mode == "ask":
-        sections.append("- Shell rule: `execute` is available only with explicit user approval per command. Keep commands minimal, local, and explainable.")
-    else:
-        sections.append("- Shell rule: `execute` is enabled. Use it sparingly for bounded local verification only.")
-    sections.append(
-        "- Safety rule: shell execution access does not authorize detonating or recklessly running a potentially malicious sample outside approved sandboxing controls."
-    )
     if stage_meta["supports_parallel_assignments"]:
         if pipeline_has_validators:
             if validator_review_level == "easy":
@@ -1833,18 +1959,26 @@ def build_stage_prompt(
             sections.append("- No-validator evidence threshold: include the minimum concrete artifacts needed to support the key claims and make the report trustworthy. Prefer targeted excerpts over exhaustive raw bundles.")
             sections.append("- No-validator tool-output rule: keep capa/FLOSS/import/string evidence concise and relevant to the claim being made. Do not gather extra validation-only artifacts unless the user explicitly asks for them.")
     elif stage_meta["runs_validation_gate"]:
+        sections.append("- Validation state model: use exactly one of `accept`, `accept_with_caveats`, `revise`, or `reject` in the machine-readable gate.")
+        sections.append("- Validation gate rule: `accept_with_caveats` clears reporting for the accepted core answer while carrying caveats; it is not a rejection.")
+        sections.append("- Validation gate rule: `revise` means targeted rework is needed before signoff. Reserve `reject` for materially wrong, unsafe, or unsupported output.")
+        sections.append("- Validation gate rule: emit the required JSON block directly; do not replace it with menus, prose-only summaries, or optional deliverables.")
+        sections.append("- Validation review scope: validate from the provided planner and worker evidence bundle. Do not treat missing independent rediscovery as a reason to skip the gate.")
         if validator_review_level == "easy":
             sections.append("- Validator mode rule: easy mode is enabled. Review like a business manager: accept output that is relevant to the request, plausible, and communicates technical complexity clearly, without demanding deep artifact-level proof.")
+            sections.append("- Easy decision rule: when the core answer is useful but a few low-level details remain under-proven, prefer `accept_with_caveats` over `revise` or `reject`.")
             sections.append("- Easy acceptance threshold: do not reject solely because exact VA-qualified disassembly snippets, raw import-table dumps, verbatim tool formatting, or minor metadata fields are missing if representative evidence already supports the main claims and there are no major contradictions.")
             sections.append("- Easy fix-request rule: do not ask for full raw capa/FLOSS output. If a fix is needed, request only the smallest relevant excerpt or metadata needed to resolve the doubt.")
         elif validator_review_level == "strict":
             sections.append("- Validator mode rule: strict mode is enabled. Review like a seasoned professional malware analyst: require strong exact proof for key claims before signoff.")
         elif validator_review_level == "intermediate":
             sections.append("- Validator mode rule: intermediate mode is enabled. Review like a CS professor: require methodical reasoning and representative artifacts for major claims, while allowing minor non-critical gaps.")
+            sections.append("- Intermediate decision rule: use `accept_with_caveats` when the main answer is sound but some lower-confidence details should be narrowed or excluded from the final report.")
             sections.append("- Intermediate acceptance threshold: require enough concrete excerpts to re-check the key claims, but do not demand exhaustive per-call-site disassembly or every minor metadata field when the answer is otherwise well-supported.")
             sections.append("- Intermediate fix-request rule: ask for targeted capa/FLOSS excerpts or addresses when needed, but avoid requesting full raw tool dumps unless the dispute genuinely turns on the omitted context.")
         else:
             sections.append("- Validator mode rule: default mode is enabled. Review like a technically strong CS background reader: focus on whether the user request is adequately answered with enough evidence, not exhaustive proof for every sub-claim.")
+            sections.append("- Default decision rule: if the core answer is supported but some proposals or lower-confidence details need narrowing, prefer `accept_with_caveats` over blanket rejection.")
             sections.append("- Default acceptance threshold: prefer representative evidence over exhaustive appendices. Do not reject solely for missing exact addresses, verbatim formatting, or minor metadata unless those omissions materially undermine a major claim.")
             sections.append("- Default fix-request rule: prefer targeted additional excerpts over full raw capa/FLOSS output. Only request full raw tool output when a central claim cannot be evaluated from the representative excerpts already provided.")
 
@@ -2002,6 +2136,7 @@ _GHIDRA_MUTATING_TOOL_NAMES = {
     "set_local_variable_type",
     "set_decompiler_comment",
     "set_disassembly_comment",
+    "upx_unpack_current_program",
 }
 
 
@@ -2012,68 +2147,12 @@ def _current_mcp_server_manifest_path() -> str:
     return str(_resolve_repo_relative_path(raw_manifest))
 
 
-def _is_affirmative_response(value: str) -> bool:
-    normalized = (value or "").strip().lower()
-    return normalized in {
-        "y",
-        "yes",
-        "approve",
-        "approved",
-        "allow",
-        "allowed",
-        "run",
-        "proceed",
-        "continue",
-        "ok",
-        "okay",
-    }
-
-
-def _request_shell_execute_approval(
-    state: Optional[Dict[str, Any]],
-    *,
-    command: str,
-    source: str,
-    timeout_sec: float = 300.0,
-) -> bool:
-    if not isinstance(state, dict):
-        return False
-
-    response = _wait_for_parent_input_response(
-        state,
-        question=(
-            f"Shell execution approval requested by {source}.\n\n"
-            f"Command:\n{command}\n\n"
-            "Type YES / APPROVE / ALLOW to run this command once, or click Decline to block it."
-        ),
-        options=[
-            {
-                "label": "Approve",
-                "description": "Allow this exact shell command to run once for the current step.",
-            },
-            {
-                "label": "Decline",
-                "description": "Block this command and let the agent continue without shell execution.",
-            },
-        ],
-        source=f"{source} shell approval",
-        timeout_sec=timeout_sec,
-    )
-    return _is_affirmative_response(response)
-
-
 class _ControlledLocalBackend:
     def __init__(self, root_dir: str | Path):
         from pydantic_ai_backends import LocalBackend
 
         self._root_dir = Path(root_dir).expanduser().resolve()
-        self._backend = LocalBackend(root_dir=str(self._root_dir), enable_execute=True)
-
-    def _current_mode(self) -> str:
-        state = _ACTIVE_PIPELINE_STATE.get()
-        if isinstance(state, dict):
-            return _normalize_shell_execution_mode(state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE))
-        return DEFAULT_SHELL_EXECUTION_MODE
+        self._backend = LocalBackend(root_dir=str(self._root_dir), enable_execute=False)
 
     @property
     def id(self) -> str:
@@ -2085,7 +2164,7 @@ class _ControlledLocalBackend:
 
     @property
     def execute_enabled(self) -> bool:
-        return self._current_mode() != "none"
+        return False
 
     @property
     def permissions(self) -> Any:
@@ -2096,34 +2175,7 @@ class _ControlledLocalBackend:
         return getattr(self._backend, "permission_checker", None)
 
     def execute(self, command: str, timeout: int | None = 120) -> Any:
-        mode = self._current_mode()
-        if mode == "none":
-            raise RuntimeError("Shell execution is disabled for this backend")
-
-        state = _ACTIVE_PIPELINE_STATE.get()
-        source = _ACTIVE_PIPELINE_STAGE.get() or "pipeline"
-        command_preview = _shorten(str(command or ""), max_chars=320)
-
-        if mode == "ask":
-            if isinstance(state, dict):
-                append_status(state, f"Shell approval requested by {source}: {command_preview}")
-            approved = _request_shell_execute_approval(
-                state,
-                command=str(command or ""),
-                source=str(source),
-            )
-            if not approved:
-                if isinstance(state, dict):
-                    append_status(state, f"Shell execution denied for {source}: {command_preview}")
-                from pydantic_ai_backends.types import ExecuteResponse
-
-                return ExecuteResponse(output="Shell execution denied by user", exit_code=1, truncated=False)
-            if isinstance(state, dict):
-                append_status(state, f"Shell execution approved for {source}: {command_preview}")
-        elif isinstance(state, dict):
-            append_status(state, f"Shell execution started for {source}: {command_preview}")
-
-        return self._backend.execute(command, timeout)
+        raise RuntimeError("Shell execution is disabled for this backend")
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._backend, name)
@@ -2623,8 +2675,183 @@ def _default_upx_unpack_output_path(validated_sample_path: str, sample_sha256: s
     stem = source.stem or "sample"
     suffix = source.suffix or ".bin"
     digest = (sample_sha256 or "sample").strip()[:12] or "sample"
-    _AUTO_TRIAGE_UPX_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    return str((_AUTO_TRIAGE_UPX_OUTPUT_DIR / f"{stem}_{digest}_upx_unpacked{suffix}").resolve())
+    filename = f"{stem}_{digest}_upx_unpacked{suffix}"
+    return str(resolve_tool_output_path("upx", f"auto_triage/{filename}"))
+
+
+def _extract_program_info_payload(value: Any) -> Optional[Dict[str, Any]]:
+    parsed = _parse_jsonish_tool_result(value)
+    if isinstance(parsed, list) and len(parsed) == 1:
+        parsed = _parse_jsonish_tool_result(parsed[0])
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _rebuild_pipeline_stages_for_runtime(runtime: "MultiAgentRuntime") -> None:
+    runtime.stages = [
+        build_stage_runtime(
+            stage_definition,
+            runtime.static_tools,
+            runtime.dynamic_tools,
+            runtime.skill_directories,
+            runtime.deep_backend,
+        )
+        for stage_definition in runtime.pipeline_definition
+    ]
+
+
+def _configure_runtime_for_artifact_ghidra_bundle(
+    runtime: "MultiAgentRuntime",
+    *,
+    bundle_dir: str,
+    remove_upx_tool: bool = True,
+) -> bool:
+    resolved_bundle_dir = str(Path(str(bundle_dir or "")).expanduser().resolve()) if str(bundle_dir or "").strip() else ""
+    if not resolved_bundle_dir:
+        return False
+    configured = False
+    for server in list(runtime.static_tools):
+        server_id = str(getattr(server, "id", "") or "").strip().lower()
+        if "ghidra" not in server_id:
+            continue
+        env = dict(getattr(server, "env", None) or {})
+        env["GHIDRA_ARTIFACT_BUNDLE_DIR"] = resolved_bundle_dir
+        env["GHIDRA_MCP_FALLBACK_MODE"] = "artifact_only"
+        server.env = env
+        configured = True
+    if remove_upx_tool:
+        runtime.static_tools = [
+            server for server in runtime.static_tools if "upx" not in str(getattr(server, "id", "") or "").lower()
+        ]
+        runtime.static_tool_ids = [
+            server_id for server_id in runtime.static_tool_ids if "upx" not in str(server_id or "").lower()
+        ]
+    if configured:
+        _rebuild_pipeline_stages_for_runtime(runtime)
+    return configured
+
+
+def _path_resolves_to_same_file(left: str, right: str) -> bool:
+    left_text = str(left or "").strip()
+    right_text = str(right or "").strip()
+    if not left_text or not right_text:
+        return False
+    try:
+        return Path(left_text).expanduser().resolve() == Path(right_text).expanduser().resolve()
+    except Exception:
+        return left_text == right_text
+
+
+def _prepare_headless_unpacked_analysis_bundle(
+    unpacked_executable_path: str,
+    *,
+    original_sample_path: str,
+    original_sample_sha256: str,
+    timeout_sec: int = 180,
+) -> Dict[str, Any]:
+    unpacked_path = Path(str(unpacked_executable_path or "").strip()).expanduser()
+    if not unpacked_path.exists():
+        return {
+            "ok": False,
+            "error": f"Unpacked executable does not exist: {unpacked_path}",
+        }
+    try:
+        from Testing.harness.artifacts import prepare_bundle, read_json, resolve_analyze_headless
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"Unable to import headless bundle helpers: {type(exc).__name__}: {exc}",
+        }
+
+    analyze_headless = resolve_analyze_headless()
+    if analyze_headless is None:
+        return {
+            "ok": False,
+            "error": "analyzeHeadless is unavailable; set GHIDRA_HEADLESS or GHIDRA_INSTALL_DIR to enable headless unpacked bundles.",
+        }
+
+    bundle_root = (get_agent_artifact_dir("ghidra") / "headless_bundles" / "auto_triage").resolve()
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    sample_meta = {
+        "source": "runtime_presweeps_upx_unpacked",
+        "original_sample_path": str(original_sample_path or "").strip(),
+        "original_sample_sha256": str(original_sample_sha256 or "").strip(),
+    }
+    try:
+        prepared = prepare_bundle(
+            "runtime_presweeps_upx_unpacked",
+            unpacked_path.resolve(),
+            sample_meta,
+            output_root=bundle_root,
+            timeout_sec=timeout_sec,
+            analyze_headless=analyze_headless,
+            skip_cli_tools=True,
+            keep_project=False,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"Headless bundle generation failed: {type(exc).__name__}: {exc}",
+        }
+
+    bundle_dir = Path(str(prepared.get("bundle_dir") or "")).expanduser().resolve() if str(prepared.get("bundle_dir") or "").strip() else None
+    bundle_manifest = read_json(bundle_dir / "bundle_manifest.json") if bundle_dir and (bundle_dir / "bundle_manifest.json").exists() else {}
+    automation_payload = read_json(bundle_dir / "automation_payload.json") if bundle_dir and (bundle_dir / "automation_payload.json").exists() else {}
+    ghidra_headless = prepared.get("ghidra_headless") if isinstance(prepared.get("ghidra_headless"), dict) else {}
+    ready_for_analysis = bool(
+        ghidra_headless.get("ok")
+        and bundle_dir is not None
+        and (bundle_dir / "ghidra_analysis.json").exists()
+    )
+    identity = bundle_manifest.get("identity") if isinstance(bundle_manifest.get("identity"), dict) else {}
+    return {
+        "ok": ready_for_analysis,
+        "bundle_dir": str(bundle_dir) if bundle_dir is not None else "",
+        "analysis_exists": bool(bundle_dir is not None and (bundle_dir / "ghidra_analysis.json").exists()),
+        "headless_bundle_ready": ready_for_analysis,
+        "bundle_manifest": _json_safe(bundle_manifest),
+        "automation_payload": _json_safe(automation_payload),
+        "identity": _json_safe(identity),
+        "ghidra_headless": _json_safe(ghidra_headless),
+        "error": "" if ready_for_analysis else str(ghidra_headless.get("error") or "Headless bundle is incomplete.").strip(),
+    }
+
+
+def _live_ghidra_program_info_sync(pipeline_name: Optional[str] = None) -> Dict[str, Any]:
+    runtime = get_runtime_sync(pipeline_name=pipeline_name)
+    ghidra_server = next(
+        (tool for tool in runtime.static_tools if "ghidra" in (tool.id or "").lower()),
+        None,
+    )
+    if ghidra_server is None:
+        return {
+            "ok": False,
+            "error": "No Ghidra MCP server is configured in the active runtime.",
+        }
+
+    cloned_server = _clone_mcp_server(ghidra_server)
+
+    async def _query() -> Any:
+        return await cloned_server.direct_call_tool("get_program_info", {})
+
+    try:
+        raw_result = asyncio.run(_query())
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    payload = _extract_program_info_payload(raw_result)
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "error": "Unable to parse live Ghidra program info.",
+            "result_text": _coerce_direct_tool_result_text(raw_result),
+        }
+    return {
+        "ok": True,
+        "payload": payload,
+    }
 
 
 def _build_auto_triage_presweep_summary(bundle: Dict[str, Any]) -> str:
@@ -2693,7 +2920,18 @@ def _build_auto_triage_presweep_summary(bundle: Dict[str, Any]) -> str:
                 f"- ghidra_strings_preview: redacted for evaluation isolation ({len(string_items)} candidate strings collected)"
             )
 
-    for label in ("raw_strings", "floss", "capa", "hashdb", "entropy_packer", "packed_binary_assessment", "upx_unpack", "baseline_yara"):
+    for label in (
+        "raw_strings",
+        "floss",
+        "capa",
+        "hashdb",
+        "entropy_packer",
+        "packed_binary_assessment",
+        "upx_unpack",
+        "upx_headless_bundle",
+        "upx_active_program_import",
+        "baseline_yara",
+    ):
         section = bundle.get(label)
         if not section:
             continue
@@ -2998,14 +3236,191 @@ def run_deterministic_presweeps_sync(runtime: "MultiAgentRuntime", state: Dict[s
                     "error": str(upx_result.get("error") or "Unable to parse UPX unpack result.").strip(),
                     "output_path": unpack_path,
                 }
+            if isinstance(bundle.get("upx_unpack"), dict) and bundle["upx_unpack"].get("ok"):
+                unpacked_target_path = str(bundle["upx_unpack"].get("output_path") or unpack_path).strip()
+                headless_bundle = _prepare_headless_unpacked_analysis_bundle(
+                    unpacked_target_path,
+                    original_sample_path=validated_sample_path,
+                    original_sample_sha256=validated_sample_sha256,
+                )
+                bundle["upx_headless_bundle"] = _json_safe(headless_bundle)
+                bundle["upx_active_program_import"] = {
+                    "attempted": False,
+                    "ok": False,
+                    "active_program_switched": False,
+                    "error": (
+                        "Live Ghidra active-program switching is intentionally disabled for this path. "
+                        "Downstream analysis should use the unpacked headless bundle when it is available."
+                    ),
+                }
+                if bool(headless_bundle.get("ok")) and _configure_runtime_for_artifact_ghidra_bundle(
+                    runtime,
+                    bundle_dir=str(headless_bundle.get("bundle_dir") or "").strip(),
+                ):
+                    bundle_manifest = (
+                        headless_bundle.get("bundle_manifest")
+                        if isinstance(headless_bundle.get("bundle_manifest"), dict)
+                        else {}
+                    )
+                    automation_payload = (
+                        headless_bundle.get("automation_payload")
+                        if isinstance(headless_bundle.get("automation_payload"), dict)
+                        else {}
+                    )
+                    identity = (
+                        headless_bundle.get("identity")
+                        if isinstance(headless_bundle.get("identity"), dict)
+                        else {}
+                    )
+                    program_info = (
+                        automation_payload.get("program_info")
+                        if isinstance(automation_payload.get("program_info"), dict)
+                        else {}
+                    )
+                    program_from_bundle = (
+                        program_info.get("program")
+                        if isinstance(program_info.get("program"), dict)
+                        else {}
+                    )
+                    counts_from_bundle = (
+                        automation_payload.get("counts")
+                        if isinstance(automation_payload.get("counts"), dict)
+                        else {}
+                    )
+
+                    original_path = str(validated_sample_path or "").strip()
+                    original_md5 = str(validated_sample_md5 or "").strip()
+                    original_sha256 = str(validated_sample_sha256 or "").strip()
+
+                    target_path = str(
+                        identity.get("path")
+                        or automation_payload.get("executable_path")
+                        or unpacked_target_path
+                    ).strip()
+                    target_md5 = str(
+                        identity.get("md5")
+                        or automation_payload.get("executable_md5")
+                        or ""
+                    ).strip()
+                    target_sha256 = str(
+                        identity.get("sha256")
+                        or automation_payload.get("executable_sha256")
+                        or ""
+                    ).strip()
+                    target_image_base = str(
+                        automation_payload.get("image_base")
+                        or program_from_bundle.get("imageBase")
+                        or ""
+                    ).strip()
+
+                    if target_path:
+                        validated_sample_path = target_path
+                        bundle["validated_sample_path"] = target_path
+                        shared["validated_sample_path"] = target_path
+                        shared["validated_sample_path_source"] = "deterministic_presweeps_upx_headless_bundle"
+                    if target_md5:
+                        validated_sample_md5 = target_md5
+                        bundle["sample_md5"] = target_md5
+                        shared["validated_sample_md5"] = target_md5
+                    if target_sha256:
+                        validated_sample_sha256 = target_sha256
+                        bundle["sample_sha256"] = target_sha256
+                        shared["validated_sample_sha256"] = target_sha256
+                    if target_image_base:
+                        validated_sample_image_base = target_image_base
+                        shared["validated_sample_image_base"] = target_image_base
+
+                    shared["validated_sample_metadata_source"] = "deterministic_presweeps_upx_headless_bundle"
+                    shared["analysis_target_kind"] = "upx_unpacked"
+                    shared["analysis_target_reason"] = (
+                        "UPX was detected; deterministic presweeps unpacked the sample and switched downstream analysis to a headless-derived unpacked bundle. "
+                        "The live Ghidra program was not switched automatically."
+                    )
+                    shared["analysis_target_path"] = str(validated_sample_path or "").strip()
+                    shared["analysis_target_bundle_dir"] = str(headless_bundle.get("bundle_dir") or "").strip()
+                    shared["analysis_target_original_path"] = original_path
+                    shared["analysis_target_original_md5"] = original_md5
+                    shared["analysis_target_original_sha256"] = original_sha256
+                    shared["analysis_target_packed_detected"] = True
+                    shared["analysis_target_packer"] = "upx"
+                    shared["analysis_target_apply_requires_live_switch"] = True
+                    shared["analysis_target_apply_warning"] = (
+                        "Before applying the Ghidra change queue, manually open the unpacked executable in the live Ghidra session."
+                    )
+                    shared["upx_unpack"] = _json_safe(bundle.get("upx_unpack") or {})
+
+                    shared["available_static_tools"] = list(runtime.static_tool_ids)
+                    shared["supports_dynamic_analysis"] = bool(runtime.dynamic_tool_ids)
+                    shared["supports_sandboxed_execution"] = bool(runtime.sandbox_tool_ids)
+
+                    _clear_tool_result_cache_for_server_marker(state, "ghidra")
+                    bundle["canonical_program_info"] = (
+                        _json_safe(program_info)
+                        if program_info
+                        else bundle.get("canonical_program_info")
+                    )
+                    if program_from_bundle:
+                        bundle["program"]["name"] = str(
+                            program_from_bundle.get("name") or bundle["program"].get("name") or ""
+                        ).strip()
+                        bundle["program"]["ghidra_project_path"] = str(
+                            program_from_bundle.get("ghidraProjectPath") or bundle["program"].get("ghidra_project_path") or ""
+                        ).strip()
+                        bundle["program"]["language"] = str(
+                            program_from_bundle.get("language") or bundle["program"].get("language") or ""
+                        ).strip()
+                        bundle["program"]["compiler"] = str(
+                            program_from_bundle.get("compiler") or bundle["program"].get("compiler") or ""
+                        ).strip()
+                        bundle["program"]["image_base"] = str(
+                            program_from_bundle.get("imageBase") or target_image_base or bundle["program"].get("image_base") or ""
+                        ).strip()
+                    if counts_from_bundle:
+                        bundle["counts"] = dict(counts_from_bundle)
+                else:
+                    append_status(
+                        state,
+                        "UPX unpack succeeded, but the headless-derived unpacked bundle was unavailable; keeping the original live Ghidra program and packed-target context.",
+                    )
+            else:
+                bundle["upx_headless_bundle"] = {
+                    "ok": False,
+                    "error": "UPX unpacking did not succeed, so no headless unpacked bundle was prepared.",
+                }
+                bundle["upx_active_program_import"] = {
+                    "attempted": False,
+                    "ok": False,
+                    "active_program_switched": False,
+                    "error": "UPX unpacking did not succeed, so no live Ghidra import/open was attempted.",
+                }
         elif packed_assessment.get("should_try_upx"):
             bundle["upx_unpack"] = {
                 "ok": False,
                 "error": "UPX indicators were present, but no UPX MCP server is configured.",
             }
+            bundle["upx_headless_bundle"] = {
+                "ok": False,
+                "error": "UPX indicators were present, but no UPX MCP server is configured.",
+            }
+            bundle["upx_active_program_import"] = {
+                "attempted": False,
+                "ok": False,
+                "active_program_switched": False,
+                "error": "UPX indicators were present, but live active-program switching is not being used for this path.",
+            }
         else:
             bundle["upx_unpack"] = {
                 "ok": False,
+                "error": "No strong UPX indicators were found during deterministic presweeps.",
+            }
+            bundle["upx_headless_bundle"] = {
+                "ok": False,
+                "error": "No strong UPX indicators were found during deterministic presweeps.",
+            }
+            bundle["upx_active_program_import"] = {
+                "attempted": False,
+                "ok": False,
+                "active_program_switched": False,
                 "error": "No strong UPX indicators were found during deterministic presweeps.",
             }
     else:
@@ -3037,6 +3452,16 @@ def run_deterministic_presweeps_sync(runtime: "MultiAgentRuntime", state: Dict[s
         bundle["upx_unpack"] = {
             "ok": False,
             "error": "Validated sample path was unavailable for UPX unpack attempt.",
+        }
+        bundle["upx_headless_bundle"] = {
+            "ok": False,
+            "error": "Validated sample path was unavailable for headless unpacked-bundle preparation.",
+        }
+        bundle["upx_active_program_import"] = {
+            "attempted": False,
+            "ok": False,
+            "active_program_switched": False,
+            "error": "Validated sample path was unavailable for any live Ghidra program switch.",
         }
 
     hash_candidates = _extract_hashdb_candidates_from_strings(
@@ -3370,10 +3795,10 @@ def build_host_worker_assignment_executor(
 
     spec = AGENT_ARCHETYPE_SPECS[archetype_name]
     resolved_model = _resolve_model_id(spec.get("model"), stage_model, OPENAI_MODEL_ID)
-    # Reuse the runtime's shared MCP connections for host-managed workers so
-    # parallel assignments do not relaunch a fresh stdio server fleet per work item.
-    toolsets = list(_toolsets_for_domain(spec["tool_domain"], runtime.static_tools, runtime.dynamic_tools))
-    if spec["tool_domain"] != "none" and not toolsets:
+    # Host-managed workers run in parallel tasks. Give each assignment its own
+    # MCP client objects so stdio context ownership stays task-local.
+    toolsets = _cloned_toolsets_for_domain(spec["tool_domain"], runtime.static_tools, runtime.dynamic_tools)
+    if _tool_domain_requires_configured_toolset(spec["tool_domain"]) and not toolsets:
         raise RuntimeError(
             f"Host-parallel worker requested {archetype_name!r}, but no {spec['tool_domain']} MCP toolsets are configured."
         )

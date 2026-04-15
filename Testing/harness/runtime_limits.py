@@ -17,8 +17,9 @@ from __future__ import annotations
 import os
 from typing import Any, Mapping
 
+from multi_agent_wf.runtime_defaults import DEFAULT_DEEP_AGENT_REQUEST_LIMIT
 
-DEFAULT_TESTING_DEEP_AGENT_REQUEST_LIMIT = 100
+DEFAULT_TESTING_DEEP_AGENT_REQUEST_LIMIT = DEFAULT_DEEP_AGENT_REQUEST_LIMIT
 
 
 def parse_optional_request_limit(value: Any) -> int | None:

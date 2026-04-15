@@ -17,16 +17,6 @@ OPENAI_COMPAT_API_KEY=""
 ALT_MODEL_AUTH_TOKEN=""
 
 ## Recommended to Play Around With
-# false = agents cannot pause a run to ask you for clarification.
-# true  = agents may request one follow-up during a run; better for ambiguous requests, slower for uninterrupted runs.
-DEFAULT_ALLOW_PARENT_INPUT=false
-
-# Shell execution policy for shell-backed MCP tools:
-#   none = never allow shell execution
-#   ask  = prompt you before a shell command runs
-#   full = allow shell commands without asking
-DEFAULT_SHELL_EXECUTION_MODE=none
-
 # Review profiles:
 #   easy         = prioritize relevance and clarity over proof depth
 #   default      = balanced technical review
@@ -72,6 +62,10 @@ DEEP_AGENT_PIPELINE_NAME=preflight_planner_workers_validators_reporter
 # Lightweight router model used only when auto pipeline selection needs an LLM decision.
 DEEP_AGENT_PIPELINE_ROUTER_MODEL=openai:gpt-4o-mini
 
+# Maximum number of model requests a deep-agent run may spend before it is
+# stopped. Raise only when complex workflows are being clipped too early.
+DEEP_AGENT_REQUEST_LIMIT=200
+
 # Root directory for reusable generated artifacts such as generated YARA rules,
 # Python deobfuscation helpers, Java helpers, reports, and Ghidra-supporting scripts.
 # If left blank, the repo default is `Hub_Dev/agent_artifacts`.
@@ -83,6 +77,10 @@ AGENT_PYTHON_ARTIFACT_DIR=
 AGENT_JAVA_ARTIFACT_DIR=
 AGENT_REPORT_ARTIFACT_DIR=
 AGENT_GHIDRA_ARTIFACT_DIR=
+
+# false = reporter stage may not emit generated report bundles or other artifact-writer outputs.
+# true  = reporter stage may use agentartifactsmcp for finalized artifact emission only.
+DEEP_REPORTER_ENABLE_ARTIFACTS=true
 
 # Optional override for binwalk scan output artifacts such as entropy plots.
 # If left blank, binwalk MCP writes under `agent_artifacts/reports/binwalk/`.

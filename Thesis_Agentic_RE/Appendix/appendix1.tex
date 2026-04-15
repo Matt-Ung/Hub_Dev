@@ -76,6 +76,23 @@ The final preset \texttt{thesis\_final\_eval\_r3\_100usd} runs over five opaque 
 \label{tab:final-heldout-samples}
 \end{table}
 
+\begin{table}[p]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{p{0.11\textwidth} p{0.16\textwidth} p{0.25\textwidth} p{0.26\textwidth} p{0.14\textwidth}}
+\textbf{Sample} & \textbf{Family simulation} & \textbf{Main obfuscation / evasion} & \textbf{Main malicious behavior cluster} & \textbf{Boundedness to note} \\
+\hline
+\texttt{sample1.exe} & Emotet & Encoded C2 seeds, RC4-style config decode, FNV-1a API hashing, debugger / VM / analyst-process checks. & Run-key persistence, WinHTTP beaconing, staged module dispatch, and suspended-process injection into \texttt{svchost.exe}. & Network protocol and module loading are simplified rather than full real-world Emotet coverage. \\
+\texttt{sample2.exe} & QakBot & XOR-decoded resource-backed payload path, analyst-tool / VM checks, mode-driven branching. & Scheduled-task persistence, resource staging, \texttt{svchost.exe} injection, named-pipe coordination, and self-delete. & The resource payload path is structurally present, but the checked-in repository does not contain the backing blob. \\
+\texttt{sample3.exe} & TrickBot & Timing checks, hardware-breakpoint checks, WMI VM detection, NTDLL integrity checks, TLS-callback anti-debugging, PE-header corruption. & Run-key persistence, encrypted C2 recovery, HTTPS check-in, staged module handling, and web-inject-style browser staging. & Module retrieval and browser-facing behavior are simulated rather than a full reflective loader or live webinject stack. \\
+\texttt{sample4.exe} & WannaCry & Killswitch gating, service masquerading, packed / stripped final artifact. & Service persistence, backup-deletion commands, ransom-note presentation, target-file enumeration, and SMB-scanning worm behavior. & The source models ransomware and worm flow, but does not implement real file encryption or real EternalBlue exploitation. \\
+\texttt{sample5.exe} & PlugX & Encrypted config, XOR runtime-profile decode, staged shellcode-execution path, modular RAT-style command dispatch. & Run-key persistence, TCP heartbeat beaconing, keylogging, screenshot capture, plugin dispatch, and DLL-entry-oriented execution flow. & The shellcode and command handlers are intentionally bounded stubs, and the final artifact is a single EXE rather than a full sideloading package. \\
+\end{tabular}
+\caption{Final held-out behavior matrix for defense use. This compact summary isolates the main obfuscation/evasion surfaces, the primary malicious behavior cluster, and the most important caveat for each opaque final executable.}
+\label{tab:final-heldout-behavior-matrix}
+\end{table}
+
 \subsection{Maintained Variant and Configuration Labels}
 
 Unless a row below says otherwise, the baseline refers to the locked configuration used across the thesis experiments: \texttt{pipeline=auto\_triage}, \texttt{architecture=balanced}, \texttt{response\_scope=default}, \texttt{analysis\_hint=default}, \texttt{subagent\_profile=default}, \texttt{worker\_prompt\_shape=default}, \texttt{tool\_profile=full}, and \texttt{model\_profile=repo\_default}. The table below summarizes the maintained variant labels that appear in the archive graphs and final held-out results.

@@ -25,8 +25,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+from _bootstrap import REPO_ROOT  # noqa: F401
+from multi_agent_wf.runtime_defaults import REQUEST_LIMIT_ERROR_MARKER
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENTS_ROOT = REPO_ROOT / "Testing" / "results" / "experiments"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "Thesis_Agentic_RE" / "Pictures" / "experiment_results"
 
@@ -97,7 +98,7 @@ def _classify_assignment_error(text: str) -> str:
         return "context_length_exceeded"
     if "could not parse the json body" in lowered:
         return "invalid_request_payload"
-    if "request_limit of 50" in lowered or "usagelimitexceeded" in lowered:
+    if REQUEST_LIMIT_ERROR_MARKER in lowered or "usagelimitexceeded" in lowered:
         return "usage_limit_exceeded"
     if "exceeded max retries count" in lowered:
         return "tool_retry_exhausted"

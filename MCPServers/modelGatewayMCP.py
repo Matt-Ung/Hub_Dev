@@ -8,11 +8,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
+from pathlib import Path
 from typing import Any, Dict, List
 
 from fastmcp import FastMCP
 
-from modelGatewayProviders import (
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from MCPServers.server_helper_scripts.modelGatewayProviders import (
     GenerationRequest,
     generate_with_backend,
     normalize_provider_name,

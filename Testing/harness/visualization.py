@@ -14,6 +14,7 @@ Summary:
 
 from __future__ import annotations
 
+from collections import defaultdict
 import json
 import math
 import textwrap
@@ -75,6 +76,12 @@ VALUE_LABEL_ALIASES = {
     "ghidra_focused": "Ghidra-focused",
     "minimal": "Minimal",
     "model_augmented": "Model-augmented",
+}
+TODO_RELATED_TOOL_FAMILIES = {
+    "todo_read",
+    "add_todo",
+    "update_todo_status",
+    "write_todos",
 }
 
 
@@ -181,6 +188,12 @@ def _save_figure(
         fig.tight_layout(pad=1.6)
     fig.savefig(path, dpi=200, bbox_inches="tight")
     fig.clf()
+    try:
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
+    except Exception:
+        pass
     created_files.append({"path": str(path), "title": title, "description": description})
 
 
@@ -224,6 +237,148 @@ def _build_marker_map(variant_df) -> Dict[str, str]:
     for index, variant_id in enumerate(non_baseline_ids):
         marker_map[variant_id] = MARKER_SEQUENCE[index % len(MARKER_SEQUENCE)]
     return marker_map
+
+
+def _build_excess_tool_ranking_rows(
+    rows: List[Dict[str, Any]] | None,
+    *,
+    exclude_todo_related: bool,
+    top_n: int = 10,
+) -> List[Dict[str, Any]]:
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for raw_row in list(rows or []):
+        row = raw_row if isinstance(raw_row, dict) else {}
+        tool_family = str(row.get("tool_family") or "").strip()
+        if not tool_family:
+            continue
+        if exclude_todo_related and tool_family in TODO_RELATED_TOOL_FAMILIES:
+            continue
+        bucket = buckets.setdefault(
+            tool_family,
+            {
+                "tool_family": tool_family,
+                "likely_wasteful_duplicate_calls": 0.0,
+                "semantic_duplicate_calls": 0.0,
+                "same_source_semantic_duplicate_calls": 0.0,
+                "total_calls": 0.0,
+                "top_sample": "",
+                "top_sample_likely_wasteful_duplicate_calls": 0.0,
+                "top_sample_semantic_duplicate_calls": 0.0,
+            },
+        )
+        likely = float(_safe_float(row.get("likely_wasteful_duplicate_calls")) or 0.0)
+        semantic = float(_safe_float(row.get("semantic_duplicate_calls")) or 0.0)
+        same_source = float(_safe_float(row.get("same_source_semantic_duplicate_calls")) or 0.0)
+        total_calls = float(_safe_float(row.get("total_calls")) or 0.0)
+        sample = str(row.get("sample") or "").strip()
+        bucket["likely_wasteful_duplicate_calls"] += likely
+        bucket["semantic_duplicate_calls"] += semantic
+        bucket["same_source_semantic_duplicate_calls"] += same_source
+        bucket["total_calls"] += total_calls
+        if (
+            likely > float(bucket["top_sample_likely_wasteful_duplicate_calls"] or 0.0)
+            or (
+                likely == float(bucket["top_sample_likely_wasteful_duplicate_calls"] or 0.0)
+                and semantic > float(bucket["top_sample_semantic_duplicate_calls"] or 0.0)
+            )
+            or (
+                likely == float(bucket["top_sample_likely_wasteful_duplicate_calls"] or 0.0)
+                and semantic == float(bucket["top_sample_semantic_duplicate_calls"] or 0.0)
+                and sample
+                and sample < str(bucket["top_sample"] or "~")
+            )
+        ):
+            bucket["top_sample"] = sample
+            bucket["top_sample_likely_wasteful_duplicate_calls"] = likely
+            bucket["top_sample_semantic_duplicate_calls"] = semantic
+
+    ranked = sorted(
+        buckets.values(),
+        key=lambda item: (
+            -float(item.get("likely_wasteful_duplicate_calls") or 0.0),
+            -float(item.get("semantic_duplicate_calls") or 0.0),
+            str(item.get("tool_family") or ""),
+        ),
+    )
+    ranked = [row for row in ranked if float(row.get("likely_wasteful_duplicate_calls") or 0.0) > 0.0]
+    return ranked[: max(1, int(top_n or 10))]
+
+
+def _build_tool_family_metric_rows(
+    rows: List[Dict[str, Any]] | None,
+    *,
+    metric_key: str,
+    top_n: int = 10,
+) -> List[Dict[str, Any]]:
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for raw_row in list(rows or []):
+        row = raw_row if isinstance(raw_row, dict) else {}
+        tool_family = str(row.get("tool_family") or "").strip()
+        if not tool_family:
+            continue
+        metric_value = float(_safe_float(row.get(metric_key)) or 0.0)
+        if metric_value <= 0.0:
+            continue
+        bucket = buckets.setdefault(
+            tool_family,
+            {
+                "tool_family": tool_family,
+                "metric_value": 0.0,
+                "total_calls": 0.0,
+                "semantic_duplicate_calls": 0.0,
+                "same_source_semantic_duplicate_calls": 0.0,
+                "top_sample": "",
+                "top_sample_metric_value": 0.0,
+            },
+        )
+        total_calls = float(_safe_float(row.get("total_calls")) or 0.0)
+        semantic = float(_safe_float(row.get("semantic_duplicate_calls")) or 0.0)
+        same_source = float(_safe_float(row.get("same_source_semantic_duplicate_calls")) or 0.0)
+        sample = str(row.get("sample") or "").strip()
+        bucket["metric_value"] += metric_value
+        bucket["total_calls"] += total_calls
+        bucket["semantic_duplicate_calls"] += semantic
+        bucket["same_source_semantic_duplicate_calls"] += same_source
+        if (
+            metric_value > float(bucket.get("top_sample_metric_value") or 0.0)
+            or (
+                metric_value == float(bucket.get("top_sample_metric_value") or 0.0)
+                and sample
+                and sample < str(bucket.get("top_sample") or "~")
+            )
+        ):
+            bucket["top_sample"] = sample
+            bucket["top_sample_metric_value"] = metric_value
+
+    ranked = sorted(
+        buckets.values(),
+        key=lambda item: (
+            -float(item.get("metric_value") or 0.0),
+            -float(item.get("same_source_semantic_duplicate_calls") or 0.0),
+            -float(item.get("semantic_duplicate_calls") or 0.0),
+            str(item.get("tool_family") or ""),
+        ),
+    )
+    return ranked[: max(1, int(top_n or 10))]
+
+
+def _select_focus_source_run(
+    source_run_rows: List[Dict[str, Any]] | None,
+) -> Dict[str, Any] | None:
+    candidates = [row for row in list(source_run_rows or []) if isinstance(row, dict)]
+    if not candidates:
+        return None
+    ranked = sorted(
+        candidates,
+        key=lambda row: (
+            -float(_safe_float(row.get("same_source_semantic_duplicate_calls")) or 0.0),
+            -float(_safe_float(row.get("total_calls")) or 0.0),
+            str(row.get("variant_id") or ""),
+            str(row.get("sample") or ""),
+            str(row.get("run_id") or ""),
+        ),
+    )
+    return ranked[0] if ranked else None
 
 
 def _format_number_tick(value: Any, _position: Any = None) -> str:
@@ -1288,6 +1443,475 @@ def _plot_likely_wasteful_hotspots(
     )
 
 
+def _plot_excess_tool_call_rankings(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    redundancy_executable_rows: List[Dict[str, Any]] | None,
+    *,
+    title_prefix: str,
+) -> None:
+    ranking_inclusive = _build_excess_tool_ranking_rows(
+        redundancy_executable_rows,
+        exclude_todo_related=False,
+        top_n=10,
+    )
+    ranking_excluding_todo = _build_excess_tool_ranking_rows(
+        redundancy_executable_rows,
+        exclude_todo_related=True,
+        top_n=10,
+    )
+    if not ranking_inclusive and not ranking_excluding_todo:
+        return
+
+    shared_xmax = max(
+        [
+            float(row.get("likely_wasteful_duplicate_calls") or 0.0)
+            for row in (ranking_inclusive + ranking_excluding_todo)
+        ]
+        or [1.0]
+    )
+    shared_xmax = max(shared_xmax, 1.0)
+    shared_xmax *= 1.32
+
+    def _render(
+        ranking_rows: List[Dict[str, Any]],
+        *,
+        filename: str,
+        title: str,
+        subtitle: str,
+        description: str,
+    ) -> None:
+        if not ranking_rows:
+            return
+        labels = [_wrap_label(_short_category_label(row.get("tool_family") or ""), width=20) for row in ranking_rows]
+        values = [float(row.get("likely_wasteful_duplicate_calls") or 0.0) for row in ranking_rows]
+        colors = [
+            "#d97706" if str(row.get("tool_family") or "") in TODO_RELATED_TOOL_FAMILIES else "#1f77b4"
+            for row in ranking_rows
+        ]
+        fig, ax = plt.subplots(figsize=(11.6, max(5.0, len(ranking_rows) * 0.58 + 2.4)))
+        y_positions = list(range(len(ranking_rows)))
+        ax.barh(y_positions, values, color=colors, height=0.62)
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(labels)
+        ax.invert_yaxis()
+        ax.set_xlim(0.0, shared_xmax)
+        ax.set_xlabel("Aggregated inferred excess duplicate calls")
+        ax.set_title(_title(title_prefix, title), loc="left")
+        fig.text(
+            0.125,
+            0.93,
+            subtitle,
+            ha="left",
+            va="bottom",
+            fontsize=9.4,
+            color="#475569",
+        )
+        _style_axes(ax, grid_axis="x")
+        _apply_axis_formatter(ax, axis="x", kind="number")
+        for y_pos, row in zip(y_positions, ranking_rows):
+            top_sample = str(row.get("top_sample") or "").strip()
+            top_sample_label = Path(top_sample).stem if top_sample else "n/a"
+            top_sample_value = float(row.get("top_sample_likely_wasteful_duplicate_calls") or 0.0)
+            semantic_value = float(row.get("semantic_duplicate_calls") or 0.0)
+            ax.text(
+                float(row.get("likely_wasteful_duplicate_calls") or 0.0) + shared_xmax * 0.014,
+                y_pos,
+                f"{int(round(float(row.get('likely_wasteful_duplicate_calls') or 0.0)))}"
+                f"  | top {top_sample_label}: {int(round(top_sample_value))}"
+                f"  | semantic {int(round(semantic_value))}",
+                va="center",
+                ha="left",
+                fontsize=8.7,
+                color="#1f2937",
+            )
+        _save_figure(
+            fig,
+            output_dir,
+            created_files,
+            filename,
+            title,
+            description,
+            tight_rect=(0.0, 0.0, 1.0, 0.9),
+        )
+
+    todo_family_list = ", ".join(sorted(TODO_RELATED_TOOL_FAMILIES))
+    _render(
+        ranking_inclusive,
+        filename="14_excess_tool_call_rankings_including_todo.png",
+        title="Excess Tool-Call Ranking (Including TODO-State Families)",
+        subtitle=(
+            "Metric: summed `likely_wasteful_duplicate_calls` across per-executable redundancy rows. "
+            f"Includes TODO-state families: {todo_family_list}."
+        ),
+        description=(
+            "Horizontal ranking of inferred excess duplicate-call volume by tool family, including TODO-state management calls. "
+            "Bar annotations show the executable contributing the largest share for each family and the broader semantic-duplicate total for context."
+        ),
+    )
+    _render(
+        ranking_excluding_todo,
+        filename="15_excess_tool_call_rankings_excluding_todo.png",
+        title="Excess Tool-Call Ranking (Excluding TODO-State Families)",
+        subtitle=(
+            "Metric: summed `likely_wasteful_duplicate_calls` across per-executable redundancy rows. "
+            f"Excludes TODO-state families: {todo_family_list}."
+        ),
+        description=(
+            "Horizontal ranking of inferred excess duplicate-call volume after removing TODO-state management calls. "
+            "This keeps the scale comparable to the inclusive chart so the residual MCP and orchestration hotspots are easier to compare directly."
+        ),
+    )
+
+
+def _plot_raw_tool_call_rankings(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    redundancy_executable_rows: List[Dict[str, Any]] | None,
+    *,
+    title_prefix: str,
+) -> None:
+    total_call_rows = _build_tool_family_metric_rows(
+        redundancy_executable_rows,
+        metric_key="total_calls",
+        top_n=10,
+    )
+    same_source_rows = _build_tool_family_metric_rows(
+        redundancy_executable_rows,
+        metric_key="same_source_semantic_duplicate_calls",
+        top_n=10,
+    )
+    if not total_call_rows and not same_source_rows:
+        return
+
+    def _render(
+        ranking_rows: List[Dict[str, Any]],
+        *,
+        filename: str,
+        title: str,
+        subtitle: str,
+        xlabel: str,
+        description: str,
+    ) -> None:
+        if not ranking_rows:
+            return
+        labels = [_wrap_label(_short_category_label(row.get("tool_family") or ""), width=20) for row in ranking_rows]
+        values = [float(row.get("metric_value") or 0.0) for row in ranking_rows]
+        colors = [
+            "#d97706" if str(row.get("tool_family") or "") in TODO_RELATED_TOOL_FAMILIES else "#1f77b4"
+            for row in ranking_rows
+        ]
+        shared_xmax = max(values or [1.0])
+        shared_xmax = max(shared_xmax, 1.0) * 1.32
+        fig, ax = plt.subplots(figsize=(11.8, max(5.0, len(ranking_rows) * 0.58 + 2.4)))
+        y_positions = list(range(len(ranking_rows)))
+        ax.barh(y_positions, values, color=colors, height=0.62)
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(labels)
+        ax.invert_yaxis()
+        ax.set_xlim(0.0, shared_xmax)
+        ax.set_xlabel(xlabel)
+        ax.set_title(_title(title_prefix, title), loc="left")
+        fig.text(
+            0.125,
+            0.93,
+            subtitle,
+            ha="left",
+            va="bottom",
+            fontsize=9.4,
+            color="#475569",
+        )
+        _style_axes(ax, grid_axis="x")
+        _apply_axis_formatter(ax, axis="x", kind="number")
+        for y_pos, row in zip(y_positions, ranking_rows):
+            top_sample = str(row.get("top_sample") or "").strip()
+            top_sample_label = Path(top_sample).stem if top_sample else "n/a"
+            metric_value = float(row.get("metric_value") or 0.0)
+            ax.text(
+                metric_value + shared_xmax * 0.014,
+                y_pos,
+                f"{int(round(metric_value))}"
+                f"  | top {top_sample_label}: {int(round(float(row.get('top_sample_metric_value') or 0.0)))}"
+                f"  | semantic {int(round(float(row.get('semantic_duplicate_calls') or 0.0)))}"
+                f"  | same-source {int(round(float(row.get('same_source_semantic_duplicate_calls') or 0.0)))}",
+                va="center",
+                ha="left",
+                fontsize=8.5,
+                color="#1f2937",
+            )
+        _save_figure(
+            fig,
+            output_dir,
+            created_files,
+            filename,
+            title,
+            description,
+            tight_rect=(0.0, 0.0, 1.0, 0.9),
+        )
+
+    _render(
+        total_call_rows,
+        filename="16_raw_tool_call_volume_by_family.png",
+        title="Raw Tool-Call Volume by Family",
+        subtitle=(
+            "Metric: summed `total_calls` across per-executable redundancy rows. "
+            "This is raw call volume, not an inferred waste score."
+        ),
+        xlabel="Aggregated raw tool calls",
+        description=(
+            "Horizontal ranking of raw tool-call volume by tool family across the experiment. "
+            "Annotations show the executable contributing the largest share plus the corresponding semantic and same-source repeat totals."
+        ),
+    )
+    _render(
+        same_source_rows,
+        filename="17_same_source_semantic_repeat_volume_by_family.png",
+        title="Same-Source Semantic Repeat Volume by Family",
+        subtitle=(
+            "Metric: summed `same_source_semantic_duplicate_calls` across per-executable redundancy rows. "
+            "A repeat counts when the same logged source actor hits the same semantic target again."
+        ),
+        xlabel="Aggregated same-source semantic repeats",
+        description=(
+            "Horizontal ranking of repeated calls to the same semantic target by the same logged source actor. "
+            "This is narrower than raw call volume and does not apply the extra likely-wasteful heuristic."
+        ),
+    )
+
+
+def _plot_focus_run_source_breakdown(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    source_tool_rows: List[Dict[str, Any]] | None,
+    source_run_rows: List[Dict[str, Any]] | None,
+    *,
+    title_prefix: str,
+) -> None:
+    focus_run = _select_focus_source_run(source_run_rows)
+    if not focus_run:
+        return
+    run_key = (
+        str(focus_run.get("variant_id") or ""),
+        str(focus_run.get("sample") or ""),
+        str(focus_run.get("run_id") or ""),
+    )
+    matching_rows = [
+        row
+        for row in list(source_tool_rows or [])
+        if isinstance(row, dict)
+        and (
+            str(row.get("variant_id") or ""),
+            str(row.get("sample") or ""),
+            str(row.get("run_id") or ""),
+        ) == run_key
+    ]
+    if not matching_rows:
+        return
+
+    family_rows = _build_tool_family_metric_rows(matching_rows, metric_key="total_calls", top_n=8)
+    family_order = [str(row.get("tool_family") or "") for row in family_rows if str(row.get("tool_family") or "")]
+    if not family_order:
+        return
+    family_set = set(family_order)
+    source_counts: Dict[str, float] = defaultdict(float)
+    for row in matching_rows:
+        source_label = str(row.get("source") or "").strip()
+        if source_label:
+            source_counts[source_label] += float(_safe_float(row.get("total_calls")) or 0.0)
+    source_order = [
+        source
+        for source, _value in sorted(source_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+    ]
+    if not source_order:
+        return
+
+    source_color_map = {
+        source: SERIES_COLORS[index % len(SERIES_COLORS)]
+        for index, source in enumerate(source_order)
+    }
+    values_by_family: Dict[str, Dict[str, float]] = {
+        family: {source: 0.0 for source in source_order}
+        for family in family_order
+    }
+    for row in matching_rows:
+        family = str(row.get("tool_family") or "").strip()
+        source_label = str(row.get("source") or "").strip()
+        if family not in family_set or source_label not in source_color_map:
+            continue
+        values_by_family[family][source_label] += float(_safe_float(row.get("total_calls")) or 0.0)
+
+    fig, ax = plt.subplots(figsize=(12.2, max(5.2, len(family_order) * 0.62 + 2.8)))
+    y_positions = list(range(len(family_order)))
+    cumulative = [0.0 for _ in family_order]
+    for source in source_order:
+        source_values = [values_by_family[family][source] for family in family_order]
+        ax.barh(
+            y_positions,
+            source_values,
+            left=cumulative,
+            height=0.64,
+            color=source_color_map[source],
+            label=source,
+        )
+        cumulative = [left + value for left, value in zip(cumulative, source_values)]
+
+    labels = [_wrap_label(_short_category_label(family), width=20) for family in family_order]
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Raw tool calls in the selected run")
+    ax.set_title(_title(title_prefix, "Source Breakdown for the Highest Same-Source-Repeat Run"), loc="left")
+    sample_label = Path(str(focus_run.get("sample") or "")).stem
+    variant_label = _short_config_label(focus_run.get("display_label") or focus_run.get("variant_id") or "")
+    fig.text(
+        0.125,
+        0.93,
+        (
+            f"Selected run: {variant_label} | {sample_label} | {focus_run.get('run_id')} | "
+            f"same-source semantic repeats {int(round(float(focus_run.get('same_source_semantic_duplicate_calls') or 0.0)))}"
+        ),
+        ha="left",
+        va="bottom",
+        fontsize=9.4,
+        color="#475569",
+    )
+    _style_axes(ax, grid_axis="x")
+    _apply_axis_formatter(ax, axis="x", kind="number")
+    ax.legend(loc="lower right", title="Logged source actor")
+    for y_pos, family in zip(y_positions, family_order):
+        ax.text(
+            cumulative[y_pos] + max(cumulative or [1.0]) * 0.014,
+            y_pos,
+            f"{int(round(cumulative[y_pos]))}",
+            va="center",
+            ha="left",
+            fontsize=8.6,
+            color="#1f2937",
+        )
+    _save_figure(
+        fig,
+        output_dir,
+        created_files,
+        "18_focus_run_source_breakdown.png",
+        "Source Breakdown for the Highest Same-Source-Repeat Run",
+        (
+            "Stacked horizontal bar chart showing raw tool-call volume by tool family for the run with the highest same-source semantic repeat count. "
+            "Colors identify the logged source actors contributing to each family."
+        ),
+        tight_rect=(0.0, 0.0, 1.0, 0.9),
+    )
+
+
+def _plot_executable_resource_rankings(
+    plt,
+    output_dir: Path,
+    created_files: List[Dict[str, str]],
+    executable_resource_df,
+    *,
+    title_prefix: str,
+) -> None:
+    if executable_resource_df is None or executable_resource_df.empty:
+        return
+
+    def _render(
+        metric_column: str,
+        observation_count_column: str,
+        *,
+        filename: str,
+        title: str,
+        subtitle: str,
+        xlabel: str,
+        value_formatter,
+        description: str,
+    ) -> None:
+        plot_df = executable_resource_df.dropna(subset=[metric_column]).copy()
+        if plot_df.empty:
+            return
+        plot_df = plot_df.sort_values([metric_column, "sample"], ascending=[False, True]).reset_index(drop=True)
+        labels = [_wrap_label(str(row.get("sample") or ""), width=24) for _, row in plot_df.iterrows()]
+        values = [float(row.get(metric_column) or 0.0) for _, row in plot_df.iterrows()]
+        xmax = max(values or [1.0])
+        xmax = max(xmax, 1.0) * 1.28
+        fig, ax = plt.subplots(figsize=(11.8, max(5.0, len(plot_df) * 0.58 + 2.6)))
+        y_positions = list(range(len(plot_df)))
+        ax.barh(y_positions, values, color="#1f77b4", height=0.64)
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(labels)
+        ax.invert_yaxis()
+        ax.set_xlim(0.0, xmax)
+        ax.set_xlabel(xlabel)
+        ax.set_title(_title(title_prefix, title), loc="left")
+        fig.text(
+            0.125,
+            0.93,
+            subtitle,
+            ha="left",
+            va="bottom",
+            fontsize=9.4,
+            color="#475569",
+        )
+        _style_axes(ax, grid_axis="x")
+        _apply_axis_formatter(ax, axis="x", kind="number")
+        for y_pos, (_, row) in zip(y_positions, plot_df.iterrows()):
+            value = float(row.get(metric_column) or 0.0)
+            observation_count = int(float(row.get(observation_count_column) or 0.0))
+            run_count = int(float(row.get("completed_run_count") or 0.0))
+            ax.text(
+                value + xmax * 0.014,
+                y_pos,
+                f"{value_formatter(value)}  | n={observation_count} task runs  | runs={run_count}",
+                va="center",
+                ha="left",
+                fontsize=8.7,
+                color="#1f2937",
+            )
+        _save_figure(
+            fig,
+            output_dir,
+            created_files,
+            filename,
+            title,
+            description,
+            tight_rect=(0.0, 0.0, 1.0, 0.9),
+        )
+
+    _render(
+        "mean_task_wall_clock_duration_sec",
+        "duration_observation_count",
+        filename="19_average_runtime_by_executable.png",
+        title="Average Runtime by Executable",
+        subtitle=(
+            "Metric: mean `task_wall_clock_duration_sec` across included `default_analysis` task runs. "
+            "Main outputs use complete successful runs; rows without a numeric wall-clock duration are excluded."
+        ),
+        xlabel="Average wall-clock runtime per default_analysis task run (s)",
+        value_formatter=lambda value: f"{value:.1f}s",
+        description=(
+            "Descending horizontal bar chart ranking executables by average wall-clock runtime across included default-analysis task runs. "
+            "Annotations show the metric value, the number of task-run observations contributing to the mean, and the number of distinct runs represented."
+        ),
+    )
+    _render(
+        "mean_estimated_cost_usd",
+        "cost_observation_count",
+        filename="20_average_cost_by_executable.png",
+        title="Average Cost by Executable",
+        subtitle=(
+            "Metric: mean `total_estimated_cost_usd` across included `default_analysis` task runs. "
+            "Main outputs use complete successful runs; rows without a numeric USD estimate are excluded."
+        ),
+        xlabel="Average estimated cost per default_analysis task run (USD)",
+        value_formatter=lambda value: f"${value:.4f}",
+        description=(
+            "Descending horizontal bar chart ranking executables by average estimated USD cost across included default-analysis task runs. "
+            "Annotations show the mean cost, contributing task-run count, and the number of distinct runs represented."
+        ),
+    )
+
+
 def generate_experiment_visuals(
     output_dir: Path,
     *,
@@ -1297,10 +1921,13 @@ def generate_experiment_visuals(
     difficulty_rows: List[Dict[str, Any]],
     technique_rows: List[Dict[str, Any]],
     executable_rows: List[Dict[str, Any]] | None = None,
+    executable_resource_rows: List[Dict[str, Any]] | None = None,
     executable_consistency_rows: List[Dict[str, Any]] | None = None,
     redundancy_variant_rows: List[Dict[str, Any]] | None = None,
     redundancy_executable_rows: List[Dict[str, Any]] | None = None,
     redundancy_target_rows: List[Dict[str, Any]] | None = None,
+    source_tool_rows: List[Dict[str, Any]] | None = None,
+    source_run_rows: List[Dict[str, Any]] | None = None,
     significance_overall_rows: List[Dict[str, Any]] | None = None,
     significance_difficulty_rows: List[Dict[str, Any]] | None = None,
     significance_task_rows: List[Dict[str, Any]] | None = None,
@@ -1339,8 +1966,10 @@ def generate_experiment_visuals(
     technique_df = pd.DataFrame(technique_rows or [])
     timing_tag_df = pd.DataFrame(timing_task_tag_rows or [])
     executable_df = pd.DataFrame(executable_rows or [])
+    executable_resource_df = pd.DataFrame(executable_resource_rows or [])
     executable_consistency_df = pd.DataFrame(executable_consistency_rows or [])
     redundancy_variant_df = pd.DataFrame(redundancy_variant_rows or [])
+    redundancy_executable_df = pd.DataFrame(redundancy_executable_rows or [])
     redundancy_target_df = pd.DataFrame(redundancy_target_rows or [])
 
     if not variant_df.empty:
@@ -1425,6 +2054,20 @@ def generate_experiment_visuals(
             ],
         )
 
+    if not executable_resource_df.empty:
+        executable_resource_df = executable_resource_df.copy()
+        executable_resource_df = _coerce_numeric_frame(
+            executable_resource_df,
+            [
+                "completed_run_count",
+                "variant_count",
+                "duration_observation_count",
+                "cost_observation_count",
+                "mean_task_wall_clock_duration_sec",
+                "mean_estimated_cost_usd",
+            ],
+        )
+
     if not executable_consistency_df.empty:
         executable_consistency_df = executable_consistency_df.copy()
         executable_consistency_df["display_label"] = executable_consistency_df["display_label"].fillna(executable_consistency_df["variant_id"])
@@ -1455,6 +2098,25 @@ def generate_experiment_visuals(
             ],
         )
 
+    if not redundancy_executable_df.empty:
+        redundancy_executable_df = redundancy_executable_df.copy()
+        redundancy_executable_df["display_label"] = redundancy_executable_df["display_label"].fillna(redundancy_executable_df["variant_id"])
+        redundancy_executable_df = _coerce_numeric_frame(
+            redundancy_executable_df,
+            [
+                "total_calls",
+                "semantic_duplicate_calls",
+                "same_source_semantic_duplicate_calls",
+                "exact_duplicate_calls",
+                "same_source_exact_duplicate_calls",
+                "semantic_duplicate_rate",
+                "same_source_semantic_duplicate_rate",
+                "mean_semantic_duplicate_calls_per_task",
+                "mean_same_source_semantic_duplicate_calls_per_task",
+                "likely_wasteful_duplicate_calls",
+            ],
+        )
+
     if not redundancy_target_df.empty:
         redundancy_target_df = redundancy_target_df.copy()
         redundancy_target_df["display_label"] = redundancy_target_df["display_label"].fillna(redundancy_target_df["variant_id"])
@@ -1479,8 +2141,12 @@ def generate_experiment_visuals(
         ("per-executable delta rankings", lambda: _plot_executable_delta_rankings(plt, output_dir, created_files, executable_df, color_map, title_prefix=title_prefix)),
         ("cross-executable delta heatmap", lambda: _plot_cross_executable_delta_heatmap(plt, output_dir, created_files, executable_df, executable_consistency_df, title_prefix=title_prefix)),
         ("per-executable redundancy heatmap", lambda: _plot_executable_redundancy_heatmap(plt, output_dir, created_files, executable_df, title_prefix=title_prefix)),
+        ("per-executable resource rankings", lambda: _plot_executable_resource_rankings(plt, output_dir, created_files, executable_resource_df, title_prefix=title_prefix)),
         ("tool redundancy by configuration", lambda: _plot_tool_redundancy_by_variant(plt, output_dir, created_files, redundancy_variant_df, title_prefix=title_prefix)),
         ("likely wasteful duplicate targets", lambda: _plot_likely_wasteful_hotspots(plt, output_dir, created_files, redundancy_target_df, title_prefix=title_prefix)),
+        ("excess tool-call rankings", lambda: _plot_excess_tool_call_rankings(plt, output_dir, created_files, redundancy_executable_df.to_dict(orient="records"), title_prefix=title_prefix)),
+        ("raw tool-call rankings", lambda: _plot_raw_tool_call_rankings(plt, output_dir, created_files, redundancy_executable_df.to_dict(orient="records"), title_prefix=title_prefix)),
+        ("focus run source breakdown", lambda: _plot_focus_run_source_breakdown(plt, output_dir, created_files, list(source_tool_rows or []), list(source_run_rows or []), title_prefix=title_prefix)),
     ]
 
     for label, plot_job in plot_jobs:

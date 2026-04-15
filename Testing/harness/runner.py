@@ -159,7 +159,7 @@ def _should_retry_task_failure(
     if attempt_index >= max_attempts:
         return False
     status = str(agent_result.get("status") or "").strip().lower()
-    if status in {"", "completed", "validator_blocked"}:
+    if status in {"", "completed", "completed_with_worker_failures", "validator_blocked"}:
         return False
     return bool(agent_result.get("failure_retryable"))
 
