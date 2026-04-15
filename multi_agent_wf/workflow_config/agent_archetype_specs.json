@@ -113,7 +113,7 @@
   },
   "reporting_analyst": {
     "description": "Reporting specialist that synthesizes validated findings into a concise technical report.",
-    "tool_domain": "none",
+    "tool_domain": "artifact_only",
     "preferred_mode": "sync",
     "typical_complexity": "moderate",
     "model": "openai:gpt-5-nano"

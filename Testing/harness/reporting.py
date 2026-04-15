@@ -363,6 +363,7 @@ def build_sample_record(
         "accepted_final_output": bool(agent_result.get("accepted_final_output")),
         "validator_blocked": str(agent_result.get("status") or "") == "validator_blocked",
         "worker_assignment_failed": str(agent_result.get("status") or "") == "worker_assignment_failed",
+        "worker_assignment_degraded": str(agent_result.get("status") or "") == "completed_with_worker_failures",
         "failure_reason": str(agent_result.get("failure_reason") or agent_result.get("error") or ""),
         "failure_category": str(agent_result.get("failure_category") or ""),
         "failure_retryable": bool(agent_result.get("failure_retryable")),
@@ -518,6 +519,7 @@ def _aggregate_bucket(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "synthetic_judge_rate": _rate(records, lambda record: bool((record.get("metrics") or {}).get("synthetic_judge_result"))),
         "validator_blocked_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "validator_blocked"),
         "worker_assignment_failed_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "worker_assignment_failed"),
+        "worker_assignment_degraded_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "completed_with_worker_failures"),
         "analysis_failure_rate": _rate(
             records,
             lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") in {"analysis_error", "worker_assignment_failed"},
@@ -616,6 +618,7 @@ def aggregate_records(run_metadata: Dict[str, Any], records: List[Dict[str, Any]
         "synthetic_judge_rate": _rate(records, lambda record: bool((record.get("metrics") or {}).get("synthetic_judge_result"))),
         "validator_blocked_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "validator_blocked"),
         "worker_assignment_failed_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "worker_assignment_failed"),
+        "worker_assignment_degraded_rate": _rate(records, lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") == "completed_with_worker_failures"),
         "analysis_failure_rate": _rate(
             records,
             lambda record: str((record.get("metrics") or {}).get("analysis_status") or "") in {"analysis_error", "worker_assignment_failed"},
@@ -699,6 +702,7 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
         "synthetic_judge_result",
         "validator_blocked",
         "worker_assignment_failed",
+        "worker_assignment_degraded",
         "failure_reason",
         "failure_category",
         "failure_retryable",
@@ -779,6 +783,7 @@ def write_summary_csv(path, records: List[Dict[str, Any]], run_metadata: Dict[st
                 "synthetic_judge_result": metrics.get("synthetic_judge_result", ""),
                 "validator_blocked": metrics.get("validator_blocked", ""),
                 "worker_assignment_failed": metrics.get("worker_assignment_failed", ""),
+                "worker_assignment_degraded": metrics.get("worker_assignment_degraded", ""),
                 "failure_reason": metrics.get("failure_reason", ""),
                 "failure_category": metrics.get("failure_category", ""),
                 "failure_retryable": metrics.get("failure_retryable", ""),
@@ -873,6 +878,7 @@ def write_markdown_report(path, aggregate: Dict[str, Any]) -> None:
     lines.append(f"- Synthetic non-result judge rate: `{aggregate.get('synthetic_judge_rate')}`")
     lines.append(f"- Validator blocked rate: `{aggregate.get('validator_blocked_rate')}`")
     lines.append(f"- Worker assignment failed rate: `{aggregate.get('worker_assignment_failed_rate')}`")
+    lines.append(f"- Worker assignment degraded-completion rate: `{aggregate.get('worker_assignment_degraded_rate')}`")
     lines.append(f"- Analysis failure rate: `{aggregate.get('analysis_failure_rate')}`")
     lines.append(f"- Judge error rate: `{aggregate.get('judge_error_rate')}`")
     lines.append(f"- Mean relative cost index: `{aggregate.get('mean_relative_cost_index')}`")

@@ -1002,6 +1002,8 @@ def tool_name_to_server_guess(tool_name: str) -> str:
         return "CapaMCP"
     if "floss" in name:
         return "flareflossmcp"
+    if "sdhash" in name:
+        return "sdhashmcp"
     if "hash" in name:
         return "hashdbmcp"
     if "ssdeep" in name or "fuzzy" in name:

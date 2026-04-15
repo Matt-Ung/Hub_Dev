@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from .runtime_defaults import DEFAULT_DEEP_AGENT_REQUEST_LIMIT
 from .workflow_config_loader import load_workflow_config
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -35,12 +36,6 @@ WORKER_ROLE_PROMPT_MODE_CHOICES = [
 WORKER_ROLE_PROMPT_MODE_LABELS = {
     value: label for label, value in WORKER_ROLE_PROMPT_MODE_CHOICES
 }
-SHELL_EXECUTION_MODE_CHOICES = [
-    ("None", "none"),
-    ("Yes, with permission from user", "ask"),
-    ("Yes FULL ACCESS (Use at Risk)", "full"),
-]
-SHELL_EXECUTION_MODE_LABELS = {value: label for label, value in SHELL_EXECUTION_MODE_CHOICES}
 PATH_HANDOFF_LINE_PREFIX = "Validated sample path:"
 SAMPLE_PATH_SUFFIXES = ("exe", "dll", "sys", "scr", "ocx", "cpl", "bin", "elf", "so", "dylib")
 SAMPLE_PATH_WINDOWS_RE = re.compile(
@@ -121,21 +116,6 @@ def _normalize_validator_review_level(value: Any) -> str:
     if normalized in {"professor", "cs professor", "medium", "moderate"}:
         return "intermediate"
     return "default"
-
-
-def _normalize_shell_execution_mode(value: Any) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"none", "ask", "full"}:
-        return normalized
-    if normalized in {"off", "disabled", "disable", "no", "false"}:
-        return "none"
-    if normalized in {"prompt", "approval", "approve", "with permission", "permission", "yes with permission"}:
-        return "ask"
-    if normalized in {"on", "enabled", "enable", "yes", "full access", "unsafe", "use at risk"}:
-        return "full"
-    return "none"
-
-
 def _normalize_worker_role_prompt_mode(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"default", "blank"}:
@@ -370,6 +350,7 @@ def _build_runtime_settings(
         "DEEP_ENABLE_MEMORY": _env_flag_from(env, "DEEP_ENABLE_MEMORY", True),
         "DEEP_MEMORY_DIR": env.get("DEEP_MEMORY_DIR", ".deep/memory"),
         "DEEP_PERSIST_BACKEND": _env_flag_from(env, "DEEP_PERSIST_BACKEND", True),
+        "DEEP_REPORTER_ENABLE_ARTIFACTS": _env_flag_from(env, "DEEP_REPORTER_ENABLE_ARTIFACTS", True),
         "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS": _env_flag_from(
             env,
             "AUTO_TRIAGE_INCLUDE_PRESWEEP_STRING_PREVIEWS",
@@ -381,7 +362,10 @@ def _build_runtime_settings(
         "DEEP_SKILL_DIRS": _parse_path_list(str(env.get("DEEP_SKILL_DIRS", ""))),
         "HOST_PARALLEL_WORKER_EXECUTION": _env_flag_from(env, "HOST_PARALLEL_WORKER_EXECUTION", True),
         "DEEP_CONTEXT_MAX_TOKENS": int(env.get("DEEP_CONTEXT_MAX_TOKENS", "18000")),
-        "DEEP_AGENT_REQUEST_LIMIT": _parse_optional_positive_int(env.get("DEEP_AGENT_REQUEST_LIMIT"), 50),
+        "DEEP_AGENT_REQUEST_LIMIT": _parse_optional_positive_int(
+            env.get("DEEP_AGENT_REQUEST_LIMIT"),
+            DEFAULT_DEEP_AGENT_REQUEST_LIMIT,
+        ),
         "MAX_STATUS_LOG_LINES": int(env.get("MAX_STATUS_LOG_LINES", "400")),
         "STATUS_LOG_STDOUT": _env_flag_from(env, "STATUS_LOG_STDOUT", True),
         "DEEP_AGENT_RETRIES": int(env.get("DEEP_AGENT_RETRIES", "4")),
@@ -392,12 +376,8 @@ def _build_runtime_settings(
         ),
         "DEEP_AGENT_AUTO_SELECT_PIPELINE": auto_select_pipeline,
         "DEEP_AGENT_PIPELINE_ROUTER_MODEL": env.get("DEEP_AGENT_PIPELINE_ROUTER_MODEL", "openai:gpt-4o-mini"),
-        "DEFAULT_ALLOW_PARENT_INPUT": _env_flag_from(env, "DEFAULT_ALLOW_PARENT_INPUT", False),
         "DEFAULT_VALIDATOR_REVIEW_LEVEL": _normalize_validator_review_level(
             env.get("DEFAULT_VALIDATOR_REVIEW_LEVEL", "default")
-        ),
-        "DEFAULT_SHELL_EXECUTION_MODE": _normalize_shell_execution_mode(
-            env.get("DEFAULT_SHELL_EXECUTION_MODE", "none")
         ),
         "AUTOMATION_TRIGGER_ENABLED": _env_flag_from(env, "AUTOMATION_TRIGGER_ENABLED", False),
         "AUTOMATION_TRIGGER_HOST": (env.get("AUTOMATION_TRIGGER_HOST") or "127.0.0.1").strip() or "127.0.0.1",

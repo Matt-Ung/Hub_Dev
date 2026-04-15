@@ -20,12 +20,12 @@ import json
 import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import mean, pstdev
 from typing import Any, Callable, Dict, List, Tuple
 
-from .artifacts import prepare_corpus_bundles
+from .artifacts import parse_tool_log_sections, prepare_corpus_bundles
 from .budgeting import (
     evaluate_budget_status,
     evaluate_projected_experiment_budget,
@@ -47,6 +47,7 @@ from .significance import build_significance_outputs
 from .samples import build_evaluation_tasks, get_corpus_config, list_sample_binaries, load_sample_manifest
 from .subprocess_utils import run_command
 from .timing import build_timing_outputs
+from .tool_redundancy import normalize_tool_call_entries
 from .visualization import generate_experiment_visuals
 
 
@@ -515,6 +516,7 @@ def _task_group_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "score": round(mean(score_values), 3) if score_values else None,
         "task_success_rate": _rate_metric(records, "metrics.task_success"),
         "relative_cost_index": _mean_metric(records, "metrics.total_relative_cost_index"),
+        "estimated_cost_usd": _mean_metric(records, "metrics.total_estimated_cost_usd"),
         "tool_calls_total": _mean_metric(records, "metrics.tool_calls_total"),
         "tool_exact_duplicate_calls": _mean_metric(records, "metrics.tool_exact_duplicate_calls"),
         "tool_semantic_duplicate_calls": _mean_metric(records, "metrics.tool_semantic_duplicate_calls"),
@@ -555,6 +557,7 @@ def _sample_group_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "task_success_rate": _rate_metric(records, "metrics.task_success"),
         "produced_result_rate": _rate_metric(records, "metrics.produced_result"),
         "relative_cost_index": _mean_metric(records, "metrics.total_relative_cost_index"),
+        "estimated_cost_usd": _mean_metric(records, "metrics.total_estimated_cost_usd"),
         "tool_calls_total": _mean_metric(records, "metrics.tool_calls_total"),
         "tool_semantic_duplicate_calls": _mean_metric(records, "metrics.tool_semantic_duplicate_calls"),
         "tool_same_source_semantic_duplicate_calls": _mean_metric(
@@ -570,6 +573,89 @@ def _sample_group_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "tool_most_redundant_target": _string_metric_mode(records, "metrics.tool_most_redundant_target"),
         "task_wall_clock_duration_sec": wall_clock_duration,
     }
+
+
+def _build_default_analysis_executable_resource_rows(
+    run_entries: List[Dict[str, Any]],
+    *,
+    task_id: str = "default_analysis",
+) -> List[Dict[str, Any]]:
+    buckets: Dict[str, Dict[str, Any]] = {}
+    wanted_task_id = str(task_id or "default_analysis").strip() or "default_analysis"
+    for entry in list(run_entries or []):
+        if not isinstance(entry, dict):
+            continue
+        run_id = str(entry.get("run_id") or "").strip()
+        variant_id = str(entry.get("variant_id") or "").strip()
+        display_label = str(entry.get("display_label") or "").strip()
+        aggregate = entry.get("aggregate") if isinstance(entry.get("aggregate"), dict) else {}
+        for raw_record in list(aggregate.get("records") or []):
+            if not isinstance(raw_record, dict):
+                continue
+            record = _refresh_record_tool_metrics(raw_record)
+            record_task_id = str(record.get("task_id") or "").strip()
+            if record_task_id != wanted_task_id:
+                continue
+            sample = str(record.get("sample") or "").strip()
+            if not sample:
+                continue
+            bucket = buckets.setdefault(
+                sample,
+                {
+                    "sample": sample,
+                    "run_ids": set(),
+                    "variant_ids": set(),
+                    "display_labels": set(),
+                    "analysis_statuses": [],
+                    "runtime_values": [],
+                    "cost_values": [],
+                },
+            )
+            if run_id:
+                bucket["run_ids"].add(run_id)
+            if variant_id:
+                bucket["variant_ids"].add(variant_id)
+            if display_label:
+                bucket["display_labels"].add(display_label)
+            analysis_status = str(((record.get("metrics") or {}) if isinstance(record.get("metrics"), dict) else {}).get("analysis_status") or "").strip()
+            if analysis_status:
+                bucket["analysis_statuses"].append(analysis_status)
+            metrics = (record.get("metrics") or {}) if isinstance(record.get("metrics"), dict) else {}
+            runtime_value = metrics.get("task_wall_clock_duration_sec")
+            if runtime_value is None:
+                runtime_value = metrics.get("total_duration_sec")
+            try:
+                if runtime_value is not None:
+                    bucket["runtime_values"].append(float(runtime_value))
+            except Exception:
+                pass
+            cost_value = metrics.get("total_estimated_cost_usd")
+            try:
+                if cost_value is not None:
+                    bucket["cost_values"].append(float(cost_value))
+            except Exception:
+                pass
+
+    rows: List[Dict[str, Any]] = []
+    for sample in sorted(buckets):
+        bucket = buckets[sample]
+        runtime_values = list(bucket.get("runtime_values") or [])
+        cost_values = list(bucket.get("cost_values") or [])
+        rows.append(
+            {
+                "sample": sample,
+                "task_id": wanted_task_id,
+                "completed_run_count": len(bucket.get("run_ids") or []),
+                "variant_count": len(bucket.get("variant_ids") or []),
+                "duration_observation_count": len(runtime_values),
+                "cost_observation_count": len(cost_values),
+                "mean_task_wall_clock_duration_sec": _mean_or_none(runtime_values),
+                "mean_estimated_cost_usd": _mean_or_none(cost_values),
+                "analysis_status": _dominant_text(list(bucket.get("analysis_statuses") or [])),
+                "variants_seen": "; ".join(sorted(bucket.get("display_labels") or [])),
+            }
+        )
+    return rows
 
 
 def _stddev_or_zero(values: List[float]) -> float | None:
@@ -652,6 +738,19 @@ def _assess_duplicate_target(
     return "review_needed"
 
 
+def _normalized_tool_calls_from_agent_result(agent_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    calls = [call for call in list(agent_result.get("normalized_tool_calls") or []) if isinstance(call, dict)]
+    if calls:
+        return calls
+    sections = agent_result.get("tool_log_sections") or {}
+    if not isinstance(sections, dict) or not sections:
+        return []
+    try:
+        return normalize_tool_call_entries(parse_tool_log_sections(sections))
+    except Exception:
+        return []
+
+
 def _build_executable_summary_tables(
     *,
     run_entries: List[Dict[str, Any]],
@@ -661,10 +760,13 @@ def _build_executable_summary_tables(
         return {
             "per_run_rows": [],
             "executable_rows": [],
+            "resource_rows": [],
             "consistency_rows": [],
             "variant_tool_rows": [],
             "executable_tool_rows": [],
             "target_rows": [],
+            "source_tool_rows": [],
+            "source_run_rows": [],
         }
 
     variant_meta_by_id = {
@@ -675,6 +777,7 @@ def _build_executable_summary_tables(
     per_run_rows: List[Dict[str, Any]] = []
     tool_buckets: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     target_buckets: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    source_tool_buckets: Dict[Tuple[str, str, str, str, str], Dict[str, Any]] = {}
 
     for entry in run_entries:
         variant_id = str(entry.get("variant_id") or "").strip()
@@ -682,6 +785,8 @@ def _build_executable_summary_tables(
             continue
         meta = variant_meta_by_id[variant_id]
         aggregate = dict(entry.get("aggregate") or {})
+        run_id = str(entry.get("run_id") or "")
+        replicate_index = entry.get("replicate_index")
         records = [
             _refresh_record_tool_metrics(record)
             for record in list(aggregate.get("records") or [])
@@ -698,14 +803,15 @@ def _build_executable_summary_tables(
                     "comparison_baseline_id": str(meta.get("comparison_baseline_id") or "baseline"),
                     "comparison_baseline_label": str(meta.get("comparison_baseline_label") or "baseline"),
                     "sample": sample_name,
-                    "run_id": str(entry.get("run_id") or ""),
-                    "replicate_index": entry.get("replicate_index"),
+                    "run_id": run_id,
+                    "replicate_index": replicate_index,
                     "analysis_status": summary.get("analysis_status"),
                     "task_count": summary.get("task_count"),
                     "score": summary.get("score"),
                     "task_success_rate": summary.get("task_success_rate"),
                     "produced_result_rate": summary.get("produced_result_rate"),
                     "relative_cost_index": summary.get("relative_cost_index"),
+                    "estimated_cost_usd": summary.get("estimated_cost_usd"),
                     "tool_calls_total": summary.get("tool_calls_total"),
                     "tool_semantic_duplicate_calls": summary.get("tool_semantic_duplicate_calls"),
                     "tool_same_source_semantic_duplicate_calls": summary.get("tool_same_source_semantic_duplicate_calls"),
@@ -723,6 +829,71 @@ def _build_executable_summary_tables(
             sample_task_id = str(record.get("sample_task_id") or "")
             agent_result = dict(record.get("agent_result") or {})
             redundancy = dict(agent_result.get("tool_redundancy") or {})
+            normalized_calls = _normalized_tool_calls_from_agent_result(agent_result)
+            source_tool_counters: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+            for call in normalized_calls:
+                source_label = str(call.get("source") or "").strip()
+                tool_family = str(call.get("tool_family") or "").strip()
+                if not source_label or not tool_family:
+                    continue
+                counter_bucket = source_tool_counters.setdefault(
+                    (source_label, tool_family),
+                    {
+                        "source": source_label,
+                        "tool_family": tool_family,
+                        "semantic_counts": Counter(),
+                        "exact_counts": Counter(),
+                        "stages": set(),
+                        "total_calls": 0,
+                    },
+                )
+                counter_bucket["total_calls"] += 1
+                semantic_key = str(call.get("semantic_key") or "").strip()
+                exact_key = str(call.get("exact_key") or "").strip()
+                if semantic_key:
+                    counter_bucket["semantic_counts"][semantic_key] += 1
+                if exact_key:
+                    counter_bucket["exact_counts"][exact_key] += 1
+                stage_label = str(call.get("stage") or "").strip()
+                if stage_label:
+                    counter_bucket["stages"].add(stage_label)
+
+            for counter_bucket in source_tool_counters.values():
+                source_label = str(counter_bucket.get("source") or "")
+                tool_family = str(counter_bucket.get("tool_family") or "")
+                key = (variant_id, sample_name, run_id, source_label, tool_family)
+                bucket = source_tool_buckets.setdefault(
+                    key,
+                    {
+                        "variant_id": variant_id,
+                        "display_label": str(meta.get("display_label") or variant_id),
+                        "changed_variable": str(meta.get("changed_variable") or ""),
+                        "sample": sample_name,
+                        "run_id": run_id,
+                        "replicate_index": replicate_index,
+                        "task_name": task_name,
+                        "sample_task_id": sample_task_id,
+                        "source": source_label,
+                        "tool_family": tool_family,
+                        "stages": set(),
+                        "total_calls": 0,
+                        "semantic_duplicate_calls": 0,
+                        "same_source_semantic_duplicate_calls": 0,
+                        "exact_duplicate_calls": 0,
+                    },
+                )
+                semantic_counts = counter_bucket.get("semantic_counts") or Counter()
+                exact_counts = counter_bucket.get("exact_counts") or Counter()
+                total_calls = int(counter_bucket.get("total_calls") or 0)
+                semantic_duplicate_calls = sum(max(0, int(count) - 1) for count in semantic_counts.values())
+                exact_duplicate_calls = sum(max(0, int(count) - 1) for count in exact_counts.values())
+                bucket["total_calls"] += total_calls
+                bucket["semantic_duplicate_calls"] += semantic_duplicate_calls
+                bucket["same_source_semantic_duplicate_calls"] += semantic_duplicate_calls
+                bucket["exact_duplicate_calls"] += exact_duplicate_calls
+                bucket["stages"].update(counter_bucket.get("stages") or set())
+
             for raw_tool in list(redundancy.get("top_duplicate_tools") or []):
                 if not isinstance(raw_tool, dict):
                     continue
@@ -834,6 +1005,7 @@ def _build_executable_summary_tables(
                 "scores": [],
                 "task_success_rates": [],
                 "relative_cost_indices": [],
+                "estimated_cost_usds": [],
                 "tool_calls": [],
                 "tool_duplicate_calls": [],
                 "tool_same_source_duplicate_calls": [],
@@ -850,6 +1022,7 @@ def _build_executable_summary_tables(
             ("score", "scores"),
             ("task_success_rate", "task_success_rates"),
             ("relative_cost_index", "relative_cost_indices"),
+            ("estimated_cost_usd", "estimated_cost_usds"),
             ("tool_calls_total", "tool_calls"),
             ("tool_semantic_duplicate_calls", "tool_duplicate_calls"),
             ("tool_same_source_semantic_duplicate_calls", "tool_same_source_duplicate_calls"),
@@ -884,6 +1057,7 @@ def _build_executable_summary_tables(
                 "mean_task_success_rate": _mean_or_none(bucket["task_success_rates"]),
                 "task_success_rate_stddev": _stddev_or_zero(bucket["task_success_rates"]),
                 "mean_relative_cost_index": _mean_or_none(bucket["relative_cost_indices"]),
+                "mean_estimated_cost_usd": _mean_or_none(bucket["estimated_cost_usds"]),
                 "mean_tool_calls": _mean_or_none(bucket["tool_calls"]),
                 "mean_tool_semantic_duplicate_calls": _mean_or_none(bucket["tool_duplicate_calls"]),
                 "mean_tool_same_source_semantic_duplicate_calls": _mean_or_none(
@@ -1007,6 +1181,8 @@ def _build_executable_summary_tables(
                 "weakest_executable_delta": weakest.get("score_delta"),
             }
         )
+
+    resource_rows = _build_default_analysis_executable_resource_rows(run_entries)
 
     executable_tool_rows: List[Dict[str, Any]] = []
     likely_wasteful_totals: Dict[Tuple[str, str, str], int] = defaultdict(int)
@@ -1150,6 +1326,128 @@ def _build_executable_summary_tables(
         )
     )
 
+    source_tool_rows: List[Dict[str, Any]] = []
+    for bucket in source_tool_buckets.values():
+        total_calls = int(bucket.get("total_calls") or 0)
+        semantic_duplicates = int(bucket.get("semantic_duplicate_calls") or 0)
+        same_source_semantic_duplicates = int(bucket.get("same_source_semantic_duplicate_calls") or 0)
+        exact_duplicates = int(bucket.get("exact_duplicate_calls") or 0)
+        source_tool_rows.append(
+            {
+                "variant_id": str(bucket.get("variant_id") or ""),
+                "display_label": str(bucket.get("display_label") or bucket.get("variant_id") or ""),
+                "changed_variable": str(bucket.get("changed_variable") or ""),
+                "sample": str(bucket.get("sample") or ""),
+                "run_id": str(bucket.get("run_id") or ""),
+                "replicate_index": bucket.get("replicate_index"),
+                "task_name": str(bucket.get("task_name") or ""),
+                "sample_task_id": str(bucket.get("sample_task_id") or ""),
+                "source": str(bucket.get("source") or ""),
+                "tool_family": str(bucket.get("tool_family") or ""),
+                "stages": "; ".join(sorted(bucket.get("stages") or [])),
+                "total_calls": total_calls,
+                "semantic_duplicate_calls": semantic_duplicates,
+                "same_source_semantic_duplicate_calls": same_source_semantic_duplicates,
+                "exact_duplicate_calls": exact_duplicates,
+                "semantic_duplicate_rate": round(semantic_duplicates / total_calls, 6) if total_calls else 0.0,
+                "same_source_semantic_duplicate_rate": (
+                    round(same_source_semantic_duplicates / total_calls, 6) if total_calls else 0.0
+                ),
+                "exact_duplicate_rate": round(exact_duplicates / total_calls, 6) if total_calls else 0.0,
+            }
+        )
+    source_tool_rows.sort(
+        key=lambda row: (
+            str(row.get("variant_id") or ""),
+            str(row.get("sample") or ""),
+            str(row.get("run_id") or ""),
+            -int(row.get("same_source_semantic_duplicate_calls") or 0),
+            -int(row.get("total_calls") or 0),
+            str(row.get("source") or ""),
+            str(row.get("tool_family") or ""),
+        )
+    )
+
+    source_run_buckets: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for row in source_tool_rows:
+        key = (
+            str(row.get("variant_id") or ""),
+            str(row.get("sample") or ""),
+            str(row.get("run_id") or ""),
+        )
+        bucket = source_run_buckets.setdefault(
+            key,
+            {
+                "variant_id": str(row.get("variant_id") or ""),
+                "display_label": str(row.get("display_label") or row.get("variant_id") or ""),
+                "changed_variable": str(row.get("changed_variable") or ""),
+                "sample": str(row.get("sample") or ""),
+                "run_id": str(row.get("run_id") or ""),
+                "replicate_index": row.get("replicate_index"),
+                "total_calls": 0,
+                "same_source_semantic_duplicate_calls": 0,
+                "semantic_duplicate_calls": 0,
+                "source_counts": Counter(),
+                "tool_family_counts": Counter(),
+            },
+        )
+        total_calls = int(row.get("total_calls") or 0)
+        semantic_duplicates = int(row.get("semantic_duplicate_calls") or 0)
+        same_source_semantic_duplicates = int(row.get("same_source_semantic_duplicate_calls") or 0)
+        source_label = str(row.get("source") or "")
+        tool_family = str(row.get("tool_family") or "")
+        bucket["total_calls"] += total_calls
+        bucket["semantic_duplicate_calls"] += semantic_duplicates
+        bucket["same_source_semantic_duplicate_calls"] += same_source_semantic_duplicates
+        if source_label:
+            bucket["source_counts"][source_label] += total_calls
+        if tool_family:
+            bucket["tool_family_counts"][tool_family] += total_calls
+
+    source_run_rows: List[Dict[str, Any]] = []
+    for bucket in source_run_buckets.values():
+        source_counts = bucket.get("source_counts") or Counter()
+        tool_family_counts = bucket.get("tool_family_counts") or Counter()
+        top_source, top_source_calls = ("", 0)
+        if source_counts:
+            top_source, top_source_calls = sorted(
+                source_counts.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )[0]
+        top_tool_family, top_tool_family_calls = ("", 0)
+        if tool_family_counts:
+            top_tool_family, top_tool_family_calls = sorted(
+                tool_family_counts.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )[0]
+        source_run_rows.append(
+            {
+                "variant_id": str(bucket.get("variant_id") or ""),
+                "display_label": str(bucket.get("display_label") or bucket.get("variant_id") or ""),
+                "changed_variable": str(bucket.get("changed_variable") or ""),
+                "sample": str(bucket.get("sample") or ""),
+                "run_id": str(bucket.get("run_id") or ""),
+                "replicate_index": bucket.get("replicate_index"),
+                "source_count": len(source_counts),
+                "total_calls": int(bucket.get("total_calls") or 0),
+                "semantic_duplicate_calls": int(bucket.get("semantic_duplicate_calls") or 0),
+                "same_source_semantic_duplicate_calls": int(bucket.get("same_source_semantic_duplicate_calls") or 0),
+                "top_source": top_source,
+                "top_source_calls": int(top_source_calls or 0),
+                "top_tool_family": top_tool_family,
+                "top_tool_family_calls": int(top_tool_family_calls or 0),
+            }
+        )
+    source_run_rows.sort(
+        key=lambda row: (
+            -int(row.get("same_source_semantic_duplicate_calls") or 0),
+            -int(row.get("total_calls") or 0),
+            str(row.get("variant_id") or ""),
+            str(row.get("sample") or ""),
+            str(row.get("run_id") or ""),
+        )
+    )
+
     executable_rows.sort(
         key=lambda row: (
             str(row.get("sample") or ""),
@@ -1185,10 +1483,13 @@ def _build_executable_summary_tables(
     return {
         "per_run_rows": per_run_rows,
         "executable_rows": executable_rows,
+        "resource_rows": resource_rows,
         "consistency_rows": consistency_rows,
         "variant_tool_rows": variant_tool_rows,
         "executable_tool_rows": executable_tool_rows,
         "target_rows": target_rows,
+        "source_tool_rows": source_tool_rows,
+        "source_run_rows": source_run_rows,
     }
 
 
@@ -1888,7 +2189,7 @@ def _build_experiment_report(
     lines.append("- Canonical task artifacts: `runs/<variant_id>/r###/cases/<sample>/<task>/`")
     lines.append("- Flat case index: `case_index.csv`")
     lines.append("- Per-executable comparisons: `executable_summary.csv` and `executable_consistency.csv`")
-    lines.append("- Redundant tool usage tables: `tool_redundancy_by_variant.csv`, `tool_redundancy_by_executable.csv`, and `tool_redundancy_target_hotspots.csv`")
+    lines.append("- Redundant tool usage tables: `tool_redundancy_by_variant.csv`, `tool_redundancy_by_executable.csv`, `tool_redundancy_target_hotspots.csv`, `tool_calls_by_source.csv`, and `tool_call_source_runs.csv`")
     lines.append("- Charts: `outputs/*.png`")
     lines.append("- Timing tables: `outputs/task_timing_individual.csv`, `outputs/task_timing_summary.csv`, `outputs/task_tag_timing_summary.csv`, and `outputs/variant_timing_summary.csv`")
     lines.append("- Per-task output comparisons: `outputs/task_output_comparisons/index.html`")
@@ -2036,10 +2337,13 @@ def materialize_experiment_outputs(
         "difficulty_summary": difficulty_rows,
         "technique_summary": technique_rows,
         "executable_summary": list(executable_outputs.get("executable_rows") or []),
+        "executable_runtime_cost_summary": list(executable_outputs.get("resource_rows") or []),
         "executable_consistency": list(executable_outputs.get("consistency_rows") or []),
         "tool_redundancy_by_variant": list(executable_outputs.get("variant_tool_rows") or []),
         "tool_redundancy_by_executable": list(executable_outputs.get("executable_tool_rows") or []),
         "tool_redundancy_target_hotspots": list(executable_outputs.get("target_rows") or []),
+        "tool_calls_by_source": list(executable_outputs.get("source_tool_rows") or []),
+        "tool_call_source_runs": list(executable_outputs.get("source_run_rows") or []),
         "config_group_summary": [],
     }
     partial_comparison_payload = {
@@ -2052,10 +2356,13 @@ def materialize_experiment_outputs(
         "difficulty_summary": partial_difficulty_rows,
         "technique_summary": partial_technique_rows,
         "executable_summary": list(partial_executable_outputs.get("executable_rows") or []),
+        "executable_runtime_cost_summary": list(partial_executable_outputs.get("resource_rows") or []),
         "executable_consistency": list(partial_executable_outputs.get("consistency_rows") or []),
         "tool_redundancy_by_variant": list(partial_executable_outputs.get("variant_tool_rows") or []),
         "tool_redundancy_by_executable": list(partial_executable_outputs.get("executable_tool_rows") or []),
         "tool_redundancy_target_hotspots": list(partial_executable_outputs.get("target_rows") or []),
+        "tool_calls_by_source": list(partial_executable_outputs.get("source_tool_rows") or []),
+        "tool_call_source_runs": list(partial_executable_outputs.get("source_run_rows") or []),
     }
     _write_rows_csv(experiment_root / "variant_summary.csv", variant_rows)
     _write_rows_csv(experiment_root / "dimension_summary.csv", dimension_rows)
@@ -2068,15 +2375,21 @@ def materialize_experiment_outputs(
     _write_rows_csv(experiment_root / "partial_difficulty_summary.csv", partial_difficulty_rows)
     _write_rows_csv(experiment_root / "partial_technique_summary.csv", partial_technique_rows)
     _write_rows_csv(experiment_root / "executable_summary.csv", list(executable_outputs.get("executable_rows") or []))
+    _write_rows_csv(experiment_root / "executable_runtime_cost_summary.csv", list(executable_outputs.get("resource_rows") or []))
     _write_rows_csv(experiment_root / "executable_consistency.csv", list(executable_outputs.get("consistency_rows") or []))
     _write_rows_csv(experiment_root / "tool_redundancy_by_variant.csv", list(executable_outputs.get("variant_tool_rows") or []))
     _write_rows_csv(experiment_root / "tool_redundancy_by_executable.csv", list(executable_outputs.get("executable_tool_rows") or []))
     _write_rows_csv(experiment_root / "tool_redundancy_target_hotspots.csv", list(executable_outputs.get("target_rows") or []))
+    _write_rows_csv(experiment_root / "tool_calls_by_source.csv", list(executable_outputs.get("source_tool_rows") or []))
+    _write_rows_csv(experiment_root / "tool_call_source_runs.csv", list(executable_outputs.get("source_run_rows") or []))
     _write_rows_csv(experiment_root / "partial_executable_summary.csv", list(partial_executable_outputs.get("executable_rows") or []))
+    _write_rows_csv(experiment_root / "partial_executable_runtime_cost_summary.csv", list(partial_executable_outputs.get("resource_rows") or []))
     _write_rows_csv(experiment_root / "partial_executable_consistency.csv", list(partial_executable_outputs.get("consistency_rows") or []))
     _write_rows_csv(experiment_root / "partial_tool_redundancy_by_variant.csv", list(partial_executable_outputs.get("variant_tool_rows") or []))
     _write_rows_csv(experiment_root / "partial_tool_redundancy_by_executable.csv", list(partial_executable_outputs.get("executable_tool_rows") or []))
     _write_rows_csv(experiment_root / "partial_tool_redundancy_target_hotspots.csv", list(partial_executable_outputs.get("target_rows") or []))
+    _write_rows_csv(experiment_root / "partial_tool_calls_by_source.csv", list(partial_executable_outputs.get("source_tool_rows") or []))
+    _write_rows_csv(experiment_root / "partial_tool_call_source_runs.csv", list(partial_executable_outputs.get("source_run_rows") or []))
 
     run_catalog_rows = [
         {
@@ -2169,10 +2482,13 @@ def materialize_experiment_outputs(
             difficulty_rows=difficulty_rows,
             technique_rows=technique_rows,
             executable_rows=list(executable_outputs.get("executable_rows") or []),
+            executable_resource_rows=list(executable_outputs.get("resource_rows") or []),
             executable_consistency_rows=list(executable_outputs.get("consistency_rows") or []),
             redundancy_variant_rows=list(executable_outputs.get("variant_tool_rows") or []),
             redundancy_executable_rows=list(executable_outputs.get("executable_tool_rows") or []),
             redundancy_target_rows=list(executable_outputs.get("target_rows") or []),
+            source_tool_rows=list(executable_outputs.get("source_tool_rows") or []),
+            source_run_rows=list(executable_outputs.get("source_run_rows") or []),
             significance_overall_rows=list(significance_payload.get("overall") or []),
             significance_difficulty_rows=list(significance_payload.get("by_difficulty") or []),
             significance_task_rows=list(significance_payload.get("by_task") or []),
@@ -2191,10 +2507,13 @@ def materialize_experiment_outputs(
                 difficulty_rows=partial_difficulty_rows,
                 technique_rows=partial_technique_rows,
                 executable_rows=list(partial_executable_outputs.get("executable_rows") or []),
+                executable_resource_rows=list(partial_executable_outputs.get("resource_rows") or []),
                 executable_consistency_rows=list(partial_executable_outputs.get("consistency_rows") or []),
                 redundancy_variant_rows=list(partial_executable_outputs.get("variant_tool_rows") or []),
                 redundancy_executable_rows=list(partial_executable_outputs.get("executable_tool_rows") or []),
                 redundancy_target_rows=list(partial_executable_outputs.get("target_rows") or []),
+                source_tool_rows=list(partial_executable_outputs.get("source_tool_rows") or []),
+                source_run_rows=list(partial_executable_outputs.get("source_run_rows") or []),
                 timing_variant_rows=list(partial_timing_result.get("variant_timing_rows") or []),
                 timing_task_rows=list(partial_timing_result.get("task_summary_rows") or []),
                 timing_task_tag_rows=list(partial_timing_result.get("task_tag_summary_rows") or []),

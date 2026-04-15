@@ -31,7 +31,7 @@ The quickstarts below assume your OS prerequisites are already satisfied.
 ```text
 .
   multi_agent_wf/           # main agent runtime, pipeline, frontend, workflow config
-  MCPServers/               # MCP server implementations and server manifest
+  MCPServers/               # MCP server entrypoints, manifest, support docs, and helper modules
   Testing/                  # evaluation harness, corpora, config, generated results
   skills/                   # repo-local Codex skills for tool usage
   third_party/              # optional external rule/signature corpora

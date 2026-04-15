@@ -31,7 +31,6 @@ except Exception:  # pragma: no cover - lightweight test stubs may not expose su
 
 from .config import (
     DEEP_AGENT_REQUEST_LIMIT,
-    DEFAULT_SHELL_EXECUTION_MODE,
     HOST_PARALLEL_WORKER_EXECUTION,
     GHIDRA_CHANGE_PROPOSALS_END,
     GHIDRA_CHANGE_PROPOSALS_START,
@@ -46,21 +45,18 @@ from .config import (
     YARA_RULE_PROPOSALS_START,
     get_stage_kind_metadata,
     stage_kind_flag,
-    _normalize_shell_execution_mode,
     _normalize_validator_review_level,
 )
+from .runtime_defaults import REQUEST_LIMIT_ERROR_MARKER
 from .runtime import (
     MultiAgentRuntime,
     _ACTIVE_PIPELINE_STAGE,
     _ACTIVE_PIPELINE_STATE,
-    _enter_mcp_toolsets_async,
     _LIVE_TOOL_LOG_STATE,
     _direct_mcp_tool_call_sync,
     _find_mcp_server_by_marker,
     _parse_jsonish_tool_result,
-    _close_mcp_toolsets_async,
     build_host_worker_assignment_executor,
-    build_loop_local_host_worker_runtime,
     build_stage_prompt,
     expand_architecture_slots,
     expand_architecture_names,
@@ -71,8 +67,6 @@ from .runtime import (
 from .shared_state import (
     _append_tool_log_entries,
     _annotate_unapproved_ghidra_aliases,
-    _empty_parent_input,
-    _make_parent_input_callback,
     _new_shared_state,
     _sanitize_user_facing_output,
     _store_ui_snapshot,
@@ -180,7 +174,7 @@ _HOST_WORKER_NON_RETRYABLE_ERROR_MARKERS = (
     "validationerror",
     "unexpectedmodelbehavior",
     "usagelimitexceeded",
-    "request_limit of 50",
+    REQUEST_LIMIT_ERROR_MARKER,
 )
 _HOST_WORKER_RETRYABLE_ERROR_MARKERS = (
     "remoteprotocolerror",
@@ -207,6 +201,12 @@ _HOST_WORKER_RETRYABLE_ERROR_MARKERS = (
     "status_code: 502",
     "status_code: 503",
     "status_code: 504",
+)
+
+_CANCEL_SCOPE_MISMATCH_ERROR_MARKERS = (
+    "attempted to exit a cancel scope",
+    "cancel scope that isn't the current task",
+    "cancel scope in a different task",
 )
 _RATE_LIMIT_ERROR_MARKERS = (
     "429",
@@ -253,7 +253,7 @@ _CONTEXT_LENGTH_ERROR_MARKERS = (
 )
 _USAGE_LIMIT_ERROR_MARKERS = (
     "usagelimitexceeded",
-    "request_limit of 50",
+    REQUEST_LIMIT_ERROR_MARKER,
 )
 _CANCELLATION_ERROR_MARKERS = (
     "pipeline canceled by user",
@@ -363,6 +363,8 @@ def _classify_runtime_error(error: Exception | str) -> Dict[str, Any]:
 
     if _is_async_task_management_misuse_error(error):
         category = "async_task_tool_misuse"
+    elif any(marker in lowered for marker in _CANCEL_SCOPE_MISMATCH_ERROR_MARKERS):
+        category = "cancel_scope_mismatch"
     elif any(marker in lowered for marker in _CANCELLATION_ERROR_MARKERS):
         category = "cancelled"
     elif any(marker in lowered for marker in _USAGE_LIMIT_ERROR_MARKERS):
@@ -530,12 +532,15 @@ def _run_stage_agent_sync_with_guardrails(
 
 
 def _is_retryable_host_worker_error(error: Exception | str) -> bool:
+    classification = _classify_runtime_error(error)
+    if str(classification.get("category") or "") == "invalid_request_payload":
+        return True
     lowered = _error_text(error).lower()
     if any(marker in lowered for marker in _HOST_WORKER_NON_RETRYABLE_ERROR_MARKERS):
         return False
     if any(marker in lowered for marker in _HOST_WORKER_RETRYABLE_ERROR_MARKERS):
         return True
-    return bool(_classify_runtime_error(error).get("retryable"))
+    return bool(classification.get("retryable"))
 
 
 def _host_worker_retry_backoff_sec(retry_index: int) -> float:
@@ -550,6 +555,34 @@ def _worker_result_retryable(result: Dict[str, Any]) -> bool:
 
 def _host_worker_stage_retry_backoff_sec(retry_index: int) -> float:
     return _retry_backoff_sec(retry_index, _HOST_WORKER_STAGE_RETRY_BACKOFF_SECONDS)
+
+
+def _build_host_worker_exception_result(
+    assignment: Dict[str, Any],
+    error: Exception | str,
+    *,
+    stage_model: str = "",
+    scope: str = "assignment_runner",
+) -> Dict[str, Any]:
+    classification = _classify_runtime_error(error)
+    return {
+        "index": int(assignment.get("index") or 0),
+        "work_item_id": str(((assignment.get("work_item") or {}) if isinstance(assignment.get("work_item"), dict) else {}).get("id") or f"work_item_{assignment.get('index') or 'unknown'}"),
+        "slot_name": str(assignment.get("slot_name") or ""),
+        "archetype_name": str(assignment.get("archetype_name") or ""),
+        "model": str(stage_model or ""),
+        "role_key": "",
+        "history": [],
+        "output_text": "",
+        "usage": _empty_usage_snapshot(),
+        "duration_sec": 0.0,
+        "model_duration_sec": 0.0,
+        "status": "failed",
+        "error": _error_text(error),
+        "retryable": bool(classification.get("retryable")),
+        "error_category": str(classification.get("category") or ""),
+        "executor_meta": {"failure_scope": scope},
+    }
 
 
 def _extract_yara_section(rule_text: str, section_name: str) -> str:
@@ -610,17 +643,20 @@ def _stage_progress_from_pipeline_definition(
 ) -> List[Dict[str, Any]]:
     progress: List[Dict[str, Any]] = []
     for raw_stage in list(pipeline_definition or []):
+        stage_kind = str(raw_stage["stage_kind"])
+        stage_meta = get_stage_kind_metadata(stage_kind)
         architecture = list(raw_stage.get("architecture") or [])
         progress.append(
             {
                 "stage_name": str(raw_stage["name"]),
-                "stage_kind": str(raw_stage["stage_kind"]),
+                "stage_kind": stage_kind,
                 "subagents": expand_architecture_names(architecture),
                 "status": "pending",
                 "started_at_epoch": None,
                 "finished_at_epoch": None,
                 "duration_sec": None,
                 "error": "",
+                **stage_meta,
             }
         )
     return progress
@@ -641,6 +677,7 @@ def _seed_pipeline_stage_progress(
             "finished_at_epoch": None,
             "duration_sec": None,
             "error": "",
+            **get_stage_kind_metadata(stage_kind),
         }
         for stage_name, stage_kind, subagents in stages
     ]
@@ -659,20 +696,23 @@ def _set_pipeline_stage_status(
     progress = shared.setdefault("pipeline_stage_progress", [])
     entry = next((item for item in progress if item.get("stage_name") == stage_name), None)
     if entry is None:
+        resolved_stage_kind = stage_kind or ""
         entry = {
             "stage_name": stage_name,
-            "stage_kind": stage_kind or "",
+            "stage_kind": resolved_stage_kind,
             "subagents": list(subagents or []),
             "status": "pending",
             "started_at_epoch": None,
             "finished_at_epoch": None,
             "duration_sec": None,
             "error": "",
+            **(get_stage_kind_metadata(resolved_stage_kind) if resolved_stage_kind else {}),
         }
         progress.append(entry)
 
     if stage_kind is not None:
         entry["stage_kind"] = stage_kind
+        entry.update(get_stage_kind_metadata(stage_kind))
     if subagents is not None:
         entry["subagents"] = list(subagents)
 
@@ -688,7 +728,7 @@ def _set_pipeline_stage_status(
         _store_ui_snapshot(state=state)
         return
 
-    if status in {"completed", "failed"}:
+    if status in {"completed", "completed_with_failures", "failed"}:
         if entry.get("started_at_epoch") is None:
             entry["started_at_epoch"] = now
         entry["finished_at_epoch"] = now
@@ -1412,6 +1452,86 @@ def _normalize_string_list(value: Any) -> List[str]:
     return [normalized] if normalized else []
 
 
+def _normalize_validation_feedback_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        out: List[str] = []
+        for raw_key, raw_value in value.items():
+            key = " ".join(str(raw_key or "").split())
+            nested = _normalize_validation_feedback_list(raw_value)
+            if nested:
+                prefix = f"{key}: " if key else ""
+                out.extend(f"{prefix}{item}" for item in nested)
+            elif key:
+                out.append(key)
+        return out
+    if isinstance(value, (list, tuple, set)):
+        out: List[str] = []
+        for item in value:
+            out.extend(_normalize_validation_feedback_list(item))
+        return out
+    return _normalize_string_list(value)
+
+
+def _normalize_validation_decision(raw_decision: str, *, accepted_flag: Optional[bool] = None) -> str:
+    normalized = "_".join(str(raw_decision or "").strip().lower().replace("-", "_").split())
+    accepted_aliases = {
+        "accept",
+        "accepted",
+        "approve",
+        "approved",
+        "pass",
+        "passed",
+        "signoff",
+        "signed_off",
+        "signedoff",
+    }
+    caveated_accept_aliases = {
+        "accept_with_caveats",
+        "accepted_with_caveats",
+        "accept_with_conditions",
+        "accepted_with_conditions",
+        "conditional_accept",
+        "partial_accept",
+        "partial_acceptance",
+        "accept_but_caveated",
+        "accepted_but_caveated",
+    }
+    revise_aliases = {
+        "revise",
+        "revision_needed",
+        "needs_revision",
+        "needs_more_evidence",
+        "needs_artifacts_for_full_validation",
+        "insufficient_evidence",
+        "incomplete",
+        "rework",
+        "retry",
+    }
+    rejected_aliases = {
+        "reject",
+        "rejected",
+        "deny",
+        "denied",
+        "fail",
+        "failed",
+    }
+    if normalized in accepted_aliases:
+        return "accept"
+    if normalized in caveated_accept_aliases:
+        return "accept_with_caveats"
+    if normalized in revise_aliases:
+        return "revise"
+    if normalized in rejected_aliases:
+        return "reject"
+    if accepted_flag is True:
+        return "accept"
+    if accepted_flag is False:
+        return "reject"
+    return ""
+
+
 def _normalize_evidence_item(value: Any) -> List[str]:
     if value is None:
         return []
@@ -1510,14 +1630,16 @@ def extract_validation_gate(text: str, *, required_signoffs: int) -> Tuple[Dict[
         return {}, "validator gate block must decode to a JSON object"
 
     raw_decision = " ".join(str(parsed.get("decision") or parsed.get("status") or parsed.get("result") or "").split()).lower()
-    accepted_aliases = {"accept", "accepted", "approve", "approved", "pass", "passed", "signoff", "signed_off"}
-    rejected_aliases = {"reject", "rejected", "deny", "denied", "fail", "failed"}
-    if raw_decision in accepted_aliases:
-        accepted = True
-    elif raw_decision in rejected_aliases:
-        accepted = False
-    else:
-        return {}, f"validator decision must be accept/reject, got {raw_decision or '<missing>'!r}"
+    accepted_flag = parsed.get("accepted")
+    normalized_decision = _normalize_validation_decision(raw_decision, accepted_flag=accepted_flag if isinstance(accepted_flag, bool) else None)
+    if not normalized_decision:
+        return {}, (
+            "validator decision must be one of accept / accept_with_caveats / revise / reject, "
+            f"got {raw_decision or '<missing>'!r}"
+        )
+
+    accepted = normalized_decision in {"accept", "accept_with_caveats"}
+    caveated = normalized_decision == "accept_with_caveats"
 
     parsed_required = parsed.get("required_signoffs")
     if parsed_required is None:
@@ -1537,28 +1659,33 @@ def extract_validation_gate(text: str, *, required_signoffs: int) -> Tuple[Dict[
         except Exception:
             signoff_count = required if accepted else 0
 
-    rejection_reasons = _normalize_string_list(parsed.get("rejection_reasons") or parsed.get("reasons"))
-    planner_fixes = _normalize_string_list(parsed.get("planner_fixes") or parsed.get("required_fixes") or parsed.get("fixes"))
-    accepted_findings = _normalize_string_list(parsed.get("accepted_findings") or parsed.get("confirmed_findings"))
-    rejected_findings = _normalize_string_list(parsed.get("rejected_findings") or parsed.get("weak_findings"))
-    out_of_scope_work_items = _normalize_string_list(
+    rejection_reasons = _normalize_validation_feedback_list(parsed.get("rejection_reasons") or parsed.get("reasons"))
+    planner_fixes = _normalize_validation_feedback_list(parsed.get("planner_fixes") or parsed.get("required_fixes") or parsed.get("fixes"))
+    accepted_findings = _normalize_validation_feedback_list(parsed.get("accepted_findings") or parsed.get("confirmed_findings"))
+    rejected_findings = _normalize_validation_feedback_list(parsed.get("rejected_findings") or parsed.get("weak_findings"))
+    out_of_scope_work_items = _normalize_validation_feedback_list(
         parsed.get("out_of_scope_work_items") or parsed.get("planner_defects") or parsed.get("unsupported_work_items")
     )
+    caveats = _normalize_validation_feedback_list(parsed.get("caveats") or parsed.get("narrowed_findings"))
     summary = " ".join(str(parsed.get("summary") or parsed.get("validator_summary") or "").split())
 
     if accepted and signoff_count < required:
         accepted = False
+        caveated = False
+        normalized_decision = "revise"
         rejection_reasons.append(
             f"validator signoff threshold not met ({signoff_count}/{required})"
         )
 
     return {
-        "decision": "accept" if accepted else "reject",
+        "decision": normalized_decision,
         "accepted": accepted,
+        "caveated": caveated,
         "signoff_count": signoff_count,
         "required_signoffs": required,
         "accepted_findings": accepted_findings,
         "rejected_findings": rejected_findings,
+        "caveats": caveats,
         "out_of_scope_work_items": out_of_scope_work_items,
         "rejection_reasons": rejection_reasons,
         "planner_fixes": planner_fixes,
@@ -1580,6 +1707,10 @@ def _format_validation_feedback(gate: Dict[str, Any], raw_output: str, parse_err
     summary = str(gate.get("summary") or "").strip()
     if summary:
         lines.append(f"Summary: {summary}")
+    caveats = gate.get("caveats") or []
+    if caveats:
+        lines.append("Caveats:")
+        lines.extend(f"- {item}" for item in caveats)
     reasons = gate.get("rejection_reasons") or []
     if reasons:
         lines.append("Rejection reasons:")
@@ -1835,15 +1966,17 @@ def render_validation_gate_panel(state: Dict[str, Any]) -> str:
         badge_bg = "#e8f0fe"
         headline = "Validation in progress"
         detail = "Validators are reviewing worker evidence."
-    elif validator_entry and last_decision == "accept":
+    elif validator_entry and last_decision in {"accept", "accept_with_caveats"}:
         tone = "#1b6e3a"
         badge_bg = "#e6f4ea"
         headline = "Validation accepted"
+        if last_decision == "accept_with_caveats":
+            headline = "Validation accepted with caveats"
         if signoff_count is not None and required_signoffs is not None:
             detail = f"Validator signoff: {signoff_count}/{required_signoffs}"
         else:
             detail = "Validated findings are cleared for reporting."
-    elif validator_entry and last_decision == "reject":
+    elif validator_entry and last_decision in {"reject", "revise"}:
         if retry_count < max_retries and planner_status in {"running", "pending"}:
             tone = "#b06000"
             badge_bg = "#fef7e0"
@@ -1857,7 +1990,7 @@ def render_validation_gate_panel(state: Dict[str, Any]) -> str:
         else:
             tone = "#a61b29"
             badge_bg = "#fce8e6"
-            headline = "Validation rejected"
+            headline = "Validation rejected" if last_decision == "reject" else "Validation requested revision"
             detail = "Validation did not clear the findings for reporting."
 
     summary_lines: List[str] = []
@@ -2083,8 +2216,36 @@ def render_ghidra_change_queue_panel(state: Dict[str, Any]) -> str:
     draft_proposals = list(shared.get("ghidra_change_draft_proposals") or [])
     queue_finalized = bool(shared.get("ghidra_change_queue_finalized"))
     parse_error = str(shared.get("ghidra_change_parse_error") or "").strip()
+    analysis_target_kind = str(shared.get("analysis_target_kind") or "").strip().lower().replace("-", "_")
+    analysis_target_path = str(shared.get("analysis_target_path") or "").strip()
+    analysis_target_bundle_dir = str(shared.get("analysis_target_bundle_dir") or "").strip()
+    analysis_target_apply_requires_live_switch = bool(shared.get("analysis_target_apply_requires_live_switch"))
+    analysis_target_apply_warning = str(shared.get("analysis_target_apply_warning") or "").strip()
     pending = get_pending_ghidra_change_proposal(state)
     pending_count = sum(1 for item in proposals if str(item.get("status") or "pending") == "pending")
+    target_switch_warning_html = ""
+    if analysis_target_apply_requires_live_switch or analysis_target_kind == "upx_unpacked":
+        target_switch_warning_html = (
+            "<div style='margin-top: 10px; padding: 8px 10px; border: 1px solid #f1d89a; border-radius: 8px; "
+            "background: #fff8e1; color: #7a5300;'>"
+            "<strong>Apply target warning:</strong> "
+            + html.escape(
+                analysis_target_apply_warning
+                or "This queue was generated against a derived unpacked analysis target. "
+                "Before applying changes, manually switch the live Ghidra session to the matching unpacked program."
+            )
+            + (
+                f"<div style='margin-top: 4px;'><strong>Expected unpacked program:</strong> {html.escape(analysis_target_path)}</div>"
+                if analysis_target_path
+                else ""
+            )
+            + (
+                f"<div style='margin-top: 4px;'><strong>Headless bundle:</strong> {html.escape(analysis_target_bundle_dir)}</div>"
+                if analysis_target_bundle_dir
+                else ""
+            )
+            + "</div>"
+        )
 
     if not proposals and not parse_error:
         waiting_detail = "No pending Ghidra rename/type/comment proposals for this run yet."
@@ -2102,7 +2263,8 @@ def render_ghidra_change_queue_panel(state: Dict[str, Any]) -> str:
             f"<span style='color: #5f6368; font-size: 12px;'>{html.escape(waiting_badge)}</span>"
             "</div>"
             f"<div style='margin-top: 8px; color: #5f6368;'>{html.escape(waiting_detail)}</div>"
-            "</div>"
+            + target_switch_warning_html
+            + "</div>"
         )
 
     error_html = ""
@@ -2271,7 +2433,7 @@ def render_ghidra_change_queue_panel(state: Dict[str, Any]) -> str:
         queue_notice_html = (
             "<div style='margin-top: 10px; padding: 8px 10px; border: 1px solid #f4c98b; border-radius: 8px; "
             "background: #fff7e6; color: #8a3b12;'>"
-            "Pending changes need attention. Read-only follow-up queries are allowed, but new edit-generating queries are gated until you approve or reject this queue."
+            "Pending changes need attention. New edit-generating requests remain gated until you approve or reject this queue."
             "</div>"
         )
 
@@ -2283,6 +2445,7 @@ def render_ghidra_change_queue_panel(state: Dict[str, Any]) -> str:
         "</div>"
         + error_html
         + queue_notice_html
+        + target_switch_warning_html
         + pending_html
         + history_html
         + "</div>"
@@ -2319,6 +2482,10 @@ def render_pipeline_todo_board(state: Dict[str, Any]) -> str:
             box = "☑"
             tone = "#1b6e3a"
             status_label = "done"
+        elif status == "completed_with_failures":
+            box = "⚠"
+            tone = "#8a3b12"
+            status_label = "done with failures"
         elif status == "failed":
             box = "☒"
             tone = "#a61b29"
@@ -2445,8 +2612,6 @@ _HOST_WORKER_SHARED_CONTEXT_KEYS = (
     "available_sandbox_tools",
     "supports_dynamic_analysis",
     "supports_sandboxed_execution",
-    "allow_parent_input",
-    "shell_execution_mode",
     "validator_review_level",
     "auto_triage_status",
     "auto_triage_context_summary",
@@ -2613,7 +2778,6 @@ async def _run_host_worker_assignment(
                 work_item_id=work_item_id,
                 stage_model=stage_model,
             )
-            deps.ask_user = _make_parent_input_callback(state, f"{stage_name}/{slot_name}/{work_item_id}")
             model_run_started_at = datetime.now().isoformat(timespec="seconds")
             _append_tool_log_entries(
                 state,
@@ -2712,6 +2876,9 @@ async def _run_host_worker_assignment(
             error_text = _error_text(error)
             retryable = _is_retryable_host_worker_error(error)
             classification = _classify_runtime_error(error)
+            allowed_attempts = max_attempts
+            if str(classification.get("category") or "") == "invalid_request_payload":
+                allowed_attempts = min(max_attempts, 2)
             _append_tool_log_entries(
                 state,
                 stage_name,
@@ -2746,7 +2913,7 @@ async def _run_host_worker_assignment(
                     },
                 ],
             )
-            if retryable and attempt < max_attempts and not bool(state.get("cancel_requested")):
+            if retryable and attempt < allowed_attempts and not bool(state.get("cancel_requested")):
                 backoff_sec = _host_worker_retry_backoff_sec(attempt - 1)
                 append_status(
                     state,
@@ -2894,16 +3061,41 @@ async def _run_host_parallel_assignments_async(
     async def _run_one(assignment: Dict[str, Any]) -> Dict[str, Any]:
         archetype_key = str(assignment.get("archetype_name") or "").strip().lower()
         gate = archetype_gates.get(archetype_key)
-        if gate is not None:
-            async with gate:
-                async with semaphore:
-                    return await assignment_runner(assignment)
-        async with semaphore:
-            return await assignment_runner(assignment)
+        try:
+            if gate is not None:
+                async with gate:
+                    async with semaphore:
+                        return await assignment_runner(assignment)
+            async with semaphore:
+                return await assignment_runner(assignment)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            return _build_host_worker_exception_result(
+                assignment,
+                error,
+                scope="scheduler_wrapper",
+            )
 
-    tasks = [asyncio.create_task(_run_one(assignment)) for assignment in assignments]
-    for task in asyncio.as_completed(tasks):
-        result = await task
+    tasks = {
+        asyncio.create_task(_run_one(assignment)): assignment
+        for assignment in assignments
+    }
+    for task in asyncio.as_completed(list(tasks)):
+        try:
+            result = await task
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # This should be rare because _run_one boxes normal assignment
+            # exceptions, but keep the batch alive if task orchestration itself
+            # misbehaves.
+            pending_assignment = tasks.get(task, {})
+            result = _build_host_worker_exception_result(
+                pending_assignment,
+                error,
+                scope="task_collection",
+            )
         results_by_index_async[int(result["index"])] = result
     return results_by_index_async
 
@@ -2965,28 +3157,53 @@ def _run_host_parallel_worker_stage(
                 f"{', '.join(serial_archetypes_in_stage)}"
             ),
         )
-    loop_local_runtime = build_loop_local_host_worker_runtime(runtime)
-
     async def _run_all_assignments() -> Dict[int, Dict[str, Any]]:
-        try:
-            preentered_tool_ids = await _enter_mcp_toolsets_async(
-                loop_local_runtime.static_tools,
-                loop_local_runtime.dynamic_tools,
+        results_by_index_async = await _run_host_parallel_assignments_async(
+            assignments,
+            concurrency_limit=concurrency_limit,
+            serial_archetypes=SERIAL_HOST_WORKER_ARCHETYPES,
+            assignment_runner=lambda assignment: _run_host_worker_assignment(
+                runtime,
+                stage.name,
+                stage.stage_kind,
+                state,
+                user_text,
+                prior_stage_outputs,
+                assignment,
+                stage_model=str(stage.model or ""),
+            ),
+        )
+        stage_retry_rounds_used = 0
+        stage_retry_recovered_assignments = 0
+        for retry_round in range(1, 1 + _HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES):
+            retry_assignments = [
+                assignment
+                for assignment in assignments
+                if (retry_result := results_by_index_async.get(int(assignment["index"]))) is not None
+                and retry_result.get("status") != "ok"
+                and _worker_result_retryable(retry_result)
+            ]
+            if not retry_assignments or bool(state.get("cancel_requested")):
+                break
+            stage_retry_rounds_used = retry_round
+            backoff_sec = _host_worker_stage_retry_backoff_sec(retry_round - 1)
+            append_status(
+                state,
+                (
+                    f"Stage retry triggered: {stage.name} rerunning {len(retry_assignments)} "
+                    f"transiently failed worker assignment(s) round {retry_round}/"
+                    f"{_HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES}"
+                    + (f" in {backoff_sec:.1f}s" if backoff_sec > 0 else "")
+                ),
             )
-            if preentered_tool_ids:
-                append_status(
-                    state,
-                    (
-                        f"Stage {stage.name} pre-entered loop-local MCP fleet "
-                        f"({len(preentered_tool_ids)} server(s)) for host workers"
-                    ),
-                )
-            results_by_index_async = await _run_host_parallel_assignments_async(
-                assignments,
-                concurrency_limit=concurrency_limit,
+            if backoff_sec > 0:
+                await asyncio.sleep(backoff_sec)
+            retried_results = await _run_host_parallel_assignments_async(
+                retry_assignments,
+                concurrency_limit=max(1, min(concurrency_limit, len(retry_assignments))),
                 serial_archetypes=SERIAL_HOST_WORKER_ARCHETYPES,
                 assignment_runner=lambda assignment: _run_host_worker_assignment(
-                    loop_local_runtime,
+                    runtime,
                     stage.name,
                     stage.stage_kind,
                     state,
@@ -2996,145 +3213,110 @@ def _run_host_parallel_worker_stage(
                     stage_model=str(stage.model or ""),
                 ),
             )
-            stage_retry_rounds_used = 0
-            stage_retry_recovered_assignments = 0
-            for retry_round in range(1, 1 + _HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES):
-                retry_assignments = [
-                    assignment
-                    for assignment in assignments
-                    if (retry_result := results_by_index_async.get(int(assignment["index"]))) is not None
-                    and retry_result.get("status") != "ok"
-                    and _worker_result_retryable(retry_result)
-                ]
-                if not retry_assignments or bool(state.get("cancel_requested")):
-                    break
-                stage_retry_rounds_used = retry_round
-                backoff_sec = _host_worker_stage_retry_backoff_sec(retry_round - 1)
-                append_status(
+            recovered_this_round = 0
+            for index, retried_result in retried_results.items():
+                prior_result = dict(results_by_index_async.get(index) or {})
+                if prior_result.get("status") != "ok" and retried_result.get("status") == "ok":
+                    recovered_this_round += 1
+                results_by_index_async[index] = retried_result
+            stage_retry_recovered_assignments += recovered_this_round
+            append_status(
+                state,
+                (
+                    f"Stage retry finished: {stage.name} recovered {recovered_this_round}/"
+                    f"{len(retry_assignments)} retried worker assignment(s)"
+                ),
+            )
+        state.setdefault("shared_state", _new_shared_state())["host_worker_stage_retry_summary"] = {
+            "stage_name": stage.name,
+            "retry_rounds_used": stage_retry_rounds_used,
+            "max_retry_rounds": int(_HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES),
+            "recovered_assignments": stage_retry_recovered_assignments,
+        }
+        for result in [results_by_index_async[idx] for idx in sorted(results_by_index_async)]:
+            _check_cancel_requested(state, location="during worker stage")
+            _record_model_usage(
+                state,
+                phase="host_worker_assignment",
+                stage_name=stage.name,
+                model=str(result.get("model") or ""),
+                usage=result.get("usage") or {},
+                slot_name=str(result.get("slot_name") or ""),
+                work_item_id=str(result.get("work_item_id") or ""),
+            )
+            history = list(result.get("history") or [])
+            set_role_history(state, str(result.get("role_key") or ""), history)
+            append_tool_log_delta(state, stage.name, [], history)
+            update_validated_sample_path_from_messages(
+                state,
+                history,
+                f"tool_return:{stage.name}:{result.get('slot_name')}",
+            )
+            if result.get("status") == "ok":
+                _set_planned_work_item_status(
                     state,
-                    (
-                        f"Stage retry triggered: {stage.name} rerunning {len(retry_assignments)} "
-                        f"transiently failed worker assignment(s) round {retry_round}/"
-                        f"{_HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES}"
-                        + (f" in {backoff_sec:.1f}s" if backoff_sec > 0 else "")
-                    ),
-                )
-                if backoff_sec > 0:
-                    await asyncio.sleep(backoff_sec)
-                retried_results = await _run_host_parallel_assignments_async(
-                    retry_assignments,
-                    concurrency_limit=max(1, min(concurrency_limit, len(retry_assignments))),
-                    serial_archetypes=SERIAL_HOST_WORKER_ARCHETYPES,
-                    assignment_runner=lambda assignment: _run_host_worker_assignment(
-                        loop_local_runtime,
-                        stage.name,
-                        stage.stage_kind,
-                        state,
-                        user_text,
-                        prior_stage_outputs,
-                        assignment,
-                        stage_model=str(stage.model or ""),
-                    ),
-                )
-                recovered_this_round = 0
-                for index, retried_result in retried_results.items():
-                    prior_result = dict(results_by_index_async.get(index) or {})
-                    if prior_result.get("status") != "ok" and retried_result.get("status") == "ok":
-                        recovered_this_round += 1
-                    results_by_index_async[index] = retried_result
-                stage_retry_recovered_assignments += recovered_this_round
-                append_status(
-                    state,
-                    (
-                        f"Stage retry finished: {stage.name} recovered {recovered_this_round}/"
-                        f"{len(retry_assignments)} retried worker assignment(s)"
-                    ),
-                )
-            state.setdefault("shared_state", _new_shared_state())["host_worker_stage_retry_summary"] = {
-                "stage_name": stage.name,
-                "retry_rounds_used": stage_retry_rounds_used,
-                "max_retry_rounds": int(_HOST_WORKER_STAGE_FAILED_SUBSET_RETRIES),
-                "recovered_assignments": stage_retry_recovered_assignments,
-            }
-            for result in [results_by_index_async[idx] for idx in sorted(results_by_index_async)]:
-                _check_cancel_requested(state, location="during worker stage")
-                _record_model_usage(
-                    state,
-                    phase="host_worker_assignment",
-                    stage_name=stage.name,
-                    model=str(result.get("model") or ""),
-                    usage=result.get("usage") or {},
+                    str(result.get("work_item_id") or ""),
+                    "completed",
                     slot_name=str(result.get("slot_name") or ""),
-                    work_item_id=str(result.get("work_item_id") or ""),
+                    finished_at_epoch=time.time(),
+                    duration_sec=float(result.get("duration_sec") or 0.0),
+                    error="",
                 )
-                history = list(result.get("history") or [])
-                set_role_history(state, str(result.get("role_key") or ""), history)
-                append_tool_log_delta(state, stage.name, [], history)
-                update_validated_sample_path_from_messages(
+                update_validated_sample_path(
                     state,
-                    history,
-                    f"tool_return:{stage.name}:{result.get('slot_name')}",
+                    str(result.get("output_text") or ""),
+                    f"stage:{stage.name}:{result.get('slot_name')}",
+                    explicit_only=True,
                 )
-                if result.get("status") == "ok":
-                    _set_planned_work_item_status(
-                        state,
-                        str(result.get("work_item_id") or ""),
-                        "completed",
-                        slot_name=str(result.get("slot_name") or ""),
-                        finished_at_epoch=time.time(),
-                        duration_sec=float(result.get("duration_sec") or 0.0),
-                        error="",
-                    )
-                    update_validated_sample_path(
-                        state,
-                        str(result.get("output_text") or ""),
-                        f"stage:{stage.name}:{result.get('slot_name')}",
-                        explicit_only=True,
-                    )
-                    append_status(
-                        state,
-                        (
-                            f"Worker assignment finished: {result.get('work_item_id')} -> "
-                            f"{result.get('slot_name')} in {float(result.get('duration_sec') or 0.0):.1f}s"
-                        ),
-                    )
-                else:
-                    _set_planned_work_item_status(
-                        state,
-                        str(result.get("work_item_id") or ""),
-                        "blocked",
-                        slot_name=str(result.get("slot_name") or ""),
-                        finished_at_epoch=time.time(),
-                        duration_sec=float(result.get("duration_sec") or 0.0),
-                        error=str(result.get("error") or ""),
-                    )
-                    _set_pipeline_stage_status(
-                        state,
-                        stage.name,
-                        stage_kind=stage.stage_kind,
-                        subagents=list(stage.subagent_names),
-                        status="running",
-                        error=(
-                            f"Latest assignment failure: {result.get('work_item_id')} -> "
-                            f"{result.get('slot_name')} ({result.get('error')})"
-                        ),
-                    )
-                    append_status(
-                        state,
-                        (
-                            f"Worker assignment failed: {result.get('work_item_id')} -> "
-                            f"{result.get('slot_name')} after {float(result.get('duration_sec') or 0.0):.1f}s "
-                            f"({result.get('error')})"
-                        ),
-                    )
-            return results_by_index_async
-        finally:
-            await _close_mcp_toolsets_async(loop_local_runtime.static_tools, loop_local_runtime.dynamic_tools)
+                append_status(
+                    state,
+                    (
+                        f"Worker assignment finished: {result.get('work_item_id')} -> "
+                        f"{result.get('slot_name')} in {float(result.get('duration_sec') or 0.0):.1f}s"
+                    ),
+                )
+            else:
+                _set_planned_work_item_status(
+                    state,
+                    str(result.get("work_item_id") or ""),
+                    "blocked",
+                    slot_name=str(result.get("slot_name") or ""),
+                    finished_at_epoch=time.time(),
+                    duration_sec=float(result.get("duration_sec") or 0.0),
+                    error=str(result.get("error") or ""),
+                )
+                _set_pipeline_stage_status(
+                    state,
+                    stage.name,
+                    stage_kind=stage.stage_kind,
+                    subagents=list(stage.subagent_names),
+                    status="running",
+                    error=(
+                        f"Latest assignment failure: {result.get('work_item_id')} -> "
+                        f"{result.get('slot_name')} ({result.get('error')})"
+                    ),
+                )
+                append_status(
+                    state,
+                    (
+                        f"Worker assignment failed: {result.get('work_item_id')} -> "
+                        f"{result.get('slot_name')} after {float(result.get('duration_sec') or 0.0):.1f}s "
+                        f"({result.get('error')})"
+                    ),
+                )
+        return results_by_index_async
 
     results_by_index = asyncio.run(_run_all_assignments())
 
     ordered_results = [results_by_index[idx] for idx in sorted(results_by_index)]
     failed_results = [item for item in ordered_results if item.get("status") != "ok"]
+    failure_category_counts: Dict[str, int] = {}
+    retryable_failed_assignments = 0
+    for item in failed_results:
+        category = str(item.get("error_category") or "").strip() or "unknown"
+        failure_category_counts[category] = failure_category_counts.get(category, 0) + 1
+        if bool(item.get("retryable")):
+            retryable_failed_assignments += 1
     # Persist a compact summary even when some assignments fail so the harness
     # can classify the run accurately after the pipeline returns.
     shared = state.setdefault("shared_state", _new_shared_state())
@@ -3146,6 +3328,10 @@ def _run_host_parallel_worker_stage(
         "completed_assignments": len(ordered_results) - len(failed_results),
         "failed_assignments": len(failed_results),
         "all_assignments_failed": len(failed_results) == len(ordered_results),
+        "partial_assignment_failures": bool(failed_results) and len(failed_results) < len(ordered_results),
+        "retryable_failed_assignments": retryable_failed_assignments,
+        "nonretryable_failed_assignments": max(0, len(failed_results) - retryable_failed_assignments),
+        "failure_categories": failure_category_counts,
         "stage_retry_rounds_used": int((((shared.get("host_worker_stage_retry_summary") or {}) if isinstance(shared.get("host_worker_stage_retry_summary"), dict) else {}) or {}).get("retry_rounds_used") or 0),
         "stage_retry_recovered_assignments": int((((shared.get("host_worker_stage_retry_summary") or {}) if isinstance(shared.get("host_worker_stage_retry_summary"), dict) else {}) or {}).get("recovered_assignments") or 0),
         "failed_work_items": [
@@ -3209,10 +3395,6 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["turn_task_runs"] = 0
     shared["last_user_request"] = user_text
     shared["execution_mode"] = "deep_pipeline"
-    shared["allow_parent_input"] = bool(state.get("allow_parent_input"))
-    shared["shell_execution_mode"] = _normalize_shell_execution_mode(
-        state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)
-    )
     shared["validator_review_level"] = _normalize_validator_review_level(
         state.get("validator_review_level", state.get("validator_strict_mode", "default"))
     )
@@ -3249,7 +3431,6 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
     shared["host_worker_assignment_summary"] = {}
     shared["host_parallel_worker_execution"] = HOST_PARALLEL_WORKER_EXECUTION
     shared["max_parallel_workers"] = MAX_PARALLEL_WORKERS
-    state["pending_parent_input"] = _empty_parent_input()
     if runtime.pipeline_name == "auto_triage":
         shared["auto_triage_status"] = "running"
         shared["auto_triage_last_error"] = ""
@@ -3276,7 +3457,6 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         _check_cancel_requested(state, location="before stage start")
         stage = runtime.stages[stage_index]
         stage_meta = get_stage_kind_metadata(stage.stage_kind)
-        stage.deps.ask_user = _make_parent_input_callback(state, stage.name)
         role_key = f"pipeline_{stage.name}"
         old_history = get_role_history(state, role_key)
         stage_prompt = build_stage_prompt(
@@ -3470,12 +3650,19 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         }
         worker_failure_count = 0
         worker_stage_summary = {}
+        all_worker_assignments_failed = False
+        worker_failure_categories: Dict[str, int] = {}
         if stage_meta["supports_parallel_assignments"] and HOST_PARALLEL_WORKER_EXECUTION:
             worker_stage_summary = dict(((state.get("shared_state") or {}).get("host_worker_assignment_summary") or {}))
             if str(worker_stage_summary.get("stage_name") or "") == stage.name:
                 worker_failure_count = int(worker_stage_summary.get("failed_assignments") or 0)
+                all_worker_assignments_failed = bool(worker_stage_summary.get("all_assignments_failed"))
+                worker_failure_categories = {
+                    str(key): int(value)
+                    for key, value in ((worker_stage_summary.get("failure_categories") or {}) if isinstance(worker_stage_summary.get("failure_categories"), dict) else {}).items()
+                }
         if worker_failure_count > 0:
-            stage_entry["status"] = "failed"
+            stage_entry["status"] = "failed" if all_worker_assignments_failed else "completed_with_failures"
             stage_entry["worker_assignment_summary"] = worker_stage_summary
         state["shared_state"]["pipeline_stage_outputs"].append(
             {
@@ -3491,13 +3678,21 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         state["shared_state"]["turn_task_runs"] = int(state["shared_state"].get("turn_task_runs", 0)) + 1
         state["shared_state"]["total_task_runs"] = int(state["shared_state"].get("total_task_runs", 0)) + 1
         if worker_failure_count > 0:
+            category_summary = ", ".join(
+                f"{name}={count}"
+                for name, count in sorted(worker_failure_categories.items(), key=lambda item: (-item[1], item[0]))
+            )
             _set_pipeline_stage_status(
                 state,
                 stage.name,
                 stage_kind=stage.stage_kind,
                 subagents=list(stage.subagent_names),
-                status="failed",
-                error=f"{worker_failure_count} host worker assignment(s) failed",
+                status="failed" if all_worker_assignments_failed else "completed_with_failures",
+                error=(
+                    f"{worker_failure_count} host worker assignment(s) failed"
+                    + (f" [{category_summary}]" if category_summary else "")
+                    + (" (all assignments failed)" if all_worker_assignments_failed else "")
+                ),
             )
         else:
             _set_pipeline_stage_status(
@@ -3509,11 +3704,17 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
             )
         compact_shared_state(state)
         if worker_failure_count > 0:
+            category_summary = ", ".join(
+                f"{name}={count}"
+                for name, count in sorted(worker_failure_categories.items(), key=lambda item: (-item[1], item[0]))
+            )
             append_status(
                 state,
                 (
                     f"Stage finished with assignment failures: {stage.name} "
-                    f"in {time.perf_counter() - stage_t0:.1f}s ({worker_failure_count} failed assignment(s))"
+                    f"in {time.perf_counter() - stage_t0:.1f}s ({worker_failure_count} failed assignment(s)"
+                    + (f"; categories: {category_summary}" if category_summary else "")
+                    + ")"
                 ),
             )
         else:
@@ -3528,9 +3729,12 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                     "attempt": int(shared.get("validation_retry_count") or 0),
                     "stage_name": stage.name,
                     "decision": str(gate.get("decision") or "reject"),
+                    "accepted": bool(gate.get("accepted")),
+                    "caveated": bool(gate.get("caveated")),
                     "signoff_count": gate.get("signoff_count"),
                     "required_signoffs": gate.get("required_signoffs", required_signoffs),
                     "parse_error": gate_error,
+                    "caveats": list(gate.get("caveats") or []),
                     "out_of_scope_work_items": list(gate.get("out_of_scope_work_items") or []),
                     "rejection_reasons": list(gate.get("rejection_reasons") or []),
                     "planner_fixes": list(gate.get("planner_fixes") or []),
@@ -3540,15 +3744,15 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 append_status(state, f"Validation gate parse warning: {gate_error}")
 
             accepted = bool(gate.get("accepted")) and not gate_error
-            shared["validation_last_decision"] = "accept" if accepted else "reject"
+            shared["validation_last_decision"] = str(gate.get("decision") or ("accept" if accepted else "reject"))
 
             if accepted:
                 shared["validation_replan_feedback"] = ""
                 append_status(
                     state,
                     (
-                        "Validation gate accepted "
-                        f"({gate.get('signoff_count', required_signoffs)}/{gate.get('required_signoffs', required_signoffs)} signoffs)"
+                        ("Validation gate accepted with caveats " if gate.get("caveated") else "Validation gate accepted ")
+                        + f"({gate.get('signoff_count', required_signoffs)}/{gate.get('required_signoffs', required_signoffs)} signoffs)"
                     ),
                 )
             else:
@@ -3561,7 +3765,7 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                     append_status(
                         state,
                         (
-                            "Validation gate rejected; returning to planner "
+                            f"Validation gate {str(gate.get('decision') or 'reject')}; returning to planner "
                             f"(replan {retries_used}/{MAX_VALIDATION_REPLAN_RETRIES})"
                         ),
                     )

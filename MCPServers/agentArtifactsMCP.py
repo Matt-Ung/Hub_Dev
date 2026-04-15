@@ -25,6 +25,16 @@ from artifact_paths import (  # noqa: E402
     list_agent_artifact_dirs,
     resolve_agent_artifact_path,
 )
+from MCPServers.server_helper_scripts.malware_reporting import (  # noqa: E402
+    DEFAULT_TEMPLATE_PATH,
+    example_report_payload,
+    parse_report_payload,
+    render_markdown,
+    render_pdf,
+    report_slug,
+    schema_for_mcp,
+    write_normalized_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +91,40 @@ def _write_text_file(
     except Exception as exc:
         logger.exception("write_text_file failed")
         return {"ok": False, "error": str(exc)}
+
+
+def _report_bundle_subdir(subdir: str, slug: str) -> str:
+    base = str(subdir or "").strip().replace("\\", "/").strip("/")
+    if base:
+        return f"{base}/malware_reports/{slug}"
+    return f"malware_reports/{slug}"
+
+
+def _ensure_report_paths(slug: str, *, subdir: str) -> dict[str, Path]:
+    bundle_subdir = _report_bundle_subdir(subdir, slug)
+    return {
+        "json": resolve_agent_artifact_path(
+            "reports",
+            filename="report.json",
+            default_stem="report",
+            default_extension=".json",
+            subdir=bundle_subdir,
+        ),
+        "markdown": resolve_agent_artifact_path(
+            "reports",
+            filename="report.md",
+            default_stem="report",
+            default_extension=".md",
+            subdir=bundle_subdir,
+        ),
+        "pdf": resolve_agent_artifact_path(
+            "reports",
+            filename="report.pdf",
+            default_stem="report",
+            default_extension=".pdf",
+            subdir=bundle_subdir,
+        ),
+    }
 
 
 @mcp.tool()
@@ -210,16 +254,132 @@ def agentArtifactHelp() -> dict[str, Any]:
                 "writeTextArtifact(artifact_type, content, filename='', overwrite=False, subdir='', description='')",
                 "writePythonArtifact(content, filename='', overwrite=False, subdir='', description='', ghidra_script=False)",
                 "writeJavaArtifact(content, filename='', overwrite=False, subdir='', description='', ghidra_script=False)",
+                "malwareReportSchema()",
+                "generateMalwareReport(report, filename='', overwrite=False, subdir='', emit_json=True, emit_markdown=True, emit_pdf=True)",
                 "listAgentArtifacts(artifact_type='', max_results=200)",
             ],
             "notes": [
                 "Use the YARA MCP server for YARA rules so the rule text can still be validated and indexed before writing.",
-                "Use this server for reusable Python/Java helpers, deobfuscation utilities, reports, and Ghidra-supporting scripts.",
+                "Use this server for reusable Python/Java helpers, deobfuscation utilities, structured malware reports, and Ghidra-supporting scripts.",
                 "Server-side path enforcement keeps per-type directories and artifact writes under the configured AGENT_ARTIFACT_DIR root.",
+                f"Malware report Markdown rendering uses the template at {DEFAULT_TEMPLATE_PATH}.",
             ],
         }
     except Exception as exc:
         logger.warning("agentArtifactHelp rejected invalid artifact configuration: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def malwareReportSchema() -> dict[str, Any]:
+    """Return the structured schema, template path, and example payload for malware report generation."""
+    try:
+        return {
+            "ok": True,
+            "schema": schema_for_mcp(),
+            "template_path": str(DEFAULT_TEMPLATE_PATH),
+            "example_report": example_report_payload(),
+            "notes": [
+                "Pass the report payload as one structured object to generateMalwareReport(...).",
+                "List-like fields accept either a single string or a list of strings.",
+                "Missing sections are omitted from the rendered Markdown and PDF output.",
+            ],
+        }
+    except Exception as exc:
+        logger.exception("malwareReportSchema failed")
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def generateMalwareReport(
+    report: dict[str, Any],
+    filename: str = "",
+    overwrite: bool = False,
+    subdir: str = "",
+    emit_json: bool = True,
+    emit_markdown: bool = True,
+    emit_pdf: bool = True,
+) -> dict[str, Any]:
+    """
+    Generate a structured malware analysis report bundle under the standardized reports artifact directory.
+
+    The tool validates the input payload, writes a normalized JSON payload, renders
+    a Markdown report from the malware-report template, and optionally renders a PDF.
+    """
+    if not any((emit_json, emit_markdown, emit_pdf)):
+        return {"ok": False, "error": "at least one of emit_json, emit_markdown, or emit_pdf must be true"}
+
+    try:
+        parsed = parse_report_payload(report or {})
+        slug = report_slug(parsed, filename=filename)
+        paths = _ensure_report_paths(slug, subdir=subdir)
+        existing = [str(path) for key, path in paths.items() if {"json": emit_json, "markdown": emit_markdown, "pdf": emit_pdf}[key] and path.exists()]
+        if existing and not overwrite:
+            return {
+                "ok": False,
+                "error": "one or more report artifacts already exist; set overwrite=True to replace them",
+                "existing_paths": existing,
+            }
+
+        outputs: dict[str, str] = {}
+        if emit_json:
+            write_normalized_json(paths["json"], parsed)
+            outputs["json"] = str(paths["json"])
+        if emit_markdown:
+            markdown_text = render_markdown(parsed)
+            paths["markdown"].write_text(markdown_text, encoding="utf-8")
+            outputs["markdown"] = str(paths["markdown"])
+        if emit_pdf:
+            render_pdf(parsed, paths["pdf"])
+            outputs["pdf"] = str(paths["pdf"])
+
+        included_sections: list[str] = []
+        if parsed.executive_summary:
+            included_sections.append("executive_summary")
+        if parsed.introduction:
+            included_sections.append("introduction")
+        if any(str(value or "").strip() for value in parsed.file_details.model_dump().values()):
+            included_sections.append("file_details")
+        if parsed.methods_of_distribution:
+            included_sections.append("methods_of_distribution")
+        if parsed.installation:
+            included_sections.append("installation")
+        if parsed.stage_descriptions:
+            included_sections.append("stage_descriptions")
+        if any(parsed.host_artifacts.model_dump().values()):
+            included_sections.append("host_artifacts")
+        if any(parsed.functionality_overview.model_dump().values()):
+            included_sections.append("functionality_overview")
+        if any(parsed.command_and_control.model_dump().values()):
+            included_sections.append("command_and_control")
+        if parsed.conclusion:
+            included_sections.append("conclusion")
+        if any(parsed.appendix_content.model_dump().values()):
+            included_sections.append("appendix_content")
+
+        return {
+            "ok": True,
+            "artifact_type": "reports",
+            "report_title": parsed.title,
+            "report_slug": slug,
+            "sample_name": parsed.sample_name,
+            "artifact_dir": str(paths["markdown"].parent if emit_markdown else next(iter(paths.values())).parent),
+            "outputs": outputs,
+            "included_sections": included_sections,
+            "artifact_dirs": list_agent_artifact_dirs(),
+            "template_path": str(DEFAULT_TEMPLATE_PATH),
+            "example_call_hint": {
+                "tool": "generateMalwareReport",
+                "arguments": {
+                    "report": example_report_payload(),
+                    "filename": "sample_report",
+                    "subdir": "engagement_alpha",
+                    "overwrite": False,
+                },
+            },
+        }
+    except Exception as exc:
+        logger.exception("generateMalwareReport failed")
         return {"ok": False, "error": str(exc)}
 
 

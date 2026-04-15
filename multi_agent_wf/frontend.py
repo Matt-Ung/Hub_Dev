@@ -24,15 +24,12 @@ from .config import (
     DEEP_AGENT_PIPELINE_DESCRIPTIONS,
     DEEP_AGENT_PIPELINE_NAME,
     DEEP_AGENT_PIPELINE_PRESETS,
-    DEFAULT_ALLOW_PARENT_INPUT,
-    DEFAULT_SHELL_EXECUTION_MODE,
     DEFAULT_VALIDATOR_REVIEW_LEVEL,
     PIPELINE_LOG_SLOTS,
     PATH_HANDOFF_LINE_PREFIX,
-    SHELL_EXECUTION_MODE_CHOICES,
     VALIDATOR_REVIEW_LEVEL_CHOICES,
-    _normalize_shell_execution_mode,
     _normalize_validator_review_level,
+    stage_kind_flag,
 )
 from .pipeline import (
     PipelineCancelled,
@@ -48,6 +45,7 @@ from .pipeline import (
 )
 from .runtime import (
     apply_ghidra_change_proposal_sync,
+    build_run_local_pipeline_runtime,
     get_pipeline_definition_sync,
     get_runtime_sync,
     is_edit_intent_query,
@@ -56,11 +54,8 @@ from .runtime import (
     shutdown_runtime_sync,
 )
 from .shared_state import (
-    _empty_parent_input,
     _get_ui_snapshot,
     _new_shared_state,
-    _pending_parent_input,
-    _resolve_parent_input_request,
     _sanitize_user_facing_output,
     _shorten,
     _snapshot_state_default,
@@ -68,7 +63,6 @@ from .shared_state import (
     apply_automation_payload_to_state,
     append_status,
     preserved_automation_shared_state,
-    render_parent_input_panel,
     record_automation_event,
 )
 
@@ -119,20 +113,6 @@ def _send_button(interactive: bool = True, visible: bool = True):
 
 def _cancel_button(interactive: bool = True, visible: bool = True):
     return gr.update(interactive=interactive, visible=visible)
-
-
-def _allow_parent_input_checkbox(state: Dict[str, Any], interactive: bool = True, visible: bool = True):
-    return gr.update(value=bool((state or {}).get("allow_parent_input")), interactive=interactive, visible=visible)
-
-
-def _shell_execution_mode_dropdown(state: Dict[str, Any], interactive: bool = True, visible: bool = True):
-    value = _normalize_shell_execution_mode((state or {}).get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE))
-    return gr.update(
-        choices=SHELL_EXECUTION_MODE_CHOICES,
-        value=value,
-        interactive=interactive,
-        visible=visible,
-    )
 
 
 def _validator_review_level_dropdown(state: Dict[str, Any], interactive: bool = True, visible: bool = True):
@@ -196,8 +176,49 @@ def _validation_gate_board(state: Dict[str, Any]):
 
 
 def _has_validation_gate(state: Dict[str, Any]) -> bool:
-    progress = ((state or {}).get("shared_state") or {}).get("pipeline_stage_progress") or []
-    return any(bool(item.get("runs_validation_gate")) for item in progress if isinstance(item, dict))
+    state = state or {}
+    shared = (state.get("shared_state") or {})
+
+    progress = shared.get("pipeline_stage_progress") or []
+    if any(
+        (
+            bool(item.get("runs_validation_gate"))
+            or stage_kind_flag(str(item.get("stage_kind") or "").strip(), "runs_validation_gate")
+        )
+        for item in progress
+        if isinstance(item, dict)
+    ):
+        return True
+
+    if (
+        shared.get("validation_history")
+        or str(shared.get("validation_last_decision") or "").strip()
+        or str(shared.get("validation_replan_feedback") or "").strip()
+    ):
+        return True
+
+    deep_pipeline = shared.get("deep_pipeline") or []
+    if any(
+        stage_kind_flag(str((stage or {}).get("stage_kind") or "").strip(), "runs_validation_gate")
+        for stage in deep_pipeline
+        if isinstance(stage, dict)
+    ):
+        return True
+
+    pipeline_name = str(
+        shared.get("selected_pipeline_name")
+        or state.get("deep_agent_pipeline_name")
+        or ""
+    ).strip()
+    if not pipeline_name or pipeline_name == "dynamic":
+        return False
+
+    pipeline_definition = DEEP_AGENT_PIPELINE_PRESETS.get(pipeline_name) or []
+    return any(
+        stage_kind_flag(str((stage or {}).get("stage_kind") or "").strip(), "runs_validation_gate")
+        for stage in pipeline_definition
+        if isinstance(stage, dict)
+    )
 
 
 def _validation_gate_container(state: Dict[str, Any]):
@@ -223,45 +244,6 @@ def _approve_change_button(state: Dict[str, Any], active: bool):
 def _reject_change_button(state: Dict[str, Any], active: bool):
     has_pending = get_pending_ghidra_change_proposal(state) is not None
     return gr.update(interactive=(not active) and has_pending, visible=True)
-
-
-def _parent_input_signature(state: Dict[str, Any]) -> str:
-    pending = _pending_parent_input(state or {})
-    return "|".join(
-        [
-            str(pending.get("request_id") or ""),
-            str(pending.get("status") or ""),
-            str(pending.get("question") or ""),
-        ]
-    )
-
-
-def _parent_input_component_updates(
-    state: Dict[str, Any],
-    *,
-    interactive: bool,
-    reset_response: bool,
-) -> Tuple[Any, Any, Any, Any]:
-    pending = _pending_parent_input(state or {})
-    visible = str(pending.get("status") or "") == "waiting"
-    response_update = gr.update(
-        interactive=interactive,
-        visible=visible,
-        placeholder="Type a concise answer for the agent...",
-    )
-    if reset_response:
-        response_update = gr.update(
-            value="",
-            interactive=interactive,
-            visible=visible,
-            placeholder="Type a concise answer for the agent...",
-        )
-    return (
-        gr.update(value=render_parent_input_panel(state), visible=visible),
-        response_update,
-        gr.update(interactive=interactive, visible=visible),
-        gr.update(interactive=interactive, visible=visible),
-    )
 
 
 def _tool_log_text_for_stage(state: Dict[str, Any], stage_name: str, stage_kind: str) -> str:
@@ -296,16 +278,10 @@ def _ui_updates(
     message_update: Any,
     chat_history: Any,
     state: Dict[str, Any],
-    allow_parent_input_update: Any,
-    shell_execution_mode_update: Any,
     validator_review_level_update: Any,
     pipeline_auto_select_update: Any,
     architecture_preset_update: Any,
     pipeline_preset_update: Any,
-    parent_prompt_update: Any,
-    parent_response_update: Any,
-    parent_submit_update: Any,
-    parent_decline_update: Any,
     automation_status_update: Any,
     validation_gate_container_update: Any,
     validation_gate_update: Any,
@@ -322,16 +298,10 @@ def _ui_updates(
         message_update,
         chat_history,
         state,
-        allow_parent_input_update,
-        shell_execution_mode_update,
         validator_review_level_update,
         pipeline_auto_select_update,
         architecture_preset_update,
         pipeline_preset_update,
-        parent_prompt_update,
-        parent_response_update,
-        parent_submit_update,
-        parent_decline_update,
         automation_status_update,
         validation_gate_container_update,
         validation_gate_update,
@@ -356,13 +326,6 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
     cancel_visible = active
     clear_visible = bool(snapshot.get("clear_visible", True)) and not active
     todo_visible = bool(snapshot.get("todo_visible", False)) or active
-    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-        _parent_input_component_updates(
-            state,
-            interactive=True,
-            reset_response=False,
-        )
-    )
     return _ui_updates(
         _message_input(
             value="",
@@ -371,16 +334,6 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
         ),
         chat_history,
         state,
-        _allow_parent_input_checkbox(
-            state,
-            interactive=not active,
-            visible=True,
-        ),
-        _shell_execution_mode_dropdown(
-            state,
-            interactive=not active,
-            visible=True,
-        ),
         _validator_review_level_dropdown(
             state,
             interactive=not active,
@@ -401,10 +354,6 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
             interactive=not active,
             visible=True,
         ),
-        parent_prompt_update,
-        parent_response_update,
-        parent_submit_update,
-        parent_decline_update,
         _automation_status_board(state),
         _validation_gate_container(state),
         _validation_gate_board(state),
@@ -469,8 +418,6 @@ def chat_turn(
     user_text: str,
     chat_history: List[Dict[str, str]],
     state: Dict[str, Any],
-    allow_parent_input_value: bool,
-    shell_execution_mode_value: str,
     validator_review_level_value: str,
     pipeline_auto_select_value: bool,
     architecture_preset_value: str,
@@ -478,28 +425,14 @@ def chat_turn(
 ):
     user_text = (user_text or "").strip()
     if not user_text:
-        state = state or {}
-        parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-            _parent_input_component_updates(
-                state,
-                interactive=True,
-                reset_response=False,
-            )
-        )
         yield _ui_updates(
             _message_input(value="", interactive=True, visible=True),
             chat_history,
             state,
-            _allow_parent_input_checkbox(state, interactive=True, visible=True),
-            _shell_execution_mode_dropdown(state, interactive=True, visible=True),
             _validator_review_level_dropdown(state, interactive=True, visible=True),
             _pipeline_auto_select_checkbox(state, interactive=True, visible=True),
             _architecture_preset_dropdown(state, interactive=True, visible=True),
             _pipeline_preset_dropdown(state, interactive=True, visible=True),
-            parent_prompt_update,
-            parent_response_update,
-            parent_submit_update,
-            parent_decline_update,
             _automation_status_board(state),
             _validation_gate_container(state),
             _validation_gate_board(state),
@@ -533,8 +466,6 @@ def chat_turn(
     edit_intent_query = is_edit_intent_query(user_text)
     preserve_change_queue = pending_change_count > 0
 
-    state["allow_parent_input"] = bool(allow_parent_input_value)
-    state["shell_execution_mode"] = _normalize_shell_execution_mode(shell_execution_mode_value)
     state["validator_review_level"] = _normalize_validator_review_level(validator_review_level_value)
 
     if pending_change_count and edit_intent_query:
@@ -548,7 +479,7 @@ def chat_turn(
         gate_note = (
             f"There {'is' if pending_change_count == 1 else 'are'} {pending_change_count} pending Ghidra change "
             f"proposal{'s' if pending_change_count != 1 else ''} in the queue.\n"
-            "Read-only follow-up questions are allowed, but new edit-generating queries are gated until you approve or reject the current queue."
+            "New edit-generating requests remain gated until you approve or reject the current queue."
         )
         blocked_history = list(chat_history) + [
             {"role": "user", "content": user_text},
@@ -564,27 +495,14 @@ def chat_turn(
             todo_visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress")),
             force=True,
         )
-        parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-            _parent_input_component_updates(
-                state,
-                interactive=True,
-                reset_response=False,
-            )
-        )
         yield _ui_updates(
             _message_input(value="", interactive=True, visible=True),
             blocked_history,
             state,
-            _allow_parent_input_checkbox(state, interactive=True, visible=True),
-            _shell_execution_mode_dropdown(state, interactive=True, visible=True),
             _validator_review_level_dropdown(state, interactive=True, visible=True),
             _pipeline_auto_select_checkbox(state, interactive=True, visible=True),
             _architecture_preset_dropdown(state, interactive=True, visible=True),
             _pipeline_preset_dropdown(state, interactive=True, visible=True),
-            parent_prompt_update,
-            parent_response_update,
-            parent_submit_update,
-            parent_decline_update,
             _automation_status_board(state),
             _validation_gate_container(state),
             _validation_gate_board(state),
@@ -620,7 +538,6 @@ def chat_turn(
         state["deep_agent_pipeline_name"] = selected_pipeline_default
     else:
         state["deep_agent_pipeline_name"] = selected_pipeline_default
-    state["pending_parent_input"] = _empty_parent_input()
     state["tool_log"] = ""
     state["tool_log_sections"] = {}
     state["_tool_log_seen_keys"] = {}
@@ -658,7 +575,7 @@ def chat_turn(
     if pending_change_count:
         queue_notice = (
             f"Pending Ghidra changes: {pending_change_count} proposal{'s' if pending_change_count != 1 else ''} still need approval or rejection.\n"
-            "Continuing with a read-only follow-up query. New edit-generating requests remain gated until the queue is addressed."
+            "New edit-generating requests remain gated until the queue is addressed."
         )
         append_status(state, f"Continuing with pending Ghidra queue in view ({pending_change_count} pending)")
     if bool(state.get("deep_agent_auto_select_pipeline", DEEP_AGENT_AUTO_SELECT_PIPELINE)):
@@ -689,27 +606,14 @@ def chat_turn(
         todo_visible=True,
         force=True,
     )
-    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-        _parent_input_component_updates(
-            state,
-            interactive=True,
-            reset_response=True,
-        )
-    )
     yield _ui_updates(
         _message_input(value="", interactive=False, visible=False),
         chat_box["history"],
         state,
-        _allow_parent_input_checkbox(state, interactive=False, visible=True),
-        _shell_execution_mode_dropdown(state, interactive=False, visible=True),
         _validator_review_level_dropdown(state, interactive=False, visible=True),
         _pipeline_auto_select_checkbox(state, interactive=False, visible=True),
         _architecture_preset_dropdown(state, interactive=False, visible=True),
         _pipeline_preset_dropdown(state, interactive=False, visible=True),
-        parent_prompt_update,
-        parent_response_update,
-        parent_submit_update,
-        parent_decline_update,
         _automation_status_board(state),
         _validation_gate_container(state),
         _validation_gate_board(state),
@@ -724,9 +628,11 @@ def chat_turn(
     )
 
     def _run_deep_pipeline() -> Tuple[str, str]:
-        runtime = get_runtime_sync(
-            pipeline_name=selected_pipeline_name,
-            architecture_name=selected_architecture_name,
+        runtime = build_run_local_pipeline_runtime(
+            get_runtime_sync(
+                pipeline_name=selected_pipeline_name,
+                architecture_name=selected_architecture_name,
+            )
         )
         return run_deepagent_pipeline(runtime, user_text, state), "deep_pipeline"
 
@@ -802,7 +708,6 @@ def chat_turn(
     last_todo_html = render_pipeline_todo_board(state)
     last_planned_html = render_planned_work_items_panel(state)
     last_validation_html = render_validation_gate_panel(state)
-    last_parent_input_sig = _parent_input_signature(state)
     while not done.wait(0.35):
         if str(state.get("active_run_id") or "") != run_id:
             return
@@ -810,20 +715,16 @@ def chat_turn(
         todo_now = render_pipeline_todo_board(state)
         planned_now = render_planned_work_items_panel(state)
         validation_now = render_validation_gate_panel(state)
-        parent_input_sig = _parent_input_signature(state)
         if (
             tool_now != last_tool_log
             or todo_now != last_todo_html
             or planned_now != last_planned_html
             or validation_now != last_validation_html
-            or parent_input_sig != last_parent_input_sig
         ):
-            parent_input_changed = parent_input_sig != last_parent_input_sig
             last_tool_log = tool_now
             last_todo_html = todo_now
             last_planned_html = planned_now
             last_validation_html = validation_now
-            last_parent_input_sig = parent_input_sig
             _store_ui_snapshot(
                 chat_history=chat_box["history"],
                 state=state,
@@ -833,27 +734,14 @@ def chat_turn(
                 clear_visible=False,
                 todo_visible=True,
             )
-            parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-                _parent_input_component_updates(
-                    state,
-                    interactive=True,
-                    reset_response=parent_input_changed,
-                )
-            )
             yield _ui_updates(
                 _message_input(value="", interactive=False, visible=False),
                 chat_box["history"],
                 state,
-                _allow_parent_input_checkbox(state, interactive=False, visible=True),
-                _shell_execution_mode_dropdown(state, interactive=False, visible=True),
                 _validator_review_level_dropdown(state, interactive=False, visible=True),
                 _pipeline_auto_select_checkbox(state, interactive=False, visible=True),
                 _architecture_preset_dropdown(state, interactive=False, visible=True),
                 _pipeline_preset_dropdown(state, interactive=False, visible=True),
-                parent_prompt_update,
-                parent_response_update,
-                parent_submit_update,
-                parent_decline_update,
                 _automation_status_board(state),
                 _validation_gate_container(state),
                 gr.update(value=validation_now, visible=True),
@@ -873,28 +761,15 @@ def chat_turn(
 
     # Update UI chat
     chat_history = chat_box["history"]
-    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-        _parent_input_component_updates(
-            state,
-            interactive=True,
-            reset_response=True,
-        )
-    )
 
     yield _ui_updates(
         _message_input(value="", interactive=True, visible=True),
         chat_history,
         state,
-        _allow_parent_input_checkbox(state, interactive=True, visible=True),
-        _shell_execution_mode_dropdown(state, interactive=True, visible=True),
         _validator_review_level_dropdown(state, interactive=True, visible=True),
         _pipeline_auto_select_checkbox(state, interactive=True, visible=True),
         _architecture_preset_dropdown(state, interactive=True, visible=True),
         _pipeline_preset_dropdown(state, interactive=True, visible=True),
-        parent_prompt_update,
-        parent_response_update,
-        parent_submit_update,
-        parent_decline_update,
         _automation_status_board(state),
         _validation_gate_container(state),
         _validation_gate_board(state),
@@ -906,45 +781,6 @@ def chat_turn(
         _cancel_button(interactive=False, visible=False),
         _send_button(interactive=True, visible=True),
         _todo_board(state, visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress"))),
-    )
-
-
-def set_allow_parent_input(allow_parent_input_value: bool, state: Dict[str, Any]):
-    state = state or _snapshot_state_default()
-    state["allow_parent_input"] = bool(allow_parent_input_value)
-    _store_ui_snapshot(state=state)
-    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-        _parent_input_component_updates(
-            state,
-            interactive=not bool(_get_ui_snapshot().get("run_active")),
-            reset_response=False,
-        )
-    )
-    return (
-        state,
-        _allow_parent_input_checkbox(
-            state,
-            interactive=not bool(_get_ui_snapshot().get("run_active")),
-            visible=True,
-        ),
-        parent_prompt_update,
-        parent_response_update,
-        parent_submit_update,
-        parent_decline_update,
-    )
-
-
-def set_shell_execution_mode(shell_execution_mode_value: str, state: Dict[str, Any]):
-    state = state or _snapshot_state_default()
-    state["shell_execution_mode"] = _normalize_shell_execution_mode(shell_execution_mode_value)
-    _store_ui_snapshot(state=state)
-    return (
-        state,
-        _shell_execution_mode_dropdown(
-            state,
-            interactive=not bool(_get_ui_snapshot().get("run_active")),
-            visible=True,
-        ),
     )
 
 
@@ -1024,56 +860,6 @@ def set_pipeline_preset(pipeline_preset_value: str, state: Dict[str, Any]):
     )
 
 
-def submit_parent_input(response_text: str, state: Dict[str, Any]):
-    state = state or _snapshot_state_default()
-    _resolve_parent_input_request(state, response=response_text, declined=False)
-    _store_ui_snapshot(state=state)
-    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-        _parent_input_component_updates(
-            state,
-            interactive=bool(_get_ui_snapshot().get("run_active")),
-            reset_response=True,
-        )
-    )
-    return (
-        state,
-        _allow_parent_input_checkbox(
-            state,
-            interactive=not bool(_get_ui_snapshot().get("run_active")),
-            visible=True,
-        ),
-        parent_prompt_update,
-        parent_response_update,
-        parent_submit_update,
-        parent_decline_update,
-    )
-
-
-def decline_parent_input(state: Dict[str, Any]):
-    state = state or _snapshot_state_default()
-    _resolve_parent_input_request(state, response="", declined=True)
-    _store_ui_snapshot(state=state)
-    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-        _parent_input_component_updates(
-            state,
-            interactive=bool(_get_ui_snapshot().get("run_active")),
-            reset_response=True,
-        )
-    )
-    return (
-        state,
-        _allow_parent_input_checkbox(
-            state,
-            interactive=not bool(_get_ui_snapshot().get("run_active")),
-            visible=True,
-        ),
-        parent_prompt_update,
-        parent_response_update,
-        parent_submit_update,
-        parent_decline_update,
-    )
-
-
 def _apply_ghidra_change_status(
     state: Dict[str, Any],
     proposal_id: str,
@@ -1143,6 +929,23 @@ def approve_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[s
         assistant_note = f"[ghidra change applied] {summary}"
         if result_text:
             assistant_note += f"\n\n{result_text}"
+    elif str(result.get("status") or "") == "needs_active_program_switch":
+        assistant_note = f"[ghidra change waiting for active program switch] {summary}"
+        if error:
+            assistant_note += f"\n\n{error}"
+        new_history = list(chat_history) + [{"role": "assistant", "content": assistant_note}]
+        append_status(state, f"Ghidra change pending active-program switch: {summary}")
+        _store_ui_snapshot(
+            chat_history=new_history,
+            state=state,
+            run_active=False,
+            composer_visible=True,
+            send_visible=True,
+            clear_visible=True,
+            todo_visible=bool((state.get("shared_state") or {}).get("pipeline_stage_progress")),
+            force=True,
+        )
+        return _restore_snapshot_outputs(_get_ui_snapshot())
     elif str(result.get("status") or "") == "proposal_only":
         final_status = "approved_proposal_only"
         assistant_note = f"[ghidra change approved as proposal only] {summary}"
@@ -1228,7 +1031,6 @@ def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
 
     state["cancel_requested"] = True
     state["active_run_id"] = f"canceled:{active_run_id}"
-    _resolve_parent_input_request(state, response="Pipeline canceled by user", declined=False)
     append_status(state, "Cancellation requested by user")
 
     fresh_shared_state = _new_shared_state()
@@ -1242,10 +1044,6 @@ def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
         "status_log": "",
         "active_run_id": f"idle:{uuid4().hex}",
         "cancel_requested": False,
-        "allow_parent_input": bool(state.get("allow_parent_input", DEFAULT_ALLOW_PARENT_INPUT)),
-        "shell_execution_mode": _normalize_shell_execution_mode(
-            state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)
-        ),
         "validator_review_level": _normalize_validator_review_level(
             state.get("validator_review_level", DEFAULT_VALIDATOR_REVIEW_LEVEL)
         ),
@@ -1263,7 +1061,6 @@ def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
             )
         ).strip()
         or ("dynamic" if DEEP_AGENT_AUTO_SELECT_PIPELINE else DEEP_AGENT_PIPELINE_NAME),
-        "pending_parent_input": _empty_parent_input(),
         "shared_state": fresh_shared_state,
     }
     detached_note = "[pipeline cancel requested] The current run was detached. You can submit a new query."
@@ -1278,27 +1075,14 @@ def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
         todo_visible=False,
         force=True,
     )
-    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-        _parent_input_component_updates(
-            fresh_state,
-            interactive=True,
-            reset_response=True,
-        )
-    )
     return _ui_updates(
         _message_input(value="", interactive=True, visible=True),
         fresh_history,
         fresh_state,
-        _allow_parent_input_checkbox(fresh_state, interactive=True, visible=True),
-        _shell_execution_mode_dropdown(fresh_state, interactive=True, visible=True),
         _validator_review_level_dropdown(fresh_state, interactive=True, visible=True),
         _pipeline_auto_select_checkbox(fresh_state, interactive=True, visible=True),
         _architecture_preset_dropdown(fresh_state, interactive=True, visible=True),
         _pipeline_preset_dropdown(fresh_state, interactive=True, visible=True),
-        parent_prompt_update,
-        parent_response_update,
-        parent_submit_update,
-        parent_decline_update,
         _automation_status_board(fresh_state),
         _validation_gate_container(fresh_state),
         _validation_gate_board(fresh_state),
@@ -1327,13 +1111,10 @@ def reset():
         "status_log": "",
         "active_run_id": "",
         "cancel_requested": False,
-        "allow_parent_input": DEFAULT_ALLOW_PARENT_INPUT,
-        "shell_execution_mode": DEFAULT_SHELL_EXECUTION_MODE,
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
         "deep_agent_auto_select_pipeline": DEEP_AGENT_AUTO_SELECT_PIPELINE,
         "deep_agent_architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,
         "deep_agent_pipeline_name": "dynamic" if DEEP_AGENT_AUTO_SELECT_PIPELINE else DEEP_AGENT_PIPELINE_NAME,
-        "pending_parent_input": _empty_parent_input(),
         "shared_state": fresh_shared_state,
     }
     _store_ui_snapshot(
@@ -1345,27 +1126,14 @@ def reset():
         clear_visible=True,
         todo_visible=False,
     )
-    parent_prompt_update, parent_response_update, parent_submit_update, parent_decline_update = (
-        _parent_input_component_updates(
-            fresh_state,
-            interactive=True,
-            reset_response=True,
-        )
-    )
     return _ui_updates(
         _message_input(value="", interactive=True, visible=True),
         [],
         fresh_state,
-        _allow_parent_input_checkbox(fresh_state, interactive=True, visible=True),
-        _shell_execution_mode_dropdown(fresh_state, interactive=True, visible=True),
         _validator_review_level_dropdown(fresh_state, interactive=True, visible=True),
         _pipeline_auto_select_checkbox(fresh_state, interactive=True, visible=True),
         _architecture_preset_dropdown(fresh_state, interactive=True, visible=True),
         _pipeline_preset_dropdown(fresh_state, interactive=True, visible=True),
-        parent_prompt_update,
-        parent_response_update,
-        parent_submit_update,
-        parent_decline_update,
         _automation_status_board(fresh_state),
         _validation_gate_container(fresh_state),
         _validation_gate_board(fresh_state),
@@ -1616,7 +1384,6 @@ def _run_automation_trigger(user_text: str, source: str, payload: Dict[str, Any]
             reason=str(payload.get("rerun_reason") or "").strip(),
             detail="Automated triage is running.",
         )
-        shell_execution_mode = "none"
         validator_review_level = _normalize_validator_review_level(
             state.get("validator_review_level", DEFAULT_VALIDATOR_REVIEW_LEVEL)
         )
@@ -1626,8 +1393,6 @@ def _run_automation_trigger(user_text: str, source: str, payload: Dict[str, Any]
             user_text,
             list(chat_history),
             state,
-            False,
-            shell_execution_mode,
             validator_review_level,
             False,
             "balanced",
@@ -1875,17 +1640,6 @@ class WorkflowUI:
             with gr.Sidebar(label="Advanced Settings", open=False, position="right"):
                 with gr.Column(elem_id="advanced-settings-panel"):
                     gr.Markdown("### Advanced Settings")
-                    allow_parent_input = gr.Checkbox(
-                        label="Allow agent follow-up questions",
-                        value=bool(initial_state.get("allow_parent_input")),
-                        info="Lets the agent pause and ask for one clarification during a run.",
-                    )
-                    shell_execution_mode = gr.Dropdown(
-                        label="Shell command execution",
-                        choices=SHELL_EXECUTION_MODE_CHOICES,
-                        value=_normalize_shell_execution_mode(initial_state.get("shell_execution_mode", DEFAULT_SHELL_EXECUTION_MODE)),
-                        info="Choose whether local shell commands are blocked, approval-gated, or fully enabled.",
-                    )
                     validator_review_level = gr.Dropdown(
                         label="Validator review profile",
                         choices=VALIDATOR_REVIEW_LEVEL_CHOICES,
@@ -1928,16 +1682,6 @@ class WorkflowUI:
                         group_consecutive_messages=False,
                     )
                     todo_board = gr.HTML(visible=False)
-                    parent_prompt_panel = gr.HTML(value=render_parent_input_panel(initial_state), visible=False)
-                    parent_response = gr.Textbox(
-                        label="Follow-up Response",
-                        lines=2,
-                        placeholder="Type a concise answer for the agent...",
-                        visible=False,
-                    )
-                    with gr.Row():
-                        parent_submit = gr.Button("Submit Answer", visible=False)
-                        parent_decline = gr.Button("Decline", visible=False)
                     user = gr.Textbox(
                         label="Message",
                         lines=2,
@@ -1962,9 +1706,8 @@ class WorkflowUI:
                     )
                     with gr.Accordion("Planned Work Items", open=False):
                         planned_work_items_panel = gr.HTML(value=render_planned_work_items_panel(initial_state))
-                    with gr.Group(visible=_has_validation_gate(initial_state)) as validation_gate_group:
-                        with gr.Accordion("Validation Gate", open=False):
-                            validation_gate_panel = gr.HTML(value=render_validation_gate_panel(initial_state))
+                    with gr.Accordion("Validation Gate", open=False, visible=_has_validation_gate(initial_state)) as validation_gate_group:
+                        validation_gate_panel = gr.HTML(value=render_validation_gate_panel(initial_state))
                     with gr.Accordion("Ghidra Change Queue", open=False, elem_id="ghidra-change-queue-accordion"):
                         ghidra_change_queue_panel = gr.HTML(
                             value=render_ghidra_change_queue_panel(initial_state),
@@ -1995,16 +1738,10 @@ class WorkflowUI:
                 user,
                 chat,
                 state,
-                allow_parent_input,
-                shell_execution_mode,
                 validator_review_level,
                 pipeline_auto_select,
                 architecture_preset,
                 pipeline_preset,
-                parent_prompt_panel,
-                parent_response,
-                parent_submit,
-                parent_decline,
                 automation_status_panel,
                 validation_gate_group,
                 validation_gate_panel,
@@ -2031,8 +1768,6 @@ class WorkflowUI:
                     user,
                     chat,
                     state,
-                    allow_parent_input,
-                    shell_execution_mode,
                     validator_review_level,
                     pipeline_auto_select,
                     architecture_preset,
@@ -2046,26 +1781,12 @@ class WorkflowUI:
                     user,
                     chat,
                     state,
-                    allow_parent_input,
-                    shell_execution_mode,
                     validator_review_level,
                     pipeline_auto_select,
                     architecture_preset,
                     pipeline_preset,
                 ],
                 outputs=ui_outputs,
-            )
-            allow_parent_input.change(
-                set_allow_parent_input,
-                inputs=[allow_parent_input, state],
-                outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
-                show_progress="hidden",
-            )
-            shell_execution_mode.change(
-                set_shell_execution_mode,
-                inputs=[shell_execution_mode, state],
-                outputs=[state, shell_execution_mode],
-                show_progress="hidden",
             )
             validator_review_level.change(
                 set_validator_review_level,
@@ -2083,24 +1804,6 @@ class WorkflowUI:
                 set_pipeline_preset,
                 inputs=[pipeline_preset, state],
                 outputs=[state, pipeline_auto_select, pipeline_preset],
-                show_progress="hidden",
-            )
-            parent_submit.click(
-                submit_parent_input,
-                inputs=[parent_response, state],
-                outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
-                show_progress="hidden",
-            )
-            parent_response.submit(
-                submit_parent_input,
-                inputs=[parent_response, state],
-                outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
-                show_progress="hidden",
-            )
-            parent_decline.click(
-                decline_parent_input,
-                inputs=[state],
-                outputs=[state, allow_parent_input, parent_prompt_panel, parent_response, parent_submit, parent_decline],
                 show_progress="hidden",
             )
             approve_change.click(

@@ -1305,6 +1305,8 @@ def _classify_task_status(task_status: str) -> str:
         return "skipped"
     if text in {"failed", "analysis_error", "worker_assignment_failed", "validator_blocked"} or text.startswith("failed_"):
         return "failed"
+    if text in {"completed_with_worker_failures"}:
+        return "completed"
     if text in {"skipped", "not_applicable"}:
         return "skipped"
     return "completed"
@@ -1312,6 +1314,8 @@ def _classify_task_status(task_status: str) -> str:
 
 def _normalize_run_status(status: str) -> str:
     text = str(status or "").strip().lower()
+    if text == "completed_with_worker_failures":
+        return "completed"
     if text in {"running", "completed", "completed_budget_exceeded", "budget_exceeded", "failed", "skipped", "pending"}:
         return text
     if text in {"preflight_failed", "analysis_error", "worker_assignment_failed"} or text.startswith("failed_"):
@@ -1323,7 +1327,7 @@ def _normalize_run_status(status: str) -> str:
 
 def _run_status_bucket(status: str) -> str:
     text = _normalize_run_status(status)
-    if text in {"completed", "completed_budget_exceeded", "budget_exceeded"}:
+    if text in {"completed", "completed_with_worker_failures", "completed_budget_exceeded", "budget_exceeded"}:
         return "completed"
     if text == "running":
         return "running"
