@@ -202,7 +202,17 @@ public class GhidraMCPPlugin extends ProgramPlugin {
     }
 
     private void maybeQueueAutoWorkflowTrigger(Program program) {
-        if (program == null || !isAutoWorkflowEnabled()) {
+        if (program == null) {
+            Msg.info(this, "Auto workflow trigger not queued because no active program is available.");
+            return;
+        }
+        if (!isAutoWorkflowEnabled()) {
+            Msg.info(
+                this,
+                "Auto workflow trigger not queued for "
+                    + safe(program.getName())
+                    + " because the automation option is disabled."
+            );
             return;
         }
 
@@ -210,8 +220,21 @@ public class GhidraMCPPlugin extends ProgramPlugin {
         String fingerprint = getProgramAutomationFingerprint(program);
         String previousFingerprint = autoWorkflowTriggerFingerprints.get(baseKey);
         if (previousFingerprint != null && previousFingerprint.equals(fingerprint)) {
+            Msg.info(
+                this,
+                "Auto workflow trigger not re-queued for "
+                    + safe(program.getName())
+                    + " because the automation fingerprint is unchanged."
+            );
             return;
         }
+        Msg.info(
+            this,
+            "Queueing auto workflow trigger for "
+                + safe(program.getName())
+                + " after auto-analysis settles. URL="
+                + safe(String.valueOf(getAutoWorkflowUrl()))
+        );
         autoWorkflowTriggerFingerprints.put(baseKey, fingerprint);
 
         Thread worker = new Thread(() -> waitForAutoAnalysisAndTrigger(program, baseKey, fingerprint),
@@ -290,6 +313,7 @@ public class GhidraMCPPlugin extends ProgramPlugin {
     private void waitForAutoAnalysisAndTrigger(Program program, String baseKey, String fingerprint) {
         try {
             AutoAnalysisManager manager = AutoAnalysisManager.getAnalysisManager(program);
+            Msg.info(this, "Scheduling post-analysis workflow trigger worker for " + safe(program.getName()));
             boolean scheduled = manager.scheduleWorker(new AnalysisWorker() {
                 @Override
                 public String getWorkerName() {
@@ -318,11 +342,17 @@ public class GhidraMCPPlugin extends ProgramPlugin {
         String targetUrl = getAutoWorkflowUrl();
         if (program == null || targetUrl == null) {
             autoWorkflowTriggerFingerprints.remove(baseKey);
+            Msg.info(
+                this,
+                "Auto workflow trigger skipped because program or trigger URL was unavailable for "
+                    + safe(program == null ? "<null>" : program.getName())
+            );
             return;
         }
 
         HttpURLConnection connection = null;
         try {
+            Msg.info(this, "Posting auto workflow trigger for " + safe(program.getName()) + " to " + targetUrl);
             URL url = new URL(targetUrl);
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("POST");
@@ -339,6 +369,14 @@ public class GhidraMCPPlugin extends ProgramPlugin {
 
             int status = connection.getResponseCode();
             String response = readHttpResponseBody(connection);
+            Msg.info(
+                this,
+                "Auto workflow trigger HTTP result for "
+                    + safe(program.getName())
+                    + ": status="
+                    + status
+                    + (response.isEmpty() ? "" : (", body=" + response))
+            );
             if (status >= 200 && status < 300) {
                 if (response.contains("\"accepted\":false")) {
                     Msg.info(this, "Multi-Agent workflow auto-trigger skipped for " + safe(program.getName()) + " (duplicate or already triaged).");
@@ -1378,6 +1416,9 @@ public class GhidraMCPPlugin extends ProgramPlugin {
                 }
                 if (openImportedProgram) {
                     openedProgram = openDomainFileAsCurrent(existing);
+                    if (openedProgram != null) {
+                        maybeQueueAutoWorkflowTrigger(openedProgram);
+                    }
                 }
                 return "{"
                     + "\"ok\":true,"
@@ -1416,6 +1457,9 @@ public class GhidraMCPPlugin extends ProgramPlugin {
 
             if (openImportedProgram) {
                 openedProgram = openDomainFileAsCurrent(savedFile);
+                if (openedProgram != null) {
+                    maybeQueueAutoWorkflowTrigger(openedProgram);
+                }
             }
 
             return "{"

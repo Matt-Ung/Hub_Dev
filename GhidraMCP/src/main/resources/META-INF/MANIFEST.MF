@@ -1,6 +1,6 @@
-Manifest-Version: 12.0.2
-Plugin-Class: com.MattUng.GhidraMCP
+Manifest-Version: 12.0.3
+Plugin-Class: com.MattUng.GhidraMCPPlugin
 Plugin-Name: GhidraMCP
-Plugin-Version: 12.0.2
+Plugin-Version: 12.0.3
 Plugin-Author: LaurieWired (original project), Matt Ung (Hub_Dev extensions)
 Plugin-Description: GhidraMCP live bridge based on LaurieWired's original repo and extended for Hub_Dev.
