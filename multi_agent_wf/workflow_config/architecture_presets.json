@@ -120,5 +120,21 @@
       ["type_recovery_analyst", 1],
       ["ghidra_refactor_analyst", 1]
     ]
+  },
+  "automation_triage": {
+    "description": [
+      "Use for unattended Ghidra auto-analysis runs where the system should produce a real technical triage report plus conservative, approval-ready change proposals when justified.",
+      "Best automation default when you want broad static coverage, concrete capability/anti-analysis interpretation, and rename/retype proposal support without paying for the heavier source-reconstruction lanes."
+    ],
+    "slots": [
+      ["triage_analyst", 1],
+      ["ghidra_analyst", 1],
+      ["control_flow_analyst", 1],
+      ["string_analyst", 1],
+      ["obfuscation_analyst", 1],
+      ["capability_analyst", 1],
+      ["type_recovery_analyst", 1],
+      ["ghidra_refactor_analyst", 1]
+    ]
   }
 }

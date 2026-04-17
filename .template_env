@@ -225,6 +225,17 @@ AUTOMATION_TRIGGER_PORT=7861
 AUTOMATION_TRIGGER_PATH=/automation/ghidra-load
 AUTOMATION_TRIGGER_HEALTH_PATH=/automation/health
 
+# Default automated Ghidra-load request profile.
+# technical_report = concise analyst-facing triage report
+# detailed_report  = longer report with deeper breakdown
+# workplan         = planning-oriented task list instead of a report
+AUTOMATION_DEFAULT_REQUEST_PROFILE=technical_report
+
+# Default worker architecture for unattended automation-triggered runs.
+# automation_triage keeps strong static triage coverage plus type/refactor lanes
+# for conservative change proposals without the heavier reconstruction workers.
+AUTOMATION_DEFAULT_ARCHITECTURE_NAME=automation_triage
+
 # Optional local Ghidra headless configuration for the Testing harness.
 # The harness will now load these from `.env` automatically.
 # Set either the install dir or the explicit analyzeHeadless path.

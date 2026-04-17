@@ -27,6 +27,13 @@
     "parses_planner_work_items": false,
     "runs_validation_gate": false
   },
+  "proposal_writer": {
+    "tool_free": true,
+    "supports_parallel_assignments": false,
+    "finalizes_report": false,
+    "parses_planner_work_items": false,
+    "runs_validation_gate": false
+  },
   "validators": {
     "tool_free": true,
     "supports_parallel_assignments": false,

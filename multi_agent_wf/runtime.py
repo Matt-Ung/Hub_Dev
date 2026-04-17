@@ -1428,6 +1428,47 @@ def _string_or_empty(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_confidence(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return max(0.0, min(float(value), 1.0))
+    except Exception:
+        pass
+    label = _string_or_empty(value).lower().replace("-", "_").replace(" ", "_")
+    label_map = {
+        "very_low": 0.15,
+        "low": 0.35,
+        "tentative": 0.35,
+        "moderate": 0.6,
+        "medium": 0.6,
+        "high": 0.82,
+        "very_high": 0.95,
+    }
+    return label_map.get(label)
+
+
+def _normalize_confidence_label(value: Any, *, confidence: float | None = None) -> str:
+    label = _string_or_empty(value).lower().replace("-", "_").replace(" ", "_")
+    if label:
+        alias_map = {
+            "very_low": "low",
+            "tentative": "low",
+            "moderate": "medium",
+            "very_high": "high",
+        }
+        normalized = alias_map.get(label, label)
+        if normalized in {"low", "medium", "high"}:
+            return normalized
+    if confidence is None:
+        return ""
+    if confidence < 0.45:
+        return "low"
+    if confidence < 0.75:
+        return "medium"
+    return "high"
+
+
 def _normalize_ghidra_target_kind(value: Any) -> str:
     raw = _string_or_empty(value).lower().replace("-", "_").replace(" ", "_")
     mapping = {
@@ -1915,6 +1956,11 @@ def normalize_change_proposal(proposal: Dict[str, Any]) -> Dict[str, Any]:
     replace_existing = _normalize_boolish(normalized.get("replace_existing"), default=False)
     force = _normalize_boolish(normalized.get("force"), default=False)
     approval_required = _normalize_boolish(normalized.get("approval_required"), default=True)
+    confidence = _normalize_confidence(normalized.get("confidence"))
+    confidence_label = _normalize_confidence_label(
+        normalized.get("confidence_label") or normalized.get("confidence_level"),
+        confidence=confidence,
+    )
     target_system = _normalize_change_target_system(
         normalized.get("target_system")
         or normalized.get("target_system_kind")
@@ -2076,6 +2122,8 @@ def normalize_change_proposal(proposal: Dict[str, Any]) -> Dict[str, Any]:
     normalized["replace_existing"] = replace_existing
     normalized["force"] = force
     normalized["approval_required"] = approval_required
+    normalized["confidence"] = confidence
+    normalized["confidence_label"] = confidence_label
     normalized["target_system"] = inferred_target_system
     normalized["change_category"] = inferred_change_category
     normalized["backend_kind"] = inferred_backend_kind
@@ -2991,9 +3039,15 @@ def build_stage_prompt(
     selected_pipeline_name = str(shared.get("selected_pipeline_name") or "").strip()
     deep_pipeline = shared.get("deep_pipeline") or []
     pipeline_has_validators = False
+    pipeline_has_proposal_writer = False
     if isinstance(deep_pipeline, list) and deep_pipeline:
         pipeline_has_validators = any(
             stage_kind_flag(str((stage or {}).get("stage_kind") or "").strip(), "runs_validation_gate")
+            for stage in deep_pipeline
+            if isinstance(stage, dict)
+        )
+        pipeline_has_proposal_writer = any(
+            str((stage or {}).get("stage_kind") or "").strip() == "proposal_writer"
             for stage in deep_pipeline
             if isinstance(stage, dict)
         )
@@ -3001,6 +3055,11 @@ def build_stage_prompt(
         selected_pipeline = DEEP_AGENT_PIPELINE_PRESETS.get(selected_pipeline_name) or []
         pipeline_has_validators = any(
             stage_kind_flag(str((stage or {}).get("stage_kind") or "").strip(), "runs_validation_gate")
+            for stage in selected_pipeline
+            if isinstance(stage, dict)
+        )
+        pipeline_has_proposal_writer = any(
+            str((stage or {}).get("stage_kind") or "").strip() == "proposal_writer"
             for stage in selected_pipeline
             if isinstance(stage, dict)
         )
@@ -3193,6 +3252,8 @@ def build_stage_prompt(
                 "- This is an automated initial triage after Ghidra auto-analysis, not a normal open-ended chat run.",
                 "- Prefer bounded synthesis over exploratory re-discovery.",
                 "- Do not auto-apply Ghidra edits, do not launch dynamic analysis automatically, and do not generate validator-heavy appendices by default.",
+                "- This is an unattended automation run. Do the bounded static-analysis work available in this pipeline now rather than asking the user whether to proceed.",
+                "- Do not replace the run output with an option menu, to-do offer, or a question asking what to do next.",
             ]
         )
         if stage_kind == "preflight":
@@ -3206,10 +3267,16 @@ def build_stage_prompt(
             sections.extend(
                 [
                     "- Treat the deterministic pre-sweep bundle as already collected evidence.",
-                    "- Plan only the smallest follow-on work needed to synthesize or clarify program purpose, key control-flow, capabilities, obfuscation, packed-binary indicators, known-malware context, hashed-API opportunities, and naming/type opportunities from that bundle.",
+                    "- Plan only the smallest follow-on work needed to synthesize or clarify program purpose, key control-flow, capabilities, obfuscation, packed-binary indicators, known-malware context, hashed-API opportunities, and evidence-backed naming/type opportunities from that bundle.",
                     "- If the bundle includes capa-derived analysis leads or matched capability rules, convert the strongest ones into bounded work items with explicit evidence targets instead of leaving them as background context.",
                     "- Do not create work items that merely repeat the same bootstrap sweeps unless a sweep explicitly failed or the prior result was insufficient for the user-facing triage.",
-                    "- If the pre-sweep bundle suggests likely packing, unpacking opportunities, meaningful function renames, variable renames, local type improvements, or candidate struct definitions, plan those as bounded follow-on items rather than leaving them implicit.",
+                    "- If deterministic pre-sweeps already ran strings, FLOSS, capa, HashDB, YARA, or packer checks successfully, do not create future-work items that simply say to run them again.",
+                    "- If the pre-sweep bundle suggests likely packing, unpacking opportunities, meaningful function renames, variable renames, local type improvements, candidate struct definitions, enum/named-constant recovery, or recognizable globals/tables/blobs, plan those as bounded follow-on items rather than leaving them implicit.",
+                    "- When a work item could reasonably produce an analyst-helpful rename/type/struct/enum/data-label suggestion, encode that as a secondary deliverable inside the work item objective and set explicit planner fields `proposal_expected`, `proposal_types`, and `proposal_targets`.",
+                    "- Use `proposal_expected: true` only when the work item should finish with either conservative queued proposals or an explicit omission rationale.",
+                    "- Keep proposal-bearing work items narrow and concrete. Good phrasing looks like `Recover 1-2 conservative function/struct proposals for dispatcher X` or `Recover a bounded enum proposal for the command-ID switch at 0x...`.",
+                    "- Avoid vague phrasing like `analyze this region and maybe suggest improvements`; the objective should say what evidence to recover and what narrow proposal family is in scope.",
+                    "- Do not create standalone planner items whose only job is to emit proposal JSON. Proposal generation should ride along with the analytic work item that gathered the supporting evidence.",
                 ]
             )
         elif stage_kind == "workers":
@@ -3217,11 +3284,31 @@ def build_stage_prompt(
                 [
                     "- Use the deterministic pre-sweep bundle and automation bootstrap metadata as the primary starting point.",
                     "- Do not rerun full strings/FLOSS/capa/YARA/binwalk sweeps unless the stage context shows that one of them failed, was unavailable, or is materially insufficient.",
+                    "- When deterministic pre-sweeps already include strings/FLOSS/capa/HashDB/YARA or packer results, treat them as completed evidence and cite them directly instead of merely recommending those tools as future work.",
                     "- Treat capa-derived analysis leads as concrete hypotheses to confirm or narrow in code, not as mere labels to repeat back.",
                     "- Explicitly assess whether the sample appears packed, whether any unpacked output from the deterministic stage materially changes interpretation, whether the sample seems previously encountered from the available hash/intel context, and whether hashed APIs or encoded strings warrant closer inspection.",
-                    "- If you identify useful rename/type suggestions, candidate struct declarations, function names, or variable names, keep them evidence-backed and proposal-first.",
-                    "- When the evidence is strong enough to justify analyst review, emit those naming/type/struct improvements as approval-queue proposals rather than burying them in prose.",
+                    "- Look explicitly for static-analysis quality-of-life improvements that would help a Ghidra analyst: candidate structs or structured data layouts, likely enums or named constants, better function names, better local variable names, and clearer labels for globals, buffers, config blobs, decoded-string state, dispatch tables, and other recovered data items.",
+                    "- Only surface those readability improvements when they are supported by concrete artifacts such as repeated field offsets, switch-like comparisons against a bounded constant set, string usage, call patterns, API families, xrefs, or stable decompiler/local-variable usage patterns.",
+                    "- Prefer fewer, higher-value suggestions over noisy mass renames or weak guesses. If confidence is limited, say so explicitly rather than overstating recovered semantics.",
+                    "- Your primary job is still to answer the assigned analytic task with evidence. Do not replace the worker result with only a proposal block.",
+                    "- If you identify useful rename/type suggestions, candidate struct declarations, enum opportunities, or recovered data-label roles, keep them evidence-backed and include them as a proposal appendix after the analytic findings rather than as a substitute for them.",
+                    "- When the evidence is strong enough to justify analyst review, emit those naming/type/struct/enum/data-label improvements as approval-queue proposals in that appendix rather than burying them in prose.",
+                    "- Exact machine-readable proposal JSON is still preferred. If you miss that format, make the intended change explicit in conservative prose such as `rename FUN_... at 0x... to ... because ...`, `global DAT_... appears to store ...`, `struct for connection state with offsets ...`, or `enum-like command IDs 1, 2, 3`, so the proposal writer can attempt safe recovery.",
+                    "- If a host-managed work item carries `proposal_expected: true`, the assignment is not complete unless you append exactly one machine-readable proposal block and satisfy one of two outcomes: at least one valid proposal of the allowed `proposal_types`, or an empty array plus `Proposal omission rationale: <why no conservative proposal is safe yet>`.",
+                    "- For proposal-bearing work items, use the provided `proposal_targets` to keep the proposal scope narrow and concrete.",
                     "- If you emit a YARA proposal, anchor it to the distinct combination of behaviors, strings, constants, imports, or decode logic confirmed during analysis rather than generic PE/CRT/startup patterns.",
+                ]
+            )
+        elif stage_kind == "proposal_writer":
+            sections.extend(
+                [
+                    "- This pipeline includes a dedicated proposal-writing handoff between workers and reporting.",
+                    "- Consume the upstream worker-stage output as-is and convert supported rename/type/comment/prototype/struct/enum/file-patch suggestions into queued proposals.",
+                    "- Prefer exact machine-readable proposal blocks when they are present, but attempt a conservative recovery pass for near-miss semi-structured suggestions before concluding that no proposals were available.",
+                    "- Distinguish among: no actual suggested change, a suggested change that is too speculative or unsupported to recover safely, and an implied change that can be normalized into the current proposal schema.",
+                    "- Preserve structured evidence and optional confidence metadata from upstream proposals so the reporter can explain which static-analysis quality-of-life suggestions were queued and how strong they are.",
+                    "- Reuse the existing proposal parser, validator, and queue finalizer; do not perform fresh analysis or emit a user-facing report here.",
+                    "- Produce an explicit structured result even when no proposals are written.",
                 ]
             )
         elif stage_kind == "reporter":
@@ -3229,11 +3316,27 @@ def build_stage_prompt(
                 [
                     "- Produce an initial triage artifact that can be reused by later interactive queries.",
                     "- Keep the report analyst-facing, concise, and forward-looking about the highest-value next pivots.",
-                    "- If the run yielded strong, bounded rename/type/struct/enum/patch suggestions, finalize them into approval-ready change-queue proposals instead of dropping them.",
+                    "- Return the report itself, not a work plan, to-do list, option menu, or question back to the user.",
+                    "- Do not include phrases like `Would you like me to`, `How would you like to proceed`, or `I can create a structured todo list`.",
+                    "- If deterministic pre-sweeps already ran strings/FLOSS/capa/HashDB/YARA or packer checks, summarize those results or their limitations rather than simply recommending that the tools be run.",
                     "- If the run yielded a high-signal detection idea with stable strings/imports/behavioral pivots, emit a concise YARA rule proposal block so the host can write it through yaraMCP.",
                     "- Do not propose a YARA rule that mainly keys on generic starter code, DOS stub text, CRT/runtime scaffolding, or other broad compiler boilerplate.",
+                    "- When the run produced evidence-backed static-analysis quality-of-life proposals, summarize only the strongest queued suggestions and their rationale. Do not present tentative renames or recovered types as already-applied facts.",
                 ]
             )
+            if pipeline_has_proposal_writer:
+                sections.extend(
+                    [
+                        "- This auto-triage pipeline already finalized queued change proposals in the dedicated proposal-writer stage.",
+                        "- Do not interpret worker output into a new change-proposal block here.",
+                        "- Use the upstream proposal-writer stage output and finalized change queue as the authoritative proposal state for the report.",
+                        "- If you mention proposal confidence, mirror the structured proposal-writer result instead of inventing a stronger confidence claim in prose.",
+                    ]
+                )
+            else:
+                sections.append(
+                    "- If the run yielded strong, bounded rename/type/struct/enum/patch suggestions, finalize them into approval-ready change-queue proposals instead of dropping them."
+                )
             if reporter_artifact_output_enabled:
                 sections.append(
                     "- Reporter artifact output is enabled. You may persist a finalized structured malware-report bundle through agentartifactsmcp, but only from already-established findings."
@@ -3307,9 +3410,15 @@ def build_stage_prompt(
             objective = str(item.get("objective") or "")
             roles = ", ".join(item.get("recommended_roles") or []) or "unspecified"
             targets = "; ".join(item.get("evidence_targets") or []) or "none specified"
+            proposal_expected = "true" if bool(item.get("proposal_expected")) else "false"
+            proposal_types = ", ".join(item.get("proposal_types") or []) or "none specified"
+            proposal_targets = "; ".join(item.get("proposal_targets") or []) or "none specified"
             sections.append(f"- {item_id}: {objective}")
             sections.append(f"  recommended_roles: {roles}")
             sections.append(f"  evidence_targets: {targets}")
+            sections.append(f"  proposal_expected: {proposal_expected}")
+            sections.append(f"  proposal_types: {proposal_types}")
+            sections.append(f"  proposal_targets: {proposal_targets}")
 
     validation_retry_count = int(shared.get("validation_retry_count") or 0)
     validation_max_retries = int(shared.get("validation_max_retries") or MAX_VALIDATION_REPLAN_RETRIES)
@@ -3337,18 +3446,28 @@ def build_stage_prompt(
     if stage_roles:
         sections.extend(["", "Configured stage roles:", ", ".join(stage_roles)])
 
-    if stage_meta["supports_parallel_assignments"] and (
-        str(shared.get("deep_architecture_name") or "").strip() == "ghidra_editing"
-        or "ghidra_refactor_analyst" in stage_roles
-    ):
+    proposal_contract_enabled = bool(
+        (
+            stage_meta["supports_parallel_assignments"]
+            or (stage_meta["finalizes_report"] and not pipeline_has_proposal_writer)
+        )
+        and (
+            selected_pipeline_name == "auto_triage"
+            or str(shared.get("deep_architecture_name") or "").strip() == "ghidra_editing"
+            or "ghidra_refactor_analyst" in stage_roles
+            or "type_recovery_analyst" in stage_roles
+        )
+    )
+    if proposal_contract_enabled:
         sections.extend(
             [
                 "",
                 "Change queue contract:",
                 "- If this run produces approval-worthy analysis changes, include exactly one machine-readable JSON block between "
                 f"`{GHIDRA_CHANGE_PROPOSALS_START}` and `{GHIDRA_CHANGE_PROPOSALS_END}`.",
+                "- The machine-readable proposal block is supplementary. Do not replace the normal evidence-backed worker or reporter output with only JSON.",
                 "- The JSON payload must be an array of proposal objects.",
-                "- Proposal object keys should include: `id`, `action`, `target_system`, `change_category`, `target_kind`, `summary`, `rationale`, `evidence`, and the action-specific fields needed to apply the change.",
+                "- Proposal object keys should include: `id`, `action`, `target_system`, `change_category`, `target_kind`, `summary`, `rationale`, `evidence`, and the action-specific fields needed to apply the change. Include optional `confidence` (0.0-1.0) and `confidence_label` (`low`, `medium`, or `high`) when that helps the review surface distinguish strong suggestions from tentative ones.",
                 "- `evidence` must be a non-empty array of short concrete support points. Prefer 1-3 bullets such as function/address anchors, relevant strings, xrefs, imports/APIs, decoded constants, or short decompiler observations that justify the edit.",
                 "- Supported executable actions are: `rename_function`, `rename_function_by_address`, `rename_data`, `rename_variable`, `set_function_prototype`, `set_local_variable_type`, `apply_data_type_to_data`, `create_struct_definition`, `create_enum_definition`, `set_decompiler_comment`, `set_disassembly_comment`, `binary_patch_bytes`, and `binary_patch_assemble`.",
                 "- Use `target_system=ghidra` with `change_category=ghidra_view` for viewer edits such as renames, comments, and prototypes.",
@@ -3357,13 +3476,28 @@ def build_stage_prompt(
                 "- For struct creation, include `data_type_name` plus `struct_fields` as a list of objects with `name`, `type`, and optional `count` or `comment`.",
                 "- For enum creation, include `data_type_name` plus `enum_members` as a list of objects with `name`, `value`, and optional `comment`.",
                 "- For binary patch proposals, include the exact patch intent plus executable fields such as `address`, `address_kind`, and either `assembly` or `hex_bytes`. Include `expected_original_hex` when known.",
+                "- For static-analysis QoL proposals, prefer actions that map cleanly to analyst-facing improvements: `rename_function`, `rename_data`, `rename_variable`, `create_struct_definition`, `create_enum_definition`, `apply_data_type_to_data`, `set_local_variable_type`, and targeted comments.",
+                "- Good QoL proposal evidence usually names the artifact pattern that justifies the change: repeated field offsets, switch-like comparisons against a small constant set, stable string or API usage, repeated xrefs into a table/blob, decode-buffer behavior, or decompiler-local usage that makes a role/name clear.",
                 "- Do not emit a proposal with an empty `evidence` array. If the evidence is too weak to name concrete support points, keep the idea in prose instead of the machine-readable change queue.",
+                "- Exact JSON is preferred, but near-miss semi-structured suggestions can still be recovered later when they clearly name the target, intended change, and supporting rationale. If you miss the block format, make the suggestion explicit instead of vague.",
                 "- If there are no concrete proposals for approval, emit an empty array in the machine-readable block rather than omitting the block.",
+                "- If the current work item says `proposal_expected: true`, the machine-readable block is mandatory. Either emit at least one valid proposal of the allowed proposal types or write `Proposal omission rationale: <reason>` and then emit an empty array.",
                 "- Naming rule: unless a proposal is explicitly marked as applied, do not speak as though the rename already exists in Ghidra. In prose, refer to the current canonical symbol/address and optionally show the suggested alias in parentheses.",
             ]
         )
         if selected_pipeline_name == "auto_triage":
-            sections.append("- Auto-triage edit rule: bounded, evidence-backed rename/type/struct/enum/patch proposals are allowed when they materially improve future analysis, but keep them conservative and approval-first.")
+            audit_scope = "workers stage" if pipeline_has_proposal_writer else "workers or reporter stage"
+            sections.extend(
+                [
+                "- Auto-triage edit rule: bounded, evidence-backed rename/type/struct/enum/patch proposals are allowed when they materially improve future analysis, but keep them conservative and approval-first.",
+                f"- Auto-triage proposal audit: before finishing the {audit_scope}, explicitly evaluate whether the current evidence justifies 1-5 concrete approval-ready proposals that would materially improve later analysis.",
+                "- Auto-triage QoL rule: explicitly consider static-analysis readability improvements such as recovered structs, enums/named constants, function renames, variable renames, and recovered labels for globals, buffers, config blobs, decoded-string state, or dispatch/data tables.",
+                "- Auto-triage confidence rule: prefer a small number of well-supported suggestions. If a proposal is tentative, keep it conservative and tag it with low or medium confidence rather than overstating certainty.",
+                "- Auto-triage delivery rule: workers should still return the evidence-backed answer to their assigned todo. Proposal blocks are an additional appendix, not the whole deliverable.",
+                "- If at least one bounded proposal is justified, emit it in the machine-readable change queue block rather than only mentioning it in prose.",
+                "- If no bounded proposal is justified, still emit the machine-readable change queue block as an empty array and say briefly that the proposal audit found no conservative analyst-safe changes worth queuing yet.",
+            ]
+            )
 
     if stage_meta["supports_parallel_assignments"] or stage_meta["finalizes_report"]:
         sections.extend(

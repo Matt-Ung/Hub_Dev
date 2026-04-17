@@ -36,6 +36,14 @@ WORKER_ROLE_PROMPT_MODE_CHOICES = [
 WORKER_ROLE_PROMPT_MODE_LABELS = {
     value: label for label, value in WORKER_ROLE_PROMPT_MODE_CHOICES
 }
+AUTOMATION_REQUEST_PROFILE_CHOICES = [
+    ("technical_report (Default automated triage report)", "technical_report"),
+    ("detailed_report (Longer automated triage report)", "detailed_report"),
+    ("workplan (Planning-oriented task list)", "workplan"),
+]
+AUTOMATION_REQUEST_PROFILE_LABELS = {
+    value: label for label, value in AUTOMATION_REQUEST_PROFILE_CHOICES
+}
 PATH_HANDOFF_LINE_PREFIX = "Validated sample path:"
 SAMPLE_PATH_SUFFIXES = ("exe", "dll", "sys", "scr", "ocx", "cpl", "bin", "elf", "so", "dylib")
 SAMPLE_PATH_WINDOWS_RE = re.compile(
@@ -116,6 +124,36 @@ def _normalize_validator_review_level(value: Any) -> str:
     if normalized in {"professor", "cs professor", "medium", "moderate"}:
         return "intermediate"
     return "default"
+
+
+def _normalize_automation_request_profile(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"technical_report", "detailed_report", "workplan"}:
+        return normalized
+    if normalized in {"report", "technical", "triage", "triage_report", "default", "auto_triage"}:
+        return "technical_report"
+    if normalized in {"detailed", "detailed_triage", "detailed_technical_report", "full_report"}:
+        return "detailed_report"
+    if normalized in {"plan", "task_plan", "todo", "todo_list", "work_plan"}:
+        return "workplan"
+    return "technical_report"
+
+
+def _normalize_architecture_preset_name(
+    value: Any,
+    *,
+    default: str,
+    available_presets: Mapping[str, Any],
+    allow_dynamic: bool = False,
+) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return default
+    if allow_dynamic and normalized.lower() in {"auto", "dynamic"}:
+        return "dynamic"
+    return normalized if normalized in available_presets else default
+
+
 def _normalize_worker_role_prompt_mode(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"default", "blank"}:
@@ -296,19 +334,6 @@ def _build_runtime_settings(
     pipeline_presets = current_workflow_config["pipeline_presets"]
     pipeline_preset_descriptions = current_workflow_config["pipeline_preset_descriptions"]
 
-    raw_architecture_name = (env.get("DEEP_AGENT_ARCHITECTURE_NAME") or "aws_collaboration").strip()
-    if raw_architecture_name.lower() in {"auto", "dynamic"}:
-        architecture_name = "dynamic"
-        architecture_fallback_name = "aws_collaboration"
-    else:
-        architecture_name = raw_architecture_name
-        architecture_fallback_name = architecture_name
-    if architecture_fallback_name not in architecture_presets:
-        raise RuntimeError(
-            f"Unknown DEEP_AGENT_ARCHITECTURE_NAME={architecture_name!r}. "
-            f"Available presets: {', '.join(sorted(architecture_presets))}"
-        )
-
     raw_pipeline_name = (env.get("DEEP_AGENT_PIPELINE_NAME") or "preflight_planner_workers_validators_reporter").strip()
     auto_select_pipeline = raw_pipeline_name.lower() in {"auto", "dynamic"}
     if auto_select_pipeline:
@@ -320,6 +345,30 @@ def _build_runtime_settings(
         raise RuntimeError(
             f"Unknown DEEP_AGENT_PIPELINE_NAME={pipeline_name!r}. "
             f"Available presets: {', '.join(sorted(pipeline_presets))}"
+        )
+
+    automation_default_architecture_name = _normalize_architecture_preset_name(
+        env.get("AUTOMATION_DEFAULT_ARCHITECTURE_NAME", "automation_triage"),
+        default="automation_triage",
+        available_presets=architecture_presets,
+        allow_dynamic=True,
+    )
+    raw_architecture_name_env = (env.get("DEEP_AGENT_ARCHITECTURE_NAME") or "").strip()
+    raw_architecture_name = raw_architecture_name_env or (
+        automation_default_architecture_name if pipeline_name == "auto_triage" else "aws_collaboration"
+    )
+    if raw_architecture_name.lower() in {"auto", "dynamic"}:
+        architecture_name = "dynamic"
+        architecture_fallback_name = (
+            automation_default_architecture_name if pipeline_name == "auto_triage" else "aws_collaboration"
+        )
+    else:
+        architecture_name = raw_architecture_name
+        architecture_fallback_name = architecture_name
+    if architecture_fallback_name not in architecture_presets:
+        raise RuntimeError(
+            f"Unknown DEEP_AGENT_ARCHITECTURE_NAME={architecture_name!r}. "
+            f"Available presets: {', '.join(sorted(architecture_presets))}"
         )
 
     architecture = list(architecture_presets[architecture_fallback_name])
@@ -396,6 +445,10 @@ def _build_runtime_settings(
         "AUTOMATION_TRIGGER_HEALTH_PATH": (
             (env.get("AUTOMATION_TRIGGER_HEALTH_PATH") or "/automation/health").strip() or "/automation/health"
         ),
+        "AUTOMATION_DEFAULT_REQUEST_PROFILE": _normalize_automation_request_profile(
+            env.get("AUTOMATION_DEFAULT_REQUEST_PROFILE", "technical_report")
+        ),
+        "AUTOMATION_DEFAULT_ARCHITECTURE_NAME": automation_default_architecture_name,
         "MCP_SERVER_MANIFEST_PATH": str(
             _resolve_repo_relative_path(env.get("MCP_SERVER_MANIFEST_PATH", "MCPServers/servers.json"))
         ),
@@ -403,9 +456,10 @@ def _build_runtime_settings(
             "AUTOMATION_DEFAULT_PROMPT_TEMPLATE",
             (
                 "A binary has just finished auto-analysis in Ghidra.\n"
-                "Use the currently opened sample and produce an initial technical triage focused on program purpose, "
-                "key control-flow pivots, concrete capabilities, relevant strings/configuration, obfuscation or "
-                "anti-analysis indicators, and the highest-value next pivots.\n"
+                "Use the currently opened sample and produce an initial technical triage report.\n"
+                "Do the bounded static-analysis work available in this pipeline now; do not answer with a task menu or ask whether to continue.\n"
+                "Focus on program purpose, key control-flow pivots, concrete capabilities, relevant strings/configuration, "
+                "obfuscation or anti-analysis indicators, and the highest-value unresolved pivots.\n"
                 "Program name: {program_name}\n"
                 "Executable path: {executable_path}\n"
                 "Executable SHA256: {executable_sha256}\n"

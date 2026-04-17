@@ -12,6 +12,8 @@ from uuid import uuid4
 import gradio as gr
 
 from .config import (
+    AUTOMATION_DEFAULT_ARCHITECTURE_NAME,
+    AUTOMATION_DEFAULT_REQUEST_PROFILE,
     AUTOMATION_DEFAULT_PROMPT_TEMPLATE,
     AUTOMATION_TRIGGER_ENABLED,
     AUTOMATION_TRIGGER_HEALTH_PATH,
@@ -28,6 +30,7 @@ from .config import (
     PIPELINE_LOG_SLOTS,
     PATH_HANDOFF_LINE_PREFIX,
     VALIDATOR_REVIEW_LEVEL_CHOICES,
+    _normalize_automation_request_profile,
     _normalize_validator_review_level,
     stage_kind_flag,
 )
@@ -86,6 +89,23 @@ _PIPELINE_PRESET_CHOICES = [("DYNAMIC (agent chooses)", "dynamic")] + [
 _ARCHITECTURE_PRESET_CHOICES = [("DYNAMIC (agent chooses)", "dynamic")] + [
     (name, name) for name in DEEP_AGENT_ARCHITECTURE_PRESETS.keys()
 ]
+
+
+def _resolve_automation_architecture_name(payload: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    requested = str(
+        (payload or {}).get("automation_architecture_name")
+        or (payload or {}).get("architecture_name")
+        or (payload or {}).get("worker_architecture_name")
+        or ""
+    ).strip()
+    default_name = str(AUTOMATION_DEFAULT_ARCHITECTURE_NAME or "automation_triage").strip() or "automation_triage"
+    if not requested:
+        return default_name, "automation default"
+    if requested.lower() in {"auto", "dynamic"}:
+        return "dynamic", "payload override"
+    if requested in DEEP_AGENT_ARCHITECTURE_PRESETS:
+        return requested, "payload override"
+    return default_name, f"invalid payload override {requested!r}; using automation default"
 
 
 def _load_frontend_head() -> str:
@@ -240,13 +260,76 @@ def _ghidra_change_queue_board(state: Dict[str, Any]):
     return gr.update(value=render_change_queue_panel(state), visible=True)
 
 
+def _pending_change_proposals(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    shared = (state or {}).get("shared_state") or {}
+    queue_finalized = bool(shared.get("change_queue_finalized") or shared.get("ghidra_change_queue_finalized"))
+    if not queue_finalized:
+        return []
+    proposals = list(shared.get("change_queue_proposals") or shared.get("ghidra_change_proposals") or [])
+    return [
+        proposal
+        for proposal in proposals
+        if str(proposal.get("status") or "pending").strip().lower() == "pending"
+    ]
+
+
+def _change_queue_choice_label(proposal: Dict[str, Any]) -> str:
+    proposal_id = str(proposal.get("id") or "").strip()
+    summary = str(proposal.get("summary") or proposal_id or "proposal").strip()
+    category = str(proposal.get("change_category") or "").strip().lower().replace("_", " ") or "change"
+    target = str(proposal.get("target_kind") or proposal.get("target_system") or "").strip() or "target"
+    return f"{summary} [{category}] ({target}) :: {proposal_id}"
+
+
+def _normalize_selected_change_proposal_id(state: Dict[str, Any]) -> str:
+    pending = _pending_change_proposals(state)
+    valid_ids = [str(proposal.get("id") or "").strip() for proposal in pending if str(proposal.get("id") or "").strip()]
+    current = str((state or {}).get("selected_change_proposal_id") or "").strip()
+    normalized = current if current in valid_ids else (valid_ids[0] if valid_ids else "")
+    if isinstance(state, dict):
+        state["selected_change_proposal_id"] = normalized
+    return normalized
+
+
+def _resolve_selected_change_proposal(state: Dict[str, Any], selected_proposal_id: str = "") -> Optional[Dict[str, Any]]:
+    pending = _pending_change_proposals(state)
+    if not pending:
+        if isinstance(state, dict):
+            state["selected_change_proposal_id"] = ""
+        return None
+    requested = str(selected_proposal_id or "").strip()
+    if requested:
+        for proposal in pending:
+            if str(proposal.get("id") or "").strip() == requested:
+                if isinstance(state, dict):
+                    state["selected_change_proposal_id"] = requested
+                return proposal
+    normalized = _normalize_selected_change_proposal_id(state)
+    for proposal in pending:
+        if str(proposal.get("id") or "").strip() == normalized:
+            return proposal
+    return pending[0]
+
+
+def _change_queue_selector(state: Dict[str, Any], active: bool):
+    pending = _pending_change_proposals(state)
+    choices = [(_change_queue_choice_label(proposal), str(proposal.get("id") or "").strip()) for proposal in pending]
+    value = _normalize_selected_change_proposal_id(state)
+    return gr.update(
+        choices=choices,
+        value=(value or None),
+        interactive=(not active) and bool(choices),
+        visible=bool(choices),
+    )
+
+
 def _approve_change_button(state: Dict[str, Any], active: bool):
-    has_pending = get_pending_change_proposal(state) is not None
+    has_pending = _resolve_selected_change_proposal(state) is not None
     return gr.update(interactive=(not active) and has_pending, visible=True)
 
 
 def _reject_change_button(state: Dict[str, Any], active: bool):
-    has_pending = get_pending_change_proposal(state) is not None
+    has_pending = _resolve_selected_change_proposal(state) is not None
     return gr.update(interactive=(not active) and has_pending, visible=True)
 
 
@@ -291,6 +374,7 @@ def _ui_updates(
     validation_gate_update: Any,
     planned_work_items_update: Any,
     ghidra_change_queue_update: Any,
+    change_selector_update: Any,
     approve_change_update: Any,
     reject_change_update: Any,
     send_update: Any,
@@ -311,6 +395,7 @@ def _ui_updates(
         validation_gate_update,
         planned_work_items_update,
         ghidra_change_queue_update,
+        change_selector_update,
         approve_change_update,
         reject_change_update,
         *_tool_log_updates(state),
@@ -363,6 +448,7 @@ def _restore_snapshot_outputs(snapshot: Dict[str, Any]):
         _validation_gate_board(state),
         _planned_work_items_board(state),
         _ghidra_change_queue_board(state),
+        _change_queue_selector(state, active),
         _approve_change_button(state, active),
         _reject_change_button(state, active),
         _send_button(
@@ -389,6 +475,7 @@ def poll_active_ui_snapshot():
     snapshot = _get_ui_snapshot()
     if not snapshot.get("run_active"):
         return (
+            gr.skip(),
             gr.skip(),
             gr.skip(),
             gr.skip(),
@@ -442,6 +529,7 @@ def chat_turn(
             _validation_gate_board(state),
             _planned_work_items_board(state),
             _ghidra_change_queue_board(state),
+            _change_queue_selector(state, False),
             _approve_change_button(state, False),
             _reject_change_button(state, False),
             _send_button(interactive=True, visible=True),
@@ -465,6 +553,7 @@ def chat_turn(
     state.setdefault("status_log", "")
     state.setdefault("active_run_id", "")
     state.setdefault("cancel_requested", False)
+    state.setdefault("selected_change_proposal_id", "")
     state.setdefault("shared_state", _new_shared_state())
     pending_change_count = get_pending_change_count(state)
     edit_intent_query = is_edit_intent_query(user_text)
@@ -483,7 +572,7 @@ def chat_turn(
         gate_note = (
             f"There {'is' if pending_change_count == 1 else 'are'} {pending_change_count} pending Ghidra change "
             f"proposal{'s' if pending_change_count != 1 else ''} in the queue.\n"
-            "New edit-generating requests remain gated until you approve or reject the current queue."
+            "New edit-generating requests remain gated until you review the current queue."
         )
         blocked_history = list(chat_history) + [
             {"role": "user", "content": user_text},
@@ -512,6 +601,7 @@ def chat_turn(
             _validation_gate_board(state),
             _planned_work_items_board(state),
             _ghidra_change_queue_board(state),
+            _change_queue_selector(state, False),
             _approve_change_button(state, False),
             _reject_change_button(state, False),
             _send_button(interactive=True, visible=True),
@@ -562,6 +652,7 @@ def chat_turn(
         state["shared_state"]["change_queue_draft_proposals"] = []
         state["shared_state"]["ghidra_change_draft_proposals"] = []
     else:
+        state["selected_change_proposal_id"] = ""
         state["shared_state"]["change_queue_proposals"] = []
         state["shared_state"]["change_queue_draft_proposals"] = []
         state["shared_state"]["change_queue_finalized"] = False
@@ -628,6 +719,7 @@ def chat_turn(
         _validation_gate_board(state),
         _planned_work_items_board(state),
         _ghidra_change_queue_board(state),
+        _change_queue_selector(state, True),
         _approve_change_button(state, True),
         _reject_change_button(state, True),
         _send_button(interactive=False, visible=False),
@@ -756,6 +848,7 @@ def chat_turn(
                 gr.update(value=validation_now, visible=True),
                 gr.update(value=planned_now, visible=True),
                 _ghidra_change_queue_board(state),
+                _change_queue_selector(state, True),
                 _approve_change_button(state, True),
                 _reject_change_button(state, True),
                 _send_button(interactive=False, visible=False),
@@ -784,6 +877,7 @@ def chat_turn(
         _validation_gate_board(state),
         _planned_work_items_board(state),
         _ghidra_change_queue_board(state),
+        _change_queue_selector(state, False),
         _approve_change_button(state, False),
         _reject_change_button(state, False),
         _send_button(interactive=True, visible=True),
@@ -973,13 +1067,31 @@ def _promote_conflicting_ghidra_changes(
     return promoted
 
 
-def approve_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
+def set_selected_change_proposal(selected_proposal_id: str, state: Dict[str, Any]):
+    state = state or _snapshot_state_default()
+    state["selected_change_proposal_id"] = str(selected_proposal_id or "").strip()
+    _normalize_selected_change_proposal_id(state)
+    _store_ui_snapshot(state=state, force=True)
+    return (
+        state,
+        _ghidra_change_queue_board(state),
+        _change_queue_selector(state, False),
+        _approve_change_button(state, False),
+        _reject_change_button(state, False),
+    )
+
+
+def approve_selected_ghidra_change(
+    chat_history: List[Dict[str, str]],
+    state: Dict[str, Any],
+    selected_proposal_id: str,
+):
     state = state or _snapshot_state_default()
     chat_history = chat_history or []
     if bool(_get_ui_snapshot().get("run_active")):
         return _restore_snapshot_outputs(_get_ui_snapshot())
 
-    proposal = get_pending_change_proposal(state)
+    proposal = _resolve_selected_change_proposal(state, selected_proposal_id)
     if not proposal:
         return _restore_snapshot_outputs(_get_ui_snapshot())
 
@@ -1065,13 +1177,21 @@ def approve_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[s
     return _restore_snapshot_outputs(_get_ui_snapshot())
 
 
-def reject_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
+def approve_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
+    return approve_selected_ghidra_change(chat_history, state, "")
+
+
+def reject_selected_ghidra_change(
+    chat_history: List[Dict[str, str]],
+    state: Dict[str, Any],
+    selected_proposal_id: str,
+):
     state = state or _snapshot_state_default()
     chat_history = chat_history or []
     if bool(_get_ui_snapshot().get("run_active")):
         return _restore_snapshot_outputs(_get_ui_snapshot())
 
-    proposal = get_pending_change_proposal(state)
+    proposal = _resolve_selected_change_proposal(state, selected_proposal_id)
     if not proposal:
         return _restore_snapshot_outputs(_get_ui_snapshot())
 
@@ -1108,6 +1228,10 @@ def reject_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[st
     return _restore_snapshot_outputs(_get_ui_snapshot())
 
 
+def reject_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
+    return reject_selected_ghidra_change(chat_history, state, "")
+
+
 def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
     chat_history = chat_history or []
     state = state or _snapshot_state_default()
@@ -1130,6 +1254,7 @@ def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
         "status_log": "",
         "active_run_id": f"idle:{uuid4().hex}",
         "cancel_requested": False,
+        "selected_change_proposal_id": "",
         "validator_review_level": _normalize_validator_review_level(
             state.get("validator_review_level", DEFAULT_VALIDATOR_REVIEW_LEVEL)
         ),
@@ -1174,6 +1299,7 @@ def cancel_run(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
         _validation_gate_board(fresh_state),
         _planned_work_items_board(fresh_state),
         _ghidra_change_queue_board(fresh_state),
+        _change_queue_selector(fresh_state, False),
         _approve_change_button(fresh_state, False),
         _reject_change_button(fresh_state, False),
         _send_button(interactive=True, visible=True),
@@ -1197,6 +1323,7 @@ def reset():
         "status_log": "",
         "active_run_id": "",
         "cancel_requested": False,
+        "selected_change_proposal_id": "",
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
         "deep_agent_auto_select_pipeline": DEEP_AGENT_AUTO_SELECT_PIPELINE,
         "deep_agent_architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,
@@ -1225,6 +1352,7 @@ def reset():
         _validation_gate_board(fresh_state),
         _planned_work_items_board(fresh_state),
         _ghidra_change_queue_board(fresh_state),
+        _change_queue_selector(fresh_state, False),
         _approve_change_button(fresh_state, False),
         _reject_change_button(fresh_state, False),
         _send_button(interactive=True, visible=True),
@@ -1406,13 +1534,49 @@ def _automation_prompt_from_payload(payload: Dict[str, Any]) -> str:
         ghidra_project_path=ghidra_project_path,
         path_handoff_line=path_handoff_line,
     ).strip()
+    request_profile = _normalize_automation_request_profile(
+        payload.get("automation_request_profile")
+        or payload.get("automation_query_mode")
+        or AUTOMATION_DEFAULT_REQUEST_PROFILE
+    )
 
     extra_lines: List[str] = [
         "",
         "This request should use the dedicated automated bootstrap triage pipeline.",
         "Treat any automation bootstrap metadata and deterministic pre-sweeps as primary starting context.",
         "Do not auto-apply edits or launch dynamic analysis automatically.",
+        "This is an unattended automation run. Do the bounded static-analysis work available in the pipeline now rather than asking the user for permission to continue.",
     ]
+    if request_profile == "technical_report":
+        extra_lines.extend(
+            [
+                "Automation request profile: technical_report.",
+                "Return the analyst-facing technical triage report itself, not a plan, menu, or optional deliverable list.",
+                "Do not write phrases such as `Would you like me to`, `How would you like to proceed`, `I can create a todo list`, or similar interactive follow-up language.",
+                "If FLOSS, capa, HashDB, strings, YARA, or packer checks are already present in deterministic pre-sweeps, use those results directly and perform only targeted follow-up static analysis when needed to explain the sample.",
+                "Do not merely recommend running available static tools as future work unless a sweep failed, was unavailable, or a narrower follow-up is still needed.",
+                "Preferred sections: `Technical Summary`, `Confirmed Findings`, `Evidence Highlights`, `Unknowns / Limitations`, and `Recommended Next Steps`.",
+            ]
+        )
+    elif request_profile == "detailed_report":
+        extra_lines.extend(
+            [
+                "Automation request profile: detailed_report.",
+                "Return a detailed analyst-facing technical report, not a plan, menu, or optional deliverable list.",
+                "Do not ask the user what to do next and do not offer to create task lists instead of presenting findings.",
+                "Use deterministic pre-sweeps as completed evidence when available, then perform targeted follow-up static analysis to deepen the explanation of code paths, capabilities, anti-analysis behavior, and evidence-backed rename/type/patch opportunities.",
+                "Preferred sections: `Technical Summary`, `Program Behavior`, `Key Functions / Control-Flow Pivots`, `Capabilities and Anti-Analysis`, `Evidence Highlights`, `Unknowns / Limitations`, and `Recommended Next Steps`.",
+            ]
+        )
+    else:
+        extra_lines.extend(
+            [
+                "Automation request profile: workplan.",
+                "Return a concrete prioritized work plan rather than a final report.",
+                "Use deterministic pre-sweeps as already-completed bootstrap work and plan only the targeted follow-up analysis still worth doing.",
+                "Do not ask the user to choose among options; return the recommended plan directly.",
+            ]
+        )
     for label, key in (
         ("Language", "language"),
         ("Compiler", "compiler"),
@@ -1473,7 +1637,12 @@ def _run_automation_trigger(user_text: str, source: str, payload: Dict[str, Any]
         validator_review_level = _normalize_validator_review_level(
             state.get("validator_review_level", DEFAULT_VALIDATOR_REVIEW_LEVEL)
         )
+        automation_architecture_name, automation_architecture_reason = _resolve_automation_architecture_name(payload)
         append_status(state, f"Automation trigger accepted from {source}")
+        append_status(
+            state,
+            f"Automation architecture selected: {automation_architecture_name} ({automation_architecture_reason})",
+        )
 
         for _ in chat_turn(
             user_text,
@@ -1481,7 +1650,7 @@ def _run_automation_trigger(user_text: str, source: str, payload: Dict[str, Any]
             state,
             validator_review_level,
             False,
-            "balanced",
+            automation_architecture_name,
             "auto_triage",
         ):
             pass
@@ -1799,9 +1968,16 @@ class WorkflowUI:
                             value=render_change_queue_panel(initial_state),
                             elem_id="ghidra-change-queue-panel",
                         )
+                        change_selector = gr.Dropdown(
+                            label="Selected Change Proposal",
+                            choices=[],
+                            value=None,
+                            interactive=False,
+                            visible=False,
+                        )
                         with gr.Row():
-                            approve_change = gr.Button("Approve Next Change", interactive=False)
-                            reject_change = gr.Button("Reject Next Change", interactive=False)
+                            approve_change = gr.Button("Apply Selected Change", interactive=False)
+                            reject_change = gr.Button("Reject Selected Change", interactive=False)
                     gr.Markdown("### Tool Log")
                     tool_log_boxes: List[Any] = []
                     for stage_name, stage_kind in PIPELINE_LOG_SLOTS:
@@ -1833,6 +2009,7 @@ class WorkflowUI:
                 validation_gate_panel,
                 planned_work_items_panel,
                 ghidra_change_queue_panel,
+                change_selector,
                 approve_change,
                 reject_change,
                 *tool_log_boxes,
@@ -1892,16 +2069,23 @@ class WorkflowUI:
                 outputs=[state, pipeline_auto_select, pipeline_preset],
                 show_progress="hidden",
             )
+            change_selector.change(
+                set_selected_change_proposal,
+                inputs=[change_selector, state],
+                outputs=[state, ghidra_change_queue_panel, change_selector, approve_change, reject_change],
+                show_progress="hidden",
+                queue=False,
+            )
             approve_change.click(
-                approve_next_ghidra_change,
-                inputs=[chat, state],
+                approve_selected_ghidra_change,
+                inputs=[chat, state, change_selector],
                 outputs=ui_outputs,
                 show_progress="hidden",
                 queue=False,
             )
             reject_change.click(
-                reject_next_ghidra_change,
-                inputs=[chat, state],
+                reject_selected_ghidra_change,
+                inputs=[chat, state, change_selector],
                 outputs=ui_outputs,
                 show_progress="hidden",
                 queue=False,

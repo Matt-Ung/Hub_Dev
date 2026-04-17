@@ -58,6 +58,13 @@
         "model": "openai:gpt-5-mini"
       },
       {
+        "name": "proposal_writer",
+        "stage_kind": "proposal_writer",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-nano"
+      },
+      {
         "name": "reporter",
         "stage_kind": "reporter",
         "architecture": [["reporting_analyst", 1]],
@@ -366,6 +373,49 @@
         "architecture": [["evidence_validator", 1], ["triage_analyst", 1]],
         "use_worker_architecture": false,
         "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "reporter",
+        "stage_kind": "reporter",
+        "architecture": [["reporting_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-nano"
+      }
+    ]
+  },
+  "edit_query": {
+    "description": [
+      "Best for queries wanting explicit renames/retypes/comments or other Ghidra edit proposals rather than just analysis or explanations.",
+      "Use when the user wants specific types of proposed changes to the Ghidra project that they can review and apply, rather than just a report or analysis."
+    ],
+    "stages": [
+      {
+        "name": "preflight",
+        "stage_kind": "preflight",
+        "architecture": [["preflight_analyst", 1]],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-nano"
+      },
+      {
+        "name": "planner",
+        "stage_kind": "planner",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "workers",
+        "stage_kind": "workers",
+        "architecture": [],
+        "use_worker_architecture": true,
+        "model": "openai:gpt-5-mini"
+      },
+      {
+        "name": "proposal_writer",
+        "stage_kind": "proposal_writer",
+        "architecture": [],
+        "use_worker_architecture": false,
+        "model": "openai:gpt-5-nano"
       },
       {
         "name": "reporter",

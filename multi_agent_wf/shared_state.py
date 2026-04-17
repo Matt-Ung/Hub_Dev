@@ -508,6 +508,9 @@ def compact_shared_state(state: Dict[str, Any]) -> None:
     outputs = shared.get("task_outputs", []) or []
     if len(outputs) > MAX_TASK_OUTPUTS:
         shared["task_outputs"] = outputs[-MAX_TASK_OUTPUTS:]
+    proposal_generation_records = shared.get("proposal_generation_records", []) or []
+    if len(proposal_generation_records) > 8:
+        shared["proposal_generation_records"] = proposal_generation_records[-8:]
     automation_history = shared.get("automation_history", []) or []
     if len(automation_history) > 8:
         shared["automation_history"] = automation_history[-8:]
@@ -965,6 +968,8 @@ def _new_shared_state() -> Dict[str, Any]:
         "ghidra_change_draft_proposals": [],
         "ghidra_change_queue_finalized": False,
         "ghidra_change_parse_error": "",
+        "proposal_generation_records": [],
+        "latest_worker_output_proposal_inspection": {},
         "generated_yara_rules": [],
         "generated_yara_rule_parse_error": "",
         "untrusted_artifact_alerts": [],
@@ -1046,6 +1051,7 @@ def _snapshot_state_default() -> Dict[str, Any]:
         "status_log": "",
         "active_run_id": "",
         "cancel_requested": False,
+        "selected_change_proposal_id": "",
         "validator_review_level": DEFAULT_VALIDATOR_REVIEW_LEVEL,
         "deep_agent_auto_select_pipeline": DEEP_AGENT_AUTO_SELECT_PIPELINE,
         "deep_agent_architecture_name": DEEP_AGENT_ARCHITECTURE_NAME,

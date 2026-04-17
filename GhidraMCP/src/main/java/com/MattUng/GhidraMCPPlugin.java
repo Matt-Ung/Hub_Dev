@@ -105,7 +105,9 @@ public class GhidraMCPPlugin extends ProgramPlugin {
     private static final String AUTO_WORKFLOW_ENABLED_OPTION_NAME =
         "Trigger Multi-Agent workflow after auto-analysis";
     private static final String AUTO_WORKFLOW_URL_OPTION_NAME = "Multi-Agent trigger URL";
+    private static final String AUTO_WORKFLOW_REQUEST_PROFILE_OPTION_NAME = "Automation request profile";
     private static final String DEFAULT_AUTO_WORKFLOW_URL = "http://127.0.0.1:7861/automation/ghidra-load";
+    private static final String DEFAULT_AUTO_WORKFLOW_REQUEST_PROFILE = "technical_report";
     private final Map<String, String> autoWorkflowTriggerFingerprints = Collections.synchronizedMap(new HashMap<>());
 
     private static final class GraphRootSelection {
@@ -169,6 +171,12 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             DEFAULT_AUTO_WORKFLOW_URL,
             null,
             "HTTP endpoint exposed by multi_agent_wf/main.py for automated Ghidra load triggers."
+        );
+        automationOptions.registerOption(
+            AUTO_WORKFLOW_REQUEST_PROFILE_OPTION_NAME,
+            DEFAULT_AUTO_WORKFLOW_REQUEST_PROFILE,
+            null,
+            "Automation request profile sent to the local Multi-Agent-WF trigger. Supported values: technical_report, detailed_report, workplan."
         );
 
         try {
@@ -251,6 +259,17 @@ public class GhidraMCPPlugin extends ProgramPlugin {
     private String getAutoWorkflowUrl() {
         Options automationOptions = tool.getOptions(AUTOMATION_OPTION_CATEGORY_NAME);
         return trimToNull(automationOptions.getString(AUTO_WORKFLOW_URL_OPTION_NAME, DEFAULT_AUTO_WORKFLOW_URL));
+    }
+
+    private String getAutoWorkflowRequestProfile() {
+        Options automationOptions = tool.getOptions(AUTOMATION_OPTION_CATEGORY_NAME);
+        String value = trimToNull(
+            automationOptions.getString(
+                AUTO_WORKFLOW_REQUEST_PROFILE_OPTION_NAME,
+                DEFAULT_AUTO_WORKFLOW_REQUEST_PROFILE
+            )
+        );
+        return value == null ? DEFAULT_AUTO_WORKFLOW_REQUEST_PROFILE : value;
     }
 
     private String getProgramAutomationBaseKey(Program program) {
@@ -462,6 +481,7 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             + "\"automation_program_key\":" + jsonStr(baseKey) + ","
             + "\"automation_signature\":" + jsonStr(fingerprint) + ","
             + "\"analysis_token\":" + jsonStr(fingerprint) + ","
+            + "\"automation_request_profile\":" + jsonStr(getAutoWorkflowRequestProfile()) + ","
             + "\"analysis_completed_at_epoch_ms\":" + System.currentTimeMillis() + ","
             + "\"program_name\":" + jsonStr(safe(program.getName())) + ","
             + "\"ghidra_project_path\":" + jsonStr(domainPath) + ","
