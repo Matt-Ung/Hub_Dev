@@ -333,6 +333,14 @@ def _build_runtime_settings(
         "MAX_TASK_OUTPUTS": int(env.get("MAX_TASK_OUTPUTS", "32")),
         "MAX_TOOL_LOG_CHARS": int(env.get("MAX_TOOL_LOG_CHARS", "120000")),
         "MAX_TOOL_RESULT_CACHE_ENTRIES": int(env.get("MAX_TOOL_RESULT_CACHE_ENTRIES", "64")),
+        "TOOL_REPEAT_GUARD_ENABLED": _env_flag_from(env, "TOOL_REPEAT_GUARD_ENABLED", True),
+        "TOOL_REPEAT_GUARD_SERVER_MARKERS": _parse_lower_marker_list(
+            env.get("TOOL_REPEAT_GUARD_SERVER_MARKERS", "ghidra")
+        ),
+        "TOOL_REPEAT_GUARD_MAX_CACHE_HITS": max(
+            0,
+            int(env.get("TOOL_REPEAT_GUARD_MAX_CACHE_HITS", "1")),
+        ),
         "MAX_VALIDATION_REPLAN_RETRIES": int(env.get("MAX_VALIDATION_REPLAN_RETRIES", "2")),
         "MAX_PARALLEL_WORKERS": max(1, int(env.get("MAX_PARALLEL_WORKERS", "2"))),
         "TOOL_RESULT_CACHE_SERVER_MARKERS": _parse_lower_marker_list(

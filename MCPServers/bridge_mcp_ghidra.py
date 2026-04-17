@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -147,7 +148,7 @@ def _read_only_mutation_error(tool_name: str) -> str:
     return (
         f"Error: {tool_name} is unavailable because live Ghidra is not available and the "
         "artifact/headless fallback path is read-only. Use a live Ghidra session for renames, "
-        "comments, prototypes, or local type edits."
+        "comments, prototypes, datatype creation, or local/data type edits."
     )
 
 
@@ -615,6 +616,61 @@ def set_local_variable_type(function_address: str, variable_name: str, new_type:
         new_type,
     )
 
+
+@mcp.tool()
+def apply_data_type_to_data(address: str, data_type_name: str) -> str:
+    """
+    Apply a data type to the data item at the specified address.
+    """
+    return _call_mutating_with_fallback(
+        "apply_data_type_to_data",
+        lambda: safe_post("apply_data_type_to_data", {"address": address, "data_type_name": data_type_name}),
+        address,
+        data_type_name,
+    )
+
+
+@mcp.tool()
+def create_struct_type(type_name: str, fields_spec: str, replace_existing: bool = False) -> str:
+    """
+    Create a struct datatype from a tab-delimited field specification.
+    """
+    return _call_mutating_with_fallback(
+        "create_struct_type",
+        lambda: safe_post(
+            "create_struct_type",
+            {
+                "type_name": type_name,
+                "fields_spec": fields_spec,
+                "replace_existing": "true" if replace_existing else "false",
+            },
+        ),
+        type_name,
+        fields_spec,
+    )
+
+
+@mcp.tool()
+def create_enum_type(type_name: str, members_spec: str, byte_size: int = 4, replace_existing: bool = False) -> str:
+    """
+    Create an enum datatype from a tab-delimited member specification.
+    """
+    return _call_mutating_with_fallback(
+        "create_enum_type",
+        lambda: safe_post(
+            "create_enum_type",
+            {
+                "type_name": type_name,
+                "members_spec": members_spec,
+                "byte_size": str(byte_size),
+                "replace_existing": "true" if replace_existing else "false",
+            },
+        ),
+        type_name,
+        members_spec,
+        byte_size,
+    )
+
 @mcp.tool()
 def get_xrefs_to(address: str, offset: int = 0, limit: int = 100, pageOffset: int | None = None, maxResults: int | None = None) -> list:
     """
@@ -716,31 +772,18 @@ def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list
     return _call_with_fallback("list_strings", lambda: safe_get("strings", params), offset, limit, filter)
 
 @mcp.tool()
-def get_program_info() -> list:
+def get_program_info() -> Any:
     """
-    Retrieve basic metadata about the currently loaded program including file hashes.
+    Retrieve metadata about the current analysis target.
 
-    Args: None
+    Live Ghidra returns the legacy list-of-lines format from the HTTP bridge.
+    Artifact-backed fallback returns structured bundle metadata. The return type
+    stays intentionally broad here because both shapes are valid runtime
+    outputs, and strict `list[...]` validation breaks the fallback path.
 
     Returns:
-        A list containing a single human-readable multi-line string. The string is
-        exactly the Java `getProgramInfo()` output and includes these lines in order:
-
-        - "No program loaded\\n"                                  (if no program)
-
-        Otherwise:
-
-        - "Program Information:\\n"
-        - "---------------------\\n"
-        - "Name: <program name>\\n"
-        - "Ghidra Project Path: <domain file pathname or ''>\\n"
-        - "Executable Path: <program.getExecutablePath() or ''>\\n"
-        - "Executable MD5: <program.getExecutableMD5() or ''>\\n"
-        - "Executable SHA256: <program.getExecutableSHA256() or ''>\\n"
-        - "Language: <program.getLanguageID().getIdAsString() or ''>\\n"
-        - "Compiler: <program.getCompilerSpec().getCompilerSpecID().getIdAsString() or ''>\\n"
-        - "Endianness: big|little\\n"
-        - "Image Base: <program.getImageBase().toString() or ''>\\n"
+        Either the legacy live-bridge list-of-lines response or a structured
+        dict from the artifact-backed fallback bundle.
     """
     return _call_with_fallback("get_program_info", lambda: safe_get("program_info"))
 

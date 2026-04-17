@@ -34,8 +34,11 @@ from .config import (
 from .pipeline import (
     PipelineCancelled,
     _stage_progress_from_pipeline_definition,
+    get_pending_change_count,
+    get_pending_change_proposal,
     get_pending_ghidra_change_count,
     get_pending_ghidra_change_proposal,
+    render_change_queue_panel,
     render_automation_status_panel,
     render_pipeline_todo_board,
     render_ghidra_change_queue_panel,
@@ -44,6 +47,7 @@ from .pipeline import (
     run_deepagent_pipeline,
 )
 from .runtime import (
+    apply_change_proposal_sync,
     apply_ghidra_change_proposal_sync,
     build_run_local_pipeline_runtime,
     get_pipeline_definition_sync,
@@ -233,16 +237,16 @@ def _automation_status_board(state: Dict[str, Any]):
 
 
 def _ghidra_change_queue_board(state: Dict[str, Any]):
-    return gr.update(value=render_ghidra_change_queue_panel(state), visible=True)
+    return gr.update(value=render_change_queue_panel(state), visible=True)
 
 
 def _approve_change_button(state: Dict[str, Any], active: bool):
-    has_pending = get_pending_ghidra_change_proposal(state) is not None
+    has_pending = get_pending_change_proposal(state) is not None
     return gr.update(interactive=(not active) and has_pending, visible=True)
 
 
 def _reject_change_button(state: Dict[str, Any], active: bool):
-    has_pending = get_pending_ghidra_change_proposal(state) is not None
+    has_pending = get_pending_change_proposal(state) is not None
     return gr.update(interactive=(not active) and has_pending, visible=True)
 
 
@@ -462,7 +466,7 @@ def chat_turn(
     state.setdefault("active_run_id", "")
     state.setdefault("cancel_requested", False)
     state.setdefault("shared_state", _new_shared_state())
-    pending_change_count = get_pending_ghidra_change_count(state)
+    pending_change_count = get_pending_change_count(state)
     edit_intent_query = is_edit_intent_query(user_text)
     preserve_change_queue = pending_change_count > 0
 
@@ -555,8 +559,13 @@ def chat_turn(
     state["shared_state"]["planned_work_items"] = []
     state["shared_state"]["planned_work_items_parse_error"] = ""
     if preserve_change_queue:
+        state["shared_state"]["change_queue_draft_proposals"] = []
         state["shared_state"]["ghidra_change_draft_proposals"] = []
     else:
+        state["shared_state"]["change_queue_proposals"] = []
+        state["shared_state"]["change_queue_draft_proposals"] = []
+        state["shared_state"]["change_queue_finalized"] = False
+        state["shared_state"]["change_queue_parse_error"] = ""
         state["shared_state"]["ghidra_change_proposals"] = []
         state["shared_state"]["ghidra_change_draft_proposals"] = []
         state["shared_state"]["ghidra_change_queue_finalized"] = False
@@ -869,13 +878,19 @@ def _apply_ghidra_change_status(
     error: str = "",
 ) -> Optional[Dict[str, Any]]:
     shared = state.setdefault("shared_state", _new_shared_state())
-    proposals = list(shared.get("ghidra_change_proposals") or [])
+    proposals = list(shared.get("change_queue_proposals") or [])
     for proposal in proposals:
         if str(proposal.get("id") or "") != proposal_id:
             continue
         proposal["status"] = status
         proposal["result_text"] = result_text
         proposal["error"] = error
+        if status == "applied":
+            proposal["proposal_stage"] = "executed"
+        elif status == "approved_proposal_only":
+            proposal["proposal_stage"] = "approved"
+        elif status in {"rejected", "failed", "stale", "invalid", "not_compilable"}:
+            proposal["proposal_stage"] = "failed"
         return proposal
     return None
 
@@ -887,7 +902,7 @@ def _supersede_conflicting_ghidra_changes(
     reason: str,
 ) -> None:
     shared = state.setdefault("shared_state", _new_shared_state())
-    proposals = list(shared.get("ghidra_change_proposals") or [])
+    proposals = list(shared.get("change_queue_proposals") or [])
     chosen = next((item for item in proposals if str(item.get("id") or "") == chosen_proposal_id), None)
     if not chosen:
         return
@@ -907,26 +922,79 @@ def _supersede_conflicting_ghidra_changes(
         proposal["error"] = reason
 
 
+def _promote_conflicting_ghidra_changes(
+    state: Dict[str, Any],
+    retired_proposal_id: str,
+    *,
+    reason: str,
+) -> Optional[Dict[str, Any]]:
+    shared = state.setdefault("shared_state", _new_shared_state())
+    proposals = list(shared.get("change_queue_proposals") or [])
+    retired = next((item for item in proposals if str(item.get("id") or "") == retired_proposal_id), None)
+    if not retired:
+        return None
+    conflict_group_id = str(retired.get("conflict_group_id") or "").strip()
+    if not conflict_group_id:
+        return None
+    candidates = [
+        proposal
+        for proposal in proposals
+        if str(proposal.get("conflict_group_id") or "").strip() == conflict_group_id
+        and str(proposal.get("id") or "") != retired_proposal_id
+        and str(proposal.get("status") or "") in {"conflicting", "superseded"}
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda proposal: (-float(proposal.get("quality_score") or 0.0), str(proposal.get("id") or "")))
+    promoted = candidates[0]
+    promoted_id = str(promoted.get("id") or "")
+    promoted["status"] = "pending"
+    promoted["proposal_stage"] = str(promoted.get("proposal_stage") or "compilable")
+    promoted["group_role"] = "primary"
+    promoted["primary_proposal_id"] = promoted_id
+    promoted["result_text"] = ""
+    promoted["error"] = ""
+    promoted["queue_status_reason"] = reason
+
+    alternates = []
+    for proposal in proposals:
+        proposal_id = str(proposal.get("id") or "")
+        if str(proposal.get("conflict_group_id") or "").strip() != conflict_group_id or proposal_id == retired_proposal_id:
+            continue
+        if proposal_id == promoted_id:
+            continue
+        if str(proposal.get("status") or "") in {"conflicting", "superseded"}:
+            proposal["status"] = "conflicting"
+            proposal["group_role"] = "alternative"
+            proposal["primary_proposal_id"] = promoted_id
+            proposal["queue_status_reason"] = f"Competing alternative after promotion of {promoted_id}."
+            alternates.append(proposal_id)
+    promoted["competing_proposal_ids"] = alternates
+    return promoted
+
+
 def approve_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[str, Any]):
     state = state or _snapshot_state_default()
     chat_history = chat_history or []
     if bool(_get_ui_snapshot().get("run_active")):
         return _restore_snapshot_outputs(_get_ui_snapshot())
 
-    proposal = get_pending_ghidra_change_proposal(state)
+    proposal = get_pending_change_proposal(state)
     if not proposal:
         return _restore_snapshot_outputs(_get_ui_snapshot())
 
     pipeline_name = str(((state.get("shared_state") or {}).get("selected_pipeline_name") or "")).strip() or None
-    result = apply_ghidra_change_proposal_sync(proposal, pipeline_name=pipeline_name, state=state)
+    result = apply_change_proposal_sync(proposal, pipeline_name=pipeline_name, state=state)
     proposal_id = str(proposal.get("id") or "")
     summary = str(result.get("summary") or proposal.get("summary") or proposal_id).strip()
     result_text = str(result.get("result_text") or "").strip()
     error = str(result.get("error") or "").strip()
+    target_system = str(result.get("target_system") or proposal.get("target_system") or "").strip().lower()
+    change_label = "ghidra change" if target_system == "ghidra" else "change"
 
     if result.get("ok"):
         final_status = "applied"
-        assistant_note = f"[ghidra change applied] {summary}"
+        assistant_note = f"[{change_label} applied] {summary}"
         if result_text:
             assistant_note += f"\n\n{result_text}"
     elif str(result.get("status") or "") == "needs_active_program_switch":
@@ -948,12 +1016,17 @@ def approve_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[s
         return _restore_snapshot_outputs(_get_ui_snapshot())
     elif str(result.get("status") or "") == "proposal_only":
         final_status = "approved_proposal_only"
-        assistant_note = f"[ghidra change approved as proposal only] {summary}"
+        assistant_note = f"[{change_label} approved as proposal only] {summary}"
+        if error:
+            assistant_note += f"\n\n{error}"
+    elif str(result.get("status") or "") in {"stale", "invalid", "not_compilable"}:
+        final_status = str(result.get("status") or "failed")
+        assistant_note = f"[{change_label} blocked] {summary}"
         if error:
             assistant_note += f"\n\n{error}"
     else:
         final_status = "failed"
-        assistant_note = f"[ghidra change apply failed] {summary}"
+        assistant_note = f"[{change_label} apply failed] {summary}"
         if error:
             assistant_note += f"\n\n{error}"
 
@@ -964,11 +1037,20 @@ def approve_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[s
         result_text=result_text,
         error=error,
     )
-    _supersede_conflicting_ghidra_changes(
-        state,
-        proposal_id,
-        reason=f"Superseded after {final_status} of {summary}.",
-    )
+    if final_status in {"applied", "approved_proposal_only"}:
+        _supersede_conflicting_ghidra_changes(
+            state,
+            proposal_id,
+            reason=f"Superseded after {final_status} of {summary}.",
+        )
+    elif final_status in {"stale", "invalid", "not_compilable", "rejected"}:
+        promoted = _promote_conflicting_ghidra_changes(
+            state,
+            proposal_id,
+            reason=f"Promoted after {final_status} of {summary}.",
+        )
+        if promoted:
+            append_status(state, f"Promoted alternative change proposal: {promoted.get('summary') or promoted.get('id')}")
     new_history = list(chat_history) + [{"role": "assistant", "content": assistant_note}]
     _store_ui_snapshot(
         chat_history=new_history,
@@ -989,12 +1071,14 @@ def reject_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[st
     if bool(_get_ui_snapshot().get("run_active")):
         return _restore_snapshot_outputs(_get_ui_snapshot())
 
-    proposal = get_pending_ghidra_change_proposal(state)
+    proposal = get_pending_change_proposal(state)
     if not proposal:
         return _restore_snapshot_outputs(_get_ui_snapshot())
 
     proposal_id = str(proposal.get("id") or "")
     summary = str(proposal.get("summary") or proposal_id).strip()
+    target_system = str(proposal.get("target_system") or "").strip().lower()
+    change_label = "ghidra change" if target_system == "ghidra" else "change"
     _apply_ghidra_change_status(
         state,
         proposal_id,
@@ -1002,13 +1086,15 @@ def reject_next_ghidra_change(chat_history: List[Dict[str, str]], state: Dict[st
         result_text="",
         error="Rejected by user.",
     )
-    _supersede_conflicting_ghidra_changes(
+    promoted = _promote_conflicting_ghidra_changes(
         state,
         proposal_id,
-        reason=f"Superseded after rejection of {summary}.",
+        reason=f"Promoted after rejection of {summary}.",
     )
-    append_status(state, f"Ghidra change rejected by user: {summary}")
-    new_history = list(chat_history) + [{"role": "assistant", "content": f"[ghidra change rejected] {summary}"}]
+    if promoted:
+        append_status(state, f"Promoted alternative change proposal: {promoted.get('summary') or promoted.get('id')}")
+    append_status(state, f"{change_label.title()} rejected by user: {summary}")
+    new_history = list(chat_history) + [{"role": "assistant", "content": f"[{change_label} rejected] {summary}"}]
     _store_ui_snapshot(
         chat_history=new_history,
         state=state,
@@ -1708,9 +1794,9 @@ class WorkflowUI:
                         planned_work_items_panel = gr.HTML(value=render_planned_work_items_panel(initial_state))
                     with gr.Accordion("Validation Gate", open=False, visible=_has_validation_gate(initial_state)) as validation_gate_group:
                         validation_gate_panel = gr.HTML(value=render_validation_gate_panel(initial_state))
-                    with gr.Accordion("Ghidra Change Queue", open=False, elem_id="ghidra-change-queue-accordion"):
+                    with gr.Accordion("Change Queue", open=False, elem_id="ghidra-change-queue-accordion"):
                         ghidra_change_queue_panel = gr.HTML(
-                            value=render_ghidra_change_queue_panel(initial_state),
+                            value=render_change_queue_panel(initial_state),
                             elem_id="ghidra-change-queue-panel",
                         )
                         with gr.Row():

@@ -380,7 +380,13 @@ def _annotate_unapproved_ghidra_aliases(text: str, shared_state: Optional[Dict[s
     if not output:
         return output
 
-    proposals = list(shared.get("ghidra_change_draft_proposals") or shared.get("ghidra_change_proposals") or [])
+    proposals = list(
+        shared.get("change_queue_draft_proposals")
+        or shared.get("change_queue_proposals")
+        or shared.get("ghidra_change_draft_proposals")
+        or shared.get("ghidra_change_proposals")
+        or []
+    )
     if not proposals:
         return output
 
@@ -511,6 +517,9 @@ def compact_shared_state(state: Dict[str, Any]) -> None:
     generated_yara_rules = shared.get("generated_yara_rules", []) or []
     if len(generated_yara_rules) > 12:
         shared["generated_yara_rules"] = generated_yara_rules[-12:]
+    untrusted_artifact_alerts = shared.get("untrusted_artifact_alerts", []) or []
+    if len(untrusted_artifact_alerts) > 12:
+        shared["untrusted_artifact_alerts"] = untrusted_artifact_alerts[-12:]
 
 
 def _normalize_path_candidate(candidate: str) -> str:
@@ -737,7 +746,7 @@ def apply_automation_payload_to_state(state: Dict[str, Any], payload: Dict[str, 
         analysis_target.get("kind") and str(analysis_target.get("kind") or "").strip().lower().replace("-", "_") != "original"
     )
     shared["analysis_target_apply_warning"] = (
-        "Before applying the Ghidra change queue, manually open the matching derived analysis target in live Ghidra."
+        "Before applying queued live Ghidra changes, manually open the matching derived analysis target in live Ghidra."
         if shared["analysis_target_apply_requires_live_switch"]
         else ""
     )
@@ -948,12 +957,17 @@ def _new_shared_state() -> Dict[str, Any]:
         "planned_work_items": [],
         "planned_work_item_status": {},
         "planned_work_items_parse_error": "",
+        "change_queue_proposals": [],
+        "change_queue_draft_proposals": [],
+        "change_queue_finalized": False,
+        "change_queue_parse_error": "",
         "ghidra_change_proposals": [],
         "ghidra_change_draft_proposals": [],
         "ghidra_change_queue_finalized": False,
         "ghidra_change_parse_error": "",
         "generated_yara_rules": [],
         "generated_yara_rule_parse_error": "",
+        "untrusted_artifact_alerts": [],
         "pipeline_stage_outputs": [],
         "pipeline_stage_progress": [],
         "available_static_tools": [],

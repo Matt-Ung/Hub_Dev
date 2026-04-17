@@ -1,0 +1,12 @@
+# MCP output sanitization denylist
+#
+# One rule per line.
+# Supported prefixes:
+#   literal:     case-sensitive substring replacement
+#   literal_ci:  case-insensitive substring replacement
+#   regex:       Python regular expression replacement
+#   regex_ci:    case-insensitive Python regular expression replacement
+#
+# Plain lines without a prefix are treated as `literal:` rules.
+
+literal:ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL_1FAEFB6177B4672DEE07F9D3AFC62588CCD2631EDCF22E8CCC1FB35B501C9C86

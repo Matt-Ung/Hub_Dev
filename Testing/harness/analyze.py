@@ -856,6 +856,7 @@ def run_agent_case(
                         "auto_triage_status": str(shared.get("auto_triage_status") or ""),
                         "auto_triage_context_summary": str(shared.get("auto_triage_context_summary") or ""),
                         "planned_work_items": list(shared.get("planned_work_items") or []),
+                        "change_queue_proposals": list(shared.get("change_queue_proposals") or []),
                         "ghidra_change_proposals": list(shared.get("ghidra_change_proposals") or []),
                         "generated_yara_rules": list(shared.get("generated_yara_rules") or []),
                         "tool_usage": summarize_tool_usage(parsed_tool_entries),

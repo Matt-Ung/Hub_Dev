@@ -503,6 +503,7 @@ def _build_judge_payload(
             "final_report": str(agent_result.get("final_report") or ""),
             "tool_usage": agent_result.get("tool_usage") or {},
             "planned_work_items": agent_result.get("planned_work_items") or [],
+            "change_queue_proposals": agent_result.get("change_queue_proposals") or [],
             "generated_yara_rules": agent_result.get("generated_yara_rules") or [],
             "ghidra_change_proposals": agent_result.get("ghidra_change_proposals") or [],
             "status_log": str(agent_result.get("status_log") or "")[:6000],

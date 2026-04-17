@@ -35,6 +35,7 @@ BINARIES = \
 	$(OUT_DIR)/multilayer_encode_test.exe \
 	$(OUT_DIR)/hash_dispatch_test.exe \
 	$(OUT_DIR)/hash_dispatch_test_stripped.exe \
+	$(OUT_DIR)/demo.exe \
 	$(OUT_DIR)/embedded_payload_test.exe \
 	$(OUT_DIR)/branch_weave_snapshot_test.exe \
 	$(OUT_DIR)/branch_weave_snapshot_test_stripped.exe \
@@ -49,6 +50,7 @@ GCC_BINARIES = \
 	$(OUT_DIR)/stack_notice_scheduler_test_gcc.exe \
 	$(OUT_DIR)/multilayer_encode_test_gcc.exe \
 	$(OUT_DIR)/hash_dispatch_test_gcc.exe \
+	$(OUT_DIR)/demo_gcc.exe \
 	$(OUT_DIR)/embedded_payload_test_gcc.exe \
 	$(OUT_DIR)/branch_weave_snapshot_test_gcc.exe \
 	$(OUT_DIR)/anti_analysis_suite_test_gcc.exe
@@ -161,6 +163,12 @@ $(OUT_DIR)/hash_dispatch_test_stripped.exe: hash_dispatch_test.c | $(OUT_DIR)
 	$(CC) $(CFLAGS_COMMON) -O2 -s $< -o $@
 
 $(OUT_DIR)/hash_dispatch_test_gcc.exe: hash_dispatch_test.c | $(OUT_DIR)
+	$(GCC_CC) $(CFLAGS_COMMON) -O2 $< -o $@
+
+$(OUT_DIR)/demo.exe: demo.c | $(OUT_DIR)
+	$(CC) $(CFLAGS_COMMON) -O2 $< -o $@
+
+$(OUT_DIR)/demo_gcc.exe: demo.c | $(OUT_DIR)
 	$(GCC_CC) $(CFLAGS_COMMON) -O2 $< -o $@
 
 $(OUT_DIR)/embedded_payload_test.exe: embedded_payload_test.c | $(OUT_DIR)

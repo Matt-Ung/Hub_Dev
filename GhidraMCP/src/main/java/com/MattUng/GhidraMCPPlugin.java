@@ -46,9 +46,14 @@ import ghidra.util.task.ConsoleTaskMonitor;
 import ghidra.util.task.TaskMonitor;
 import ghidra.program.model.pcode.HighVariable;
 import ghidra.program.model.pcode.Varnode;
+import ghidra.program.model.data.ArrayDataType;
+import ghidra.program.model.data.CategoryPath;
 import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.DataTypeConflictHandler;
 import ghidra.program.model.data.DataTypeManager;
+import ghidra.program.model.data.EnumDataType;
 import ghidra.program.model.data.PointerDataType;
+import ghidra.program.model.data.StructureDataType;
 import ghidra.program.model.data.Undefined1DataType;
 import ghidra.program.model.listing.Variable;
 import ghidra.app.decompiler.component.DecompilerUtils;
@@ -115,6 +120,32 @@ public class GhidraMCPPlugin extends ProgramPlugin {
         }
     }
 
+    private static final class StructFieldSpec {
+        final String name;
+        final String typeName;
+        final int count;
+        final String comment;
+
+        StructFieldSpec(String name, String typeName, int count, String comment) {
+            this.name = name;
+            this.typeName = typeName;
+            this.count = Math.max(1, count);
+            this.comment = comment == null ? "" : comment;
+        }
+    }
+
+    private static final class EnumMemberSpec {
+        final String name;
+        final long value;
+        final String comment;
+
+        EnumMemberSpec(String name, long value, String comment) {
+            this.name = name;
+            this.value = value;
+            this.comment = comment == null ? "" : comment;
+        }
+    }
+
     public GhidraMCPPlugin(PluginTool tool) {
         super(tool);
         Msg.info(this, "GhidraMCPPlugin loading...");
@@ -147,6 +178,15 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             Msg.error(this, "Failed to start HTTP server", e);
         }
         Msg.info(this, "GhidraMCPPlugin loaded!");
+    }
+
+    @Override
+    public void init() {
+        super.init();
+        Program currentProgram = getCurrentProgram();
+        if (currentProgram != null) {
+            maybeQueueAutoWorkflowTrigger(currentProgram);
+        }
     }
 
     @Override
@@ -642,6 +682,33 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             responseMsg.append("\nResult: ").append(successMsg);
 
             sendResponse(exchange, responseMsg.toString());
+        });
+
+        server.createContext("/apply_data_type_to_data", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String address = params.get("address");
+            String dataTypeName = params.get("data_type_name");
+            String result = applyDataTypeToData(address, dataTypeName);
+            sendResponse(exchange, result);
+        });
+
+        server.createContext("/create_struct_type", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String typeName = params.get("type_name");
+            String fieldsSpec = params.get("fields_spec");
+            boolean replaceExisting = parseBooleanParam(params.get("replace_existing"), false);
+            String result = createStructType(typeName, fieldsSpec, replaceExisting);
+            sendResponse(exchange, result);
+        });
+
+        server.createContext("/create_enum_type", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String typeName = params.get("type_name");
+            String membersSpec = params.get("members_spec");
+            int byteSize = parseIntOrDefault(params.get("byte_size"), 4);
+            boolean replaceExisting = parseBooleanParam(params.get("replace_existing"), false);
+            String result = createEnumType(typeName, membersSpec, byteSize, replaceExisting);
+            sendResponse(exchange, result);
         });
 
         server.createContext("/xrefs_to", exchange -> {
@@ -2135,6 +2202,297 @@ public class GhidraMCPPlugin extends ProgramPlugin {
             Msg.error(this, "Error setting variable type: " + e.getMessage());
         } finally {
             program.endTransaction(tx, success.get());
+        }
+    }
+
+    private String applyDataTypeToData(String addressStr, String dataTypeName) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        String normalizedAddress = trimToNull(addressStr);
+        String normalizedTypeName = trimToNull(dataTypeName);
+        if (normalizedAddress == null || normalizedTypeName == null) {
+            return "Address and data_type_name are required";
+        }
+
+        StringBuilder message = new StringBuilder();
+        AtomicBoolean success = new AtomicBoolean(false);
+        try {
+            SwingUtilities.invokeAndWait(() -> applyDataTypeToDataOnSwing(program, normalizedAddress, normalizedTypeName, success, message));
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Failed to execute apply_data_type_to_data on Swing thread: " + e.getMessage();
+        }
+        return success.get() ? "Data type applied successfully" : ("Failed to apply data type: " + message);
+    }
+
+    private void applyDataTypeToDataOnSwing(
+        Program program,
+        String addressStr,
+        String dataTypeName,
+        AtomicBoolean success,
+        StringBuilder message
+    ) {
+        int tx = program.startTransaction("Apply data type to data");
+        try {
+            Address address = program.getAddressFactory().getAddress(addressStr);
+            if (address == null) {
+                message.append("Invalid address: ").append(addressStr);
+                return;
+            }
+
+            DataType dataType = resolveDataTypeStrict(program.getDataTypeManager(), dataTypeName);
+            if (dataType == null) {
+                message.append("Could not resolve data type: ").append(dataTypeName);
+                return;
+            }
+
+            Listing listing = program.getListing();
+            int clearLen = Math.max(1, dataType.getLength());
+            Address end = address;
+            if (clearLen > 1) {
+                end = address.add(clearLen - 1L);
+            }
+            listing.clearCodeUnits(address, end, false);
+            listing.createData(address, dataType);
+            success.set(true);
+        } catch (Exception e) {
+            message.append(e.getMessage());
+            Msg.error(this, "Failed to apply data type to data: " + e.getMessage(), e);
+        } finally {
+            program.endTransaction(tx, success.get());
+        }
+    }
+
+    private String createStructType(String typeName, String fieldsSpec, boolean replaceExisting) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        String normalizedTypeName = trimToNull(typeName);
+        if (normalizedTypeName == null) {
+            return "type_name is required";
+        }
+
+        List<StructFieldSpec> fields = parseStructFieldSpecs(fieldsSpec);
+        if (fields.isEmpty()) {
+            return "fields_spec must contain at least one field";
+        }
+
+        StringBuilder message = new StringBuilder();
+        AtomicBoolean success = new AtomicBoolean(false);
+        try {
+            SwingUtilities.invokeAndWait(() ->
+                createStructTypeOnSwing(program, normalizedTypeName, fields, replaceExisting, success, message)
+            );
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Failed to execute create_struct_type on Swing thread: " + e.getMessage();
+        }
+        return success.get() ? "Struct type created successfully" : ("Failed to create struct type: " + message);
+    }
+
+    private void createStructTypeOnSwing(
+        Program program,
+        String typeName,
+        List<StructFieldSpec> fields,
+        boolean replaceExisting,
+        AtomicBoolean success,
+        StringBuilder message
+    ) {
+        int tx = program.startTransaction("Create struct type");
+        try {
+            DataTypeManager dtm = program.getDataTypeManager();
+            CategoryPath categoryPath = new CategoryPath("/AgentQueue");
+            StructureDataType structType = new StructureDataType(categoryPath, typeName, 0);
+
+            for (StructFieldSpec field : fields) {
+                DataType fieldType = resolveDataTypeStrict(dtm, field.typeName);
+                if (fieldType == null) {
+                    message.append("Unknown field type: ").append(field.typeName);
+                    return;
+                }
+                DataType appliedType = fieldType;
+                if (field.count > 1) {
+                    int elementLength = Math.max(1, fieldType.getLength());
+                    appliedType = new ArrayDataType(fieldType, field.count, elementLength);
+                }
+                structType.add(appliedType, field.name, field.comment);
+            }
+
+            dtm.addDataType(
+                structType,
+                replaceExisting ? DataTypeConflictHandler.REPLACE_HANDLER : DataTypeConflictHandler.DEFAULT_HANDLER
+            );
+            success.set(true);
+        } catch (Exception e) {
+            message.append(e.getMessage());
+            Msg.error(this, "Failed to create struct type: " + e.getMessage(), e);
+        } finally {
+            program.endTransaction(tx, success.get());
+        }
+    }
+
+    private String createEnumType(String typeName, String membersSpec, int byteSize, boolean replaceExisting) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        String normalizedTypeName = trimToNull(typeName);
+        if (normalizedTypeName == null) {
+            return "type_name is required";
+        }
+
+        List<EnumMemberSpec> members = parseEnumMemberSpecs(membersSpec);
+        if (members.isEmpty()) {
+            return "members_spec must contain at least one enum member";
+        }
+
+        int normalizedByteSize = Math.max(1, byteSize);
+        StringBuilder message = new StringBuilder();
+        AtomicBoolean success = new AtomicBoolean(false);
+        try {
+            SwingUtilities.invokeAndWait(() ->
+                createEnumTypeOnSwing(program, normalizedTypeName, members, normalizedByteSize, replaceExisting, success, message)
+            );
+        } catch (InterruptedException | InvocationTargetException e) {
+            return "Failed to execute create_enum_type on Swing thread: " + e.getMessage();
+        }
+        return success.get() ? "Enum type created successfully" : ("Failed to create enum type: " + message);
+    }
+
+    private void createEnumTypeOnSwing(
+        Program program,
+        String typeName,
+        List<EnumMemberSpec> members,
+        int byteSize,
+        boolean replaceExisting,
+        AtomicBoolean success,
+        StringBuilder message
+    ) {
+        int tx = program.startTransaction("Create enum type");
+        try {
+            DataTypeManager dtm = program.getDataTypeManager();
+            CategoryPath categoryPath = new CategoryPath("/AgentQueue");
+            EnumDataType enumType = new EnumDataType(categoryPath, typeName, byteSize);
+            for (EnumMemberSpec member : members) {
+                enumType.add(member.name, member.value);
+            }
+            dtm.addDataType(
+                enumType,
+                replaceExisting ? DataTypeConflictHandler.REPLACE_HANDLER : DataTypeConflictHandler.DEFAULT_HANDLER
+            );
+            success.set(true);
+        } catch (Exception e) {
+            message.append(e.getMessage());
+            Msg.error(this, "Failed to create enum type: " + e.getMessage(), e);
+        } finally {
+            program.endTransaction(tx, success.get());
+        }
+    }
+
+    private List<StructFieldSpec> parseStructFieldSpecs(String fieldsSpec) {
+        List<StructFieldSpec> fields = new ArrayList<>();
+        String normalized = trimToNull(fieldsSpec);
+        if (normalized == null) {
+            return fields;
+        }
+        for (String rawLine : normalized.split("\\r?\\n")) {
+            String line = rawLine == null ? "" : rawLine.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            String[] parts = line.split("\\t", -1);
+            String name = parts.length > 0 ? trimToNull(parts[0]) : null;
+            String typeName = parts.length > 1 ? trimToNull(parts[1]) : null;
+            int count = parts.length > 2 ? parseIntOrDefault(parts[2], 1) : 1;
+            String comment = parts.length > 3 ? trimToNull(parts[3]) : null;
+            if (name == null || typeName == null) {
+                continue;
+            }
+            fields.add(new StructFieldSpec(name, typeName, count, comment));
+        }
+        return fields;
+    }
+
+    private List<EnumMemberSpec> parseEnumMemberSpecs(String membersSpec) {
+        List<EnumMemberSpec> members = new ArrayList<>();
+        String normalized = trimToNull(membersSpec);
+        if (normalized == null) {
+            return members;
+        }
+        for (String rawLine : normalized.split("\\r?\\n")) {
+            String line = rawLine == null ? "" : rawLine.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            String[] parts = line.split("\\t", -1);
+            String name = parts.length > 0 ? trimToNull(parts[0]) : null;
+            String valueText = parts.length > 1 ? trimToNull(parts[1]) : null;
+            String comment = parts.length > 2 ? trimToNull(parts[2]) : null;
+            if (name == null || valueText == null) {
+                continue;
+            }
+            long value;
+            try {
+                value = Long.decode(valueText);
+            } catch (NumberFormatException ignored) {
+                value = parseIntOrDefault(valueText, 0);
+            }
+            members.add(new EnumMemberSpec(name, value, comment));
+        }
+        return members;
+    }
+
+    private DataType resolveDataTypeStrict(DataTypeManager dtm, String typeName) {
+        String normalizedTypeName = trimToNull(typeName);
+        if (normalizedTypeName == null) {
+            return null;
+        }
+
+        DataType direct = findDataTypeByNameInAllCategories(dtm, normalizedTypeName);
+        if (direct != null) {
+            return direct;
+        }
+
+        if (normalizedTypeName.startsWith("P") && normalizedTypeName.length() > 1) {
+            String baseTypeName = normalizedTypeName.substring(1);
+            if ("VOID".equalsIgnoreCase(baseTypeName)) {
+                DataType voidType = dtm.getDataType("/void");
+                return voidType == null ? null : new PointerDataType(voidType);
+            }
+            DataType baseType = resolveDataTypeStrict(dtm, baseTypeName);
+            return baseType == null ? null : new PointerDataType(baseType);
+        }
+
+        switch (normalizedTypeName.toLowerCase(Locale.ROOT)) {
+            case "int":
+            case "long":
+                return dtm.getDataType("/int");
+            case "uint":
+            case "unsigned int":
+            case "unsigned long":
+            case "dword":
+                return dtm.getDataType("/uint");
+            case "short":
+                return dtm.getDataType("/short");
+            case "ushort":
+            case "unsigned short":
+            case "word":
+                return dtm.getDataType("/ushort");
+            case "char":
+            case "byte":
+                return dtm.getDataType("/char");
+            case "uchar":
+            case "unsigned char":
+                return dtm.getDataType("/uchar");
+            case "longlong":
+            case "__int64":
+                return dtm.getDataType("/longlong");
+            case "ulonglong":
+            case "unsigned __int64":
+                return dtm.getDataType("/ulonglong");
+            case "bool":
+            case "boolean":
+                return dtm.getDataType("/bool");
+            case "void":
+                return dtm.getDataType("/void");
+            default:
+                DataType directType = dtm.getDataType("/" + normalizedTypeName);
+                return directType;
         }
     }
 

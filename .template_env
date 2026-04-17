@@ -194,6 +194,18 @@ STATUS_LOG_STDOUT=true
 # Change only if you intentionally expand or reduce caching coverage.
 TOOL_RESULT_CACHE_SERVER_MARKERS=ghidra,capa,floss,string,hashdb,binwalk,yara,gitleaks,searchsploit,trivy
 
+# Repeat guard for cached exact tool calls. This prevents a worker from
+# repeatedly receiving the same cached Ghidra result and burning model turns.
+TOOL_REPEAT_GUARD_ENABLED=true
+TOOL_REPEAT_GUARD_SERVER_MARKERS=ghidra
+TOOL_REPEAT_GUARD_MAX_CACHE_HITS=1
+
+# Central MCP-output prompt-injection guard. This labels and redacts model-
+# steering artifact text such as "ignore previous instructions" before it is
+# returned upstream to workers, validators, or the reporter.
+MCP_OUTPUT_PROMPT_INJECTION_GUARD_ENABLED=true
+MCP_OUTPUT_PROMPT_INJECTION_RULES_PATH=multi_agent_wf/security/mcp_output_prompt_injection_patterns.txt
+
 # Server ids that must stay serialized even when worker parallelism is enabled.
 # These defaults keep the mutation-prone / stateful servers serialized while
 # still allowing read-only scanners to overlap:

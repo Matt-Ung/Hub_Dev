@@ -1,0 +1,15 @@
+# Prompt-injection-like artifact text heuristics for MCP output.
+# These rules are meant to catch hostile artifact text that tries to steer the
+# model or suppress reporting. They should stay focused on model-directed or
+# analyst-directed imperative language rather than broad benign prose.
+
+regex_ci:\bignore[\s_-]+(?:all[\s_-]+)?(?:previous|prior|earlier)[\s_-]+instructions?\b
+regex_ci:\bdisregard[\s_-]+(?:all[\s_-]+)?(?:previous|prior|earlier)[\s_-]+instructions?\b
+regex_ci:\bforget[\s_-]+(?:all[\s_-]+)?(?:previous|prior|earlier)[\s_-]+instructions?\b
+regex_ci:\bfollow[\s_-]+these[\s_-]+instructions[\s_-]+instead\b
+regex_ci:\b(?:system|developer|user)[\s_-]+prompt\b
+regex_ci:\byou[\s_-]+are[\s_-]+(?:now[\s_-]+)?(?:chatgpt|an[\s_-]+ai[\s_-]+assistant|an[\s_-]+assistant|a[\s_-]+malware[\s_-]+analyst)\b
+regex_ci:\b(?:act|behave)[\s_-]+as[\s_-]+(?:an[\s_-]+)?(?:assistant|model|malware[\s_-]+analyst)\b
+regex_ci:\brespond[\s_-]+with[\s_-]+only\b
+regex_ci:\bsay[\s_-]+there[\s_-]+(?:is[\s_-]+not|isn't)[\s_-]+anything[\s_-]+notable\b
+regex_ci:\bdo[\s_-]+not[\s_-]+(?:analy[sz]e|report|mention|note)[\s_-]+
