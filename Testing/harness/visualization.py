@@ -132,6 +132,50 @@ def _wrap_label(value: Any, width: int = 18) -> str:
     return "\n".join(textwrap.wrap(text, width=width)) or text
 
 
+def _format_executable_score_panel_annotation(row: Dict[str, Any]) -> str:
+    mean_score = float(row.get("mean_score") or 0.0)
+    delta = _safe_float(row.get("score_delta"))
+    delta_text = "baseline" if str(row.get("variant_id") or "") == "baseline" or delta is None else f"Δ {delta:+.1f}"
+    return f"{mean_score:.1f} · {delta_text}"
+
+
+def _add_executable_score_panel_annotations(ax, sample_df) -> None:
+    annotation_transform = ax.get_yaxis_transform()
+    ax.plot(
+        [1.0, 1.0],
+        [0.02, 0.98],
+        transform=ax.transAxes,
+        color="#d7dee8",
+        linewidth=1.0,
+        clip_on=False,
+        zorder=0,
+    )
+    ax.text(
+        1.02,
+        1.02,
+        "Mean · Δ vs base",
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=8.1,
+        color="#475569",
+        fontweight="semibold",
+        clip_on=False,
+    )
+    for y_pos, (_, row) in enumerate(sample_df.iterrows()):
+        ax.text(
+            1.02,
+            y_pos,
+            _format_executable_score_panel_annotation(row),
+            transform=annotation_transform,
+            va="center",
+            ha="left",
+            fontsize=8.7,
+            color="#1f2937",
+            clip_on=False,
+        )
+
+
 def _configure_matplotlib(plt) -> None:
     plt.style.use("seaborn-v0_8-whitegrid")
     plt.rcParams.update(
@@ -1046,7 +1090,7 @@ def _plot_executable_score_panels(
 
     sample_pages = _chunked(samples, 3 if len(samples) > 3 else len(samples))
     for page_index, page_samples in enumerate(sample_pages, start=1):
-        fig, axes = plt.subplots(len(page_samples), 1, figsize=(11.8, max(4.8, len(page_samples) * 3.6 + 1.6)), squeeze=False)
+        fig, axes = plt.subplots(len(page_samples), 1, figsize=(12.8, max(4.8, len(page_samples) * 3.6 + 1.6)), squeeze=False)
         axes_list = [axis_row[0] for axis_row in axes]
         for ax, sample in zip(axes_list, page_samples):
             sample_df = plot_df[plot_df["sample"] == sample].copy()
@@ -1062,19 +1106,7 @@ def _plot_executable_score_panels(
             ax.set_title(sample, fontsize=12.8)
             _style_axes(ax, grid_axis="x")
             _apply_axis_formatter(ax, axis="x", kind="number")
-            for y_pos, (_, row) in zip(y_positions, sample_df.iterrows()):
-                mean_score = float(row["mean_score"] or 0.0)
-                delta = _safe_float(row.get("score_delta"))
-                delta_text = "baseline" if str(row.get("variant_id") or "") == "baseline" or delta is None else f"Δ {delta:+.1f}"
-                ax.text(
-                    min(mean_score + 1.0, 98.5),
-                    y_pos,
-                    f"{mean_score:.1f} · {delta_text}",
-                    va="center",
-                    ha="left",
-                    fontsize=8.7,
-                    color="#1f2937",
-                )
+            _add_executable_score_panel_annotations(ax, sample_df)
         page_title = _title(title_prefix, "Per-Executable Mean Score")
         if len(sample_pages) > 1:
             page_title = f"{page_title} (Page {page_index} of {len(sample_pages)})"
@@ -1101,7 +1133,7 @@ def _plot_executable_score_panels(
             filename,
             title,
             "Per-executable score panels showing how each configuration performs on each executable independently, with repetition-level variance shown as error bars. Large sample sets are paged for thesis-scale readability.",
-            tight_rect=(0.02, 0.02, 0.98, 0.92),
+            tight_rect=(0.02, 0.02, 0.89, 0.92),
         )
 
 

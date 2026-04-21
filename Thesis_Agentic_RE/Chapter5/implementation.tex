@@ -9,7 +9,7 @@ The implementation separates the research system from the measurement apparatus 
 
 \section{Workflow Configuration}
 
-The workflow uses declarative configuration for stage contracts, worker archetypes, architectures, prompts, and pipeline selection. This design is deliberate: it allows ablations and reproducible experiments to be defined by controlled configuration changes rather than by modifying runtime logic.
+The workflow uses declarative configuration for stage contracts, stage-manager prompts, worker archetypes, architectures, prompts, and pipeline selection. This design is deliberate: it allows ablations and reproducible experiments to be defined by controlled configuration changes rather than by modifying runtime logic. Here a worker archetype is a reusable specialist role definition and prompt bundle, while a worker subagent or slot is a concrete runtime instantiation of one of those archetypes inside a selected architecture preset.
 
 Pipeline presets determine which stages run and in what order. Architecture presets determine the available worker mix. Worker prompt shape, role-prompt mode, and review level tune behavior without modifying the core runtime, keeping ablation definitions declarative and auditable.
 
@@ -33,9 +33,9 @@ Some of the surrounding tool ecosystem is directly integrated, while other piece
 
 Tool integration is therefore only one part of the implementation story. The other part is visibility. The runtime records which tools were exposed, which ones were called, how outputs were routed into shared state, and which derived artifacts were retained for later stages or for evaluation. That record is what makes repaired experiments, tool-usage summaries, and failure analysis possible. Without it, the workflow would still produce reports, but it would be much harder to determine whether a weak result reflected poor reasoning, poor tool selection, missing evidence, or an orchestration failure.
 
-Prepared bundles and run artifacts are central to the system's reproducibility story. Bundles capture analysis inputs and precomputed artifacts for a sample, while run records capture the outputs of one particular workflow configuration.
+Prepared bundles and run artifacts are central to the system's scripted reproducibility story. Bundles capture analysis inputs and precomputed artifacts for a sample, while run records capture the outputs of one particular workflow configuration.
 
-Bundles are reused when their generation inputs remain fresh, and prompt or persona changes do not by themselves invalidate a bundle. Run records preserve final reports, judge outputs, live status, and per-task metadata for each execution. Recovery and repaired-experiment workflows preserve provenance instead of mutating original results in place, ensuring that the distinction between first-pass and recovered runs remains visible in the experiment record.
+Bundles are reused when their generation inputs remain fresh, and prompt or persona changes do not by themselves invalidate a bundle. Run records preserve final reports, LLM-judge outputs, live status, and per-task metadata for each execution. Recovery and repaired-experiment workflows preserve provenance instead of mutating original results in place, ensuring that the distinction between first-pass and recovered runs remains visible in the experiment record.
 
 \section{User-Facing Monitoring and Result Inspection}
 

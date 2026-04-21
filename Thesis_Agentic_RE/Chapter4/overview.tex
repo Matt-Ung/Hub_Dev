@@ -7,20 +7,22 @@ This chapter gives a high-level view of the system before the implementation det
 
 A run begins with a user query or evaluation task, resolves a workflow configuration, provisions tool access, and then executes a staged analysis pipeline. The important point is not the exact call chain but the way configuration, tooling, and staged reasoning are assembled into one repeatable workflow. Appendix~\ref{app:reproduction-commands} provides the concrete launch details for readers who need the artifact-level execution path.
 
-In the maintained baseline, execution begins with a light preparatory pass, called \emph{preflight} in the system implementation, and deterministic presweeps that gather reusable context before any broad free-form reasoning occurs. A planner then converts the request and shared context into bounded work items, specialist workers execute those items with tool access appropriate to their role, and a reporter synthesizes the result into the final analysis artifact. Some experimental pipelines insert an explicit validator stage between workers and reporting, but validator review is not universal across all runs. After the final report is produced, the harness captures artifacts, invokes judging, and aggregates results into the experiment record.
+In this thesis, a \emph{pipeline} is the ordered sequence of stages used for one run, and a \emph{stage} is a bounded phase with its own prompt contract, tool access pattern, and expected output. The repository also uses the term \emph{stage manager} for the coordinator prompt and runtime logic attached to a single stage. Likewise, a worker \emph{archetype} is a reusable specialist role definition such as \texttt{ghidra\_analyst}, while a \emph{subagent} is a concrete worker instance or delegated model invocation created from one of those archetypes during a run.
 
-\section{Planner, Worker, Validator, and Reporter Roles}
+In the maintained \texttt{auto\_triage} baseline used in the final experiments, execution begins with a light preparatory pass, called \emph{preflight} in the system implementation, and deterministic presweeps that gather reusable context before any broad free-form reasoning occurs. A planner then converts the request and shared context into bounded work items, specialist workers execute those items with tool access appropriate to their role, a dedicated proposal-writing stage normalizes conservative change suggestions into queued proposals, and a reporter synthesizes the result into the final analysis artifact. Some experimental pipelines insert an explicit validator stage before final reporting, but validator review is not universal across all runs. After the final report is produced, the harness captures artifacts, invokes the configured LLM judge, and aggregates results into the experiment record.
+
+\section{Planner, Worker, Proposal-Writer, Validator, and Reporter Roles}
 
 The workflow supports multiple stage kinds, but its core pattern is straightforward: prepare context, decompose the task, gather evidence, optionally review coverage, and then synthesize the final answer.
 
-Preparatory stages establish basic sample metadata and reusable static-analysis outputs. Planners decide how to decompose the task and which evidence should be gathered. Workers perform focused analysis passes, often with specialized tool access or role prompts that constrain their scope. Validators, when present, act as an internal quality gate by reviewing coverage, evidence quality, and missing artifacts before final reporting. Reporters convert intermediate evidence into the final narrative artifact used by the harness and judge.
+Preparatory stages establish basic sample metadata and reusable static-analysis outputs. Planners decide how to decompose the task and which evidence should be gathered. Workers perform focused analysis passes, often with specialized tool access or role prompts that constrain their scope. Proposal-writing stages, when present, convert worker-surfaced rename, type, comment, or patch suggestions into structured queued changes rather than leaving that burden to the reporter. Validators, when present, act as an internal quality gate by reviewing coverage, evidence quality, and missing artifacts before final reporting. Reporters convert intermediate evidence into the final narrative artifact used by the harness and LLM judge.
 
 \section{Configuration Surfaces}
 
 The system exposes several configuration families that are central to the evaluation:
 \begin{itemize}
 \item \textbf{Response-scope variants} control how concise or expansive the final report should be.
-\item \textbf{Worker subagent profiles} determine whether workers are generalists or specialists.
+\item \textbf{Worker subagent profiles} determine whether workers are instantiated as generalists or as specialist archetype-driven subagents.
 \item \textbf{Worker prompt shape and role-prompt mode} tune the instruction surface given to each worker.
 \item \textbf{Tool profiles} control which MCP tools are available to the pipeline.
 \item \textbf{Architecture presets} define the worker mix.

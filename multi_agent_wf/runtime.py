@@ -3294,7 +3294,8 @@ def build_stage_prompt(
                     "- If you identify useful rename/type suggestions, candidate struct declarations, enum opportunities, or recovered data-label roles, keep them evidence-backed and include them as a proposal appendix after the analytic findings rather than as a substitute for them.",
                     "- When the evidence is strong enough to justify analyst review, emit those naming/type/struct/enum/data-label improvements as approval-queue proposals in that appendix rather than burying them in prose.",
                     "- Exact machine-readable proposal JSON is still preferred. If you miss that format, make the intended change explicit in conservative prose such as `rename FUN_... at 0x... to ... because ...`, `global DAT_... appears to store ...`, `struct for connection state with offsets ...`, or `enum-like command IDs 1, 2, 3`, so the proposal writer can attempt safe recovery.",
-                    "- If a host-managed work item carries `proposal_expected: true`, the assignment is not complete unless you append exactly one machine-readable proposal block and satisfy one of two outcomes: at least one valid proposal of the allowed `proposal_types`, or an empty array plus `Proposal omission rationale: <why no conservative proposal is safe yet>`.",
+                    "- If a host-managed work item carries `proposal_expected: true`, prefer a machine-readable proposal block, but proposal-ready narrative context is also acceptable when it clearly states the target, intended change, proposed name/type, and supporting evidence.",
+                    "- If no conservative proposal is justified, say so clearly. `Proposal omission rationale: <why no conservative proposal is safe yet>` is the preferred wording, and an empty JSON array is helpful but not required.",
                     "- For proposal-bearing work items, use the provided `proposal_targets` to keep the proposal scope narrow and concrete.",
                     "- If you emit a YARA proposal, anchor it to the distinct combination of behaviors, strings, constants, imports, or decode logic confirmed during analysis rather than generic PE/CRT/startup patterns.",
                 ]
@@ -3481,7 +3482,8 @@ def build_stage_prompt(
                 "- Do not emit a proposal with an empty `evidence` array. If the evidence is too weak to name concrete support points, keep the idea in prose instead of the machine-readable change queue.",
                 "- Exact JSON is preferred, but near-miss semi-structured suggestions can still be recovered later when they clearly name the target, intended change, and supporting rationale. If you miss the block format, make the suggestion explicit instead of vague.",
                 "- If there are no concrete proposals for approval, emit an empty array in the machine-readable block rather than omitting the block.",
-                "- If the current work item says `proposal_expected: true`, the machine-readable block is mandatory. Either emit at least one valid proposal of the allowed proposal types or write `Proposal omission rationale: <reason>` and then emit an empty array.",
+                "- If the current work item says `proposal_expected: true`, prefer a machine-readable block, but proposal-ready narrative context is also acceptable when it clearly gives the target, intended change, proposed name/type, and supporting evidence.",
+                "- If no conservative proposal is justified, say so clearly. `Proposal omission rationale: <reason>` is preferred, and an empty JSON array is helpful but not required.",
                 "- Naming rule: unless a proposal is explicitly marked as applied, do not speak as though the rename already exists in Ghidra. In prose, refer to the current canonical symbol/address and optionally show the suggested alias in parentheses.",
             ]
         )

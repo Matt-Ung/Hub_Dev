@@ -47,11 +47,11 @@ Another boundary on this analysis is model scope. In the final held-out comparis
 
 \section{Judging and Measurement Proxies}
 
-Judge scores remain a proxy for analyst usefulness, not a direct substitute for expert human review. The rubric is structured and useful, but it still compresses a complicated reverse-engineering outcome into a set of scalar dimensions and one overall score. That creates two related risks and places a clear limit on how far RQ3 can be pushed.
+LLM-judge scores remain a proxy for analyst usefulness, not a direct substitute for expert human review. In the maintained evaluation path, a configured language-model judge scores outputs under a repository rubric and evaluator-side reference files. These scores are therefore model-generated assessment signals rather than expert human annotations or objective ground truth. The rubric is structured and useful, but it still compresses a complicated reverse-engineering outcome into a set of scalar dimensions and one overall score. That creates two related risks and places a clear limit on how far RQ3 can be pushed.
 
 Some runs may benefit from better organization or cleaner evidence presentation without necessarily achieving deeper mechanistic understanding. Conversely, a partially correct but poorly framed answer may score worse than an analyst would judge it in an interactive workflow where clarification is possible.
 
-The thesis reduces this risk by pairing score reporting with failure-mode reporting, per-executable comparisons, and preserved task artifacts. Even so, the judge should be treated as a consistent evaluation instrument rather than as a perfect oracle.
+The thesis reduces this risk by pairing score reporting with failure-mode reporting, per-executable comparisons, and preserved task artifacts. Even so, the LLM judge should be treated as a consistent evaluation instrument rather than as a perfect oracle.
 
 \section{Operational and Ethical Considerations}
 

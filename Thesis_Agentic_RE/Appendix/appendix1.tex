@@ -121,7 +121,7 @@ Unless a row below says otherwise, the baseline refers to the locked configurati
 
 \section{Judge and Prompt Artifacts}
 
-The judge rubric is defined in \path{Testing/config/binary_judge_rubric.json}. It scores six dimensions: \texttt{evidence\_grounding}, \texttt{specificity}, \texttt{technique\_coverage}, \texttt{false\_claim\_control}, \texttt{task\_alignment}, and the down-weighted \texttt{report\_conciseness}. The first five dimensions are each scored from 0 to 5, while conciseness is scored from 0 to 3. Raw totals are normalized to a 0--100 score by dividing by the rubric maximum of \texttt{28}. A run is treated as passing only if the normalized overall score is at least \texttt{70}, \texttt{false\_claim\_control} is at least \texttt{3}, and \texttt{evidence\_grounding} is at least \texttt{3}. This structure is intended to prevent short but weak reports, or confident but unsupported reports, from appearing successful.
+The judge rubric is defined in \path{Testing/config/binary_judge_rubric.json}. It scores six dimensions: \texttt{evidence\_grounding}, \texttt{specificity}, \texttt{technique\_coverage}, \texttt{false\_claim\_control}, \texttt{task\_alignment}, and the down-weighted \texttt{report\_conciseness}. The first five dimensions are each scored from 0 to 5, while conciseness is scored from 0 to 3. Raw totals are normalized to a 0--100 score by dividing by the rubric maximum of \texttt{28}. In the maintained experiments, this rubric is executed by a configured LLM judge rather than a human labeler, so the resulting scores are model-generated proxy signals. Under the harness thresholds, a run is treated as passing only if the normalized overall score is at least \texttt{70}, \texttt{false\_claim\_control} is at least \texttt{3}, and \texttt{evidence\_grounding} is at least \texttt{3}. This structure is intended to prevent short but weak reports, or confident but unsupported reports, from appearing successful.
 
 The base held-out task prompt is deliberately broad and blind:
 
@@ -134,7 +134,7 @@ separating supported findings from uncertainty.
 
 The response-scope wrappers in \path{Testing/config/response\_scope\_variants.json} do not change the underlying task itself. Instead they wrap that base query with a prefix and suffix that alter how concise or expansive the requested answer should be. For example, the maintained \texttt{brief} variant adds the prefix ``Provide a concise, evidence-grounded reverse-engineering answer'' and the suffix ``Keep the report focused on the most important findings, the strongest supporting evidence, and the main unknowns.'' The analysis-hint wrappers in \path{Testing/config/analysis\_hint\_variants.json} are separate and are currently reserved for future pilot studies. Those wrappers add verify-first investigation leads such as packing, encoded configuration, hashing-based dispatch, or embedded payloads without asserting that such behaviors are present. Table~\ref{tab:evaluation-variants} summarizes which of those maintained wrapper variants are actually exercised in the thesis experiments.
 
-The stage-level prompt surface is split across three files under \path{multi\_agent\_wf/workflow\_config/}: \path{stage\_manager\_prompts.json}, \path{agent\_archetype\_prompts.json}, and \path{stage\_output\_contracts.json}. The first defines the coordinator-level rules for each pipeline stage, the second defines specialist overlays such as \texttt{ghidra\_analyst}, \texttt{control\_flow\_analyst}, or \texttt{string\_analyst}, and the third defines the machine-readable blocks or evidence-bundle contracts that later stages must consume.
+The stage-level prompt surface is split across three files under \path{multi\_agent\_wf/workflow\_config/}: \path{stage\_manager\_prompts.json}, \path{agent\_archetype\_prompts.json}, and \path{stage\_output\_contracts.json}. Here, \emph{stage manager} denotes the coordinator-level prompt and runtime logic for a single pipeline stage, while an \emph{archetype} denotes a reusable specialist role definition such as \texttt{ghidra\_analyst}, \texttt{control\_flow\_analyst}, or \texttt{string\_analyst}. Concrete worker subagents are instantiated from those archetypes at run time. The third file defines the machine-readable blocks or evidence-bundle contracts that later stages must consume.
 
 \begin{table}[h]
 \centering
@@ -146,8 +146,9 @@ Preflight & minimal reconnaissance only; resolve the sample path, basic metadata
 Deterministic presweeps & bounded reusable collection such as strings, FLOSS, capa, packer checks, UPX attempts, and compact Ghidra metadata & compact reusable sweep bundle \\
 Planner & planning only, no fresh analysis; convert the request and shared context into executable work items & JSON work-item block between \texttt{PLANNER\_WORK\_ITEMS\_START} and \texttt{PLANNER\_WORK\_ITEMS\_END} \\
 Workers & evidence-backed specialist analysis, role-specific bounded work, optional Ghidra or YARA proposal output & structured worker evidence bundle plus optional machine-readable proposal blocks \\
+Proposal writer & normalize conservative worker-surfaced rename, type, comment, or patch suggestions into queued change proposals; no fresh analysis & structured proposal-generation result plus queue references and write status \\
 Validators & review only, no broad new discovery; decide whether the answer is adequate and what should be narrowed or retried & JSON validation decision block between \texttt{VALIDATION\_DECISION\_START} and \texttt{VALIDATION\_DECISION\_END} \\
-Reporter & synthesis only; no fresh tool use; final answer must stay tied to validated findings and meaningful control-flow pivots & concise final analyst report and any finalized proposal blocks \\
+Reporter & synthesis only; no fresh tool use; final answer must stay tied to validated findings, meaningful control-flow pivots, and queued-proposal context when available & concise final analyst report plus proposal-generation summary consumption when a dedicated proposal-writing stage is present \\
 \end{tabular}
 \caption{The main prompt and contract surfaces used by the maintained multi-agent workflow.}
 \label{tab:prompt-surfaces}
@@ -157,7 +158,7 @@ Reporter & synthesis only; no fresh tool use; final answer must stay tied to val
 
 The workflow-level configuration surface is concentrated in \path{multi\_agent\_wf/workflow\_config/}. The most important files are \path{architecture\_presets.json} for manager and worker topologies, \path{pipeline\_presets.json} for stage sequences, \path{agent\_archetype\_specs.json} and \path{agent\_archetype\_prompts.json} for specialist roles and tool-domain mapping, \path{stage\_manager\_prompts.json} for coordinator instructions, \path{stage\_output\_contracts.json} for machine-readable stage outputs, and \path{worker\_persona\_profiles.json} for worker prompt-shape overlays. The lower-level base prompt scaffolding is defined in \path{base\_prompts.json}.
 
-The evaluation-side configuration surface lives under \path{Testing/config/}. The most important files are \path{presets/*.json} for runnable named presets, \path{experiment\_sweeps.json} for the generic direct-sweep definition, \path{tool\_profiles.json} for MCP availability profiles, \path{response\_scope\_variants.json} and \path{analysis\_hint\_variants.json} for prompt wrappers, \path{binary\_judge\_rubric.json} and \path{prompts/binary\_judge\_prompt.md} for judging, and \path{budget\_guardrails.json} plus \path{model\_cost\_profiles.json} for launch-time cost and safety constraints. Corpus definitions live alongside the sample sets themselves, most importantly \path{Testing/sources/experimental/sample\_manifest.json} and \path{Testing/sources/final\_round/sample\_manifest.json}.
+The evaluation-side configuration surface lives under \path{Testing/config/}. The most important files are \path{presets/*.json} for runnable named presets, \path{experiment\_sweeps.json} for the generic direct-sweep definition, \path{tool\_profiles.json} for MCP availability profiles, \path{response\_scope\_variants.json} and \path{analysis\_hint\_variants.json} for prompt wrappers, \path{binary\_judge\_rubric.json} and \path{prompts/binary\_judge\_prompt.md} for LLM judging, and \path{budget\_guardrails.json} plus \path{model\_cost\_profiles.json} for launch-time cost and safety constraints. Corpus definitions live alongside the sample sets themselves, most importantly \path{Testing/sources/experimental/sample\_manifest.json} and \path{Testing/sources/final\_round/sample\_manifest.json}.
 
 The preset files correspond directly to the main experiment families discussed in this thesis: \texttt{coverage\_broad\_r1\_60usd} for the breadth-oriented pilot, \texttt{sweep\_decoder\_depth\_r3} and \texttt{sweep\_decoder\_depth\_followups\_r3} for the decoder-depth studies, and \texttt{thesis\_final\_eval\_r3\_100usd} for the blind held-out final evaluation. Each preset is self-contained and names its corpus, selected samples or tasks, repetition count, baseline configuration, and sweep families.
 
@@ -223,14 +224,14 @@ The main results chapter keeps the heatmap view as the primary executable-level 
 \begin{figure}[p]
 \centering
 \includegraphics[width=\textwidth]{experiment_results/final_eval_per_executable_scores_page_01.png}
-\caption{Paged per-executable score panels for the repaired final held-out experiment, page 1. This page covers \texttt{sample1.exe} through \texttt{sample3.exe} and shows the mean score plus repetition-level variance for each maintained configuration.}
+\caption{Paged per-executable score panels for the repaired final held-out experiment, page 1. This page covers \texttt{sample1.exe} through \texttt{sample3.exe} and shows the mean LLM-judge score plus repetition-level variance for each maintained configuration.}
 \label{fig:appendix-final-per-exec-scores-page1}
 \end{figure}
 
 \begin{figure}[p]
 \centering
 \includegraphics[width=\textwidth]{experiment_results/final_eval_per_executable_scores_page_02.png}
-\caption{Paged per-executable score panels for the repaired final held-out experiment, page 2. This page covers \texttt{sample4.exe} and \texttt{sample5.exe} and completes the executable-level detail behind Figure~\ref{fig:final-cross-executable-heatmap}.}
+\caption{Paged per-executable score panels for the repaired final held-out experiment, page 2. This page covers \texttt{sample4.exe} and \texttt{sample5.exe} and completes the executable-level detail behind Figure~\ref{fig:final-cross-executable-heatmap}. As above, the score displayed is the mean LLM-judge score with repetition-level variance.}
 \label{fig:appendix-final-per-exec-scores-page2}
 \end{figure}
 

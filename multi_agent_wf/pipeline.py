@@ -764,6 +764,79 @@ def _set_pipeline_stage_status(
     _store_ui_snapshot(state=state)
 
 
+def _apply_host_worker_stage_user_visible_outcome(
+    state: Dict[str, Any],
+    *,
+    stage_name: str,
+    stage_kind: str,
+    subagents: List[str],
+    stage_entry: Dict[str, Any],
+    worker_stage_summary: Dict[str, Any],
+    worker_failure_count: int,
+    all_worker_assignments_failed: bool,
+    worker_failure_categories: Dict[str, int],
+    worker_proposal_warning_count: int,
+    worker_proposal_warning_categories: Dict[str, int],
+    stage_duration_sec: float,
+) -> None:
+    if worker_failure_count > 0:
+        stage_entry["status"] = "failed" if all_worker_assignments_failed else "completed_with_failures"
+        stage_entry["worker_assignment_summary"] = worker_stage_summary
+        category_summary = ", ".join(
+            f"{name}={count}"
+            for name, count in sorted(worker_failure_categories.items(), key=lambda item: (-item[1], item[0]))
+        )
+        _set_pipeline_stage_status(
+            state,
+            stage_name,
+            stage_kind=stage_kind,
+            subagents=list(subagents),
+            status="failed" if all_worker_assignments_failed else "completed_with_failures",
+            error=(
+                f"{worker_failure_count} host worker assignment(s) failed"
+                + (f" [{category_summary}]" if category_summary else "")
+                + (" (all assignments failed)" if all_worker_assignments_failed else "")
+            ),
+        )
+        append_status(
+            state,
+            (
+                f"Stage finished with assignment failures: {stage_name} "
+                f"in {stage_duration_sec:.1f}s ({worker_failure_count} failed assignment(s)"
+                + (f"; categories: {category_summary}" if category_summary else "")
+                + ")"
+            ),
+        )
+        return
+
+    if worker_proposal_warning_count > 0:
+        _append_tool_log_entries(
+            state,
+            stage_name,
+            [
+                {
+                    "stage": stage_name,
+                    "kind": "stage_proposal_warning_summary",
+                    "proposal_warning_count": int(worker_proposal_warning_count),
+                    "proposal_warning_categories": {
+                        str(name): int(count)
+                        for name, count in sorted(worker_proposal_warning_categories.items(), key=lambda item: (-item[1], item[0]))
+                    },
+                    "event_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            ],
+        )
+
+    _set_pipeline_stage_status(
+        state,
+        stage_name,
+        stage_kind=stage_kind,
+        subagents=list(subagents),
+        status="completed",
+    )
+    append_status(state, f"Stage finished: {stage_name} in {stage_duration_sec:.1f}s")
+
+
 def _format_elapsed(seconds: Optional[float]) -> str:
     if seconds is None:
         return "--:--"
@@ -864,11 +937,13 @@ def _format_proposal_gate_failure_reason(gate_result: Dict[str, Any]) -> str:
     reason = str(gate_result.get("failure_reason") or "").strip()
     detail = str(gate_result.get("detail") or "").strip()
     if reason == "missing_machine_readable_proposal_block":
-        return "proposal block missing"
+        return detail or "no recoverable proposal-ready change suggestion was emitted"
     if reason == "proposal_block_parse_error":
         return f"proposal block parse error ({detail})" if detail else "proposal block parse error"
     if reason == "empty_proposal_block_without_omission_rationale":
         return "empty proposal block without omission rationale"
+    if reason == "proposal_block_had_no_objects":
+        return detail or "proposal block was present but contained no proposal objects"
     if reason == "proposal_block_had_no_valid_proposals":
         return f"proposal block had no valid proposals ({detail})" if detail else "proposal block had no valid proposals"
     if reason == "no_valid_proposals_of_allowed_types":
@@ -876,6 +951,23 @@ def _format_proposal_gate_failure_reason(gate_result: Dict[str, Any]) -> str:
     if reason == "proposal_candidates_too_speculative":
         return detail or "proposal suggestions were too speculative to recover safely"
     return detail or reason or "proposal requirement was not satisfied"
+
+
+def _proposal_gate_warning_category(gate_result: Dict[str, Any]) -> str:
+    reason = str(gate_result.get("failure_reason") or "").strip()
+    if reason in {"missing_machine_readable_proposal_block", "proposal_block_had_no_objects"}:
+        return "proposal_context_missing"
+    if reason == "proposal_candidates_too_speculative":
+        return "proposal_context_too_speculative"
+    if reason == "empty_proposal_block_without_omission_rationale":
+        return "proposal_omission_unexplained"
+    if reason in {
+        "proposal_block_parse_error",
+        "proposal_block_had_no_valid_proposals",
+        "no_valid_proposals_of_allowed_types",
+    }:
+        return "proposal_output_unusable"
+    return "proposal_context_incomplete"
 
 
 def extract_planned_work_items(text: str) -> Tuple[List[Dict[str, Any]], str]:
@@ -1112,6 +1204,9 @@ _RECOVERY_KEYWORD_RE = re.compile(
 _ENUM_RECOVERY_CONTEXT_RE = re.compile(
     r"(?i)\b(switch|case|value|values|enum(?:-like)?|command ids?|flags?|cmp|compare)\b"
 )
+_RECOVERY_ROLE_PHRASE_RE = re.compile(
+    r"(?i)\b(?:looks like|appears to be|seems to be|acts as|serves as|behaves as|is likely(?: to be)?)\s+(?:an?\s+|the\s+)?(?P<label>[A-Za-z][A-Za-z0-9 _/\-]{2,80})"
+)
 _RECOVERY_PHRASE_STOPWORDS = {
     "a",
     "an",
@@ -1314,9 +1409,11 @@ def _recovered_proposal(
     summary: str = "",
     detail: str = "",
     origin_detail: str = "",
+    confidence: Optional[float] = None,
+    confidence_label: str = "",
 ) -> Dict[str, Any]:
     anchor = function_address or address or current_name or variable_name or data_type_name or proposed_name
-    return {
+    proposal = {
         "id": _make_recovered_proposal_id(action, anchor, excerpt),
         "action": action,
         "target_system": "ghidra",
@@ -1341,6 +1438,49 @@ def _recovered_proposal(
         "recovery_excerpt": _normalize_recovery_line(excerpt),
         "recovery_detail": detail,
     }
+    if confidence is not None:
+        proposal["confidence"] = max(0.0, min(float(confidence), 1.0))
+    normalized_confidence_label = " ".join(str(confidence_label or "").strip().lower().split())
+    if normalized_confidence_label:
+        proposal["confidence_label"] = normalized_confidence_label
+    return proposal
+
+
+def _recovered_proposal_selection_key(proposal: Dict[str, Any]) -> Tuple[float, int, int, int]:
+    try:
+        confidence = float(proposal.get("confidence"))
+    except Exception:
+        confidence = 0.0
+    evidence_count = len(list(proposal.get("evidence") or []))
+    name_length = len(
+        str(
+            proposal.get("proposed_name")
+            or proposal.get("data_type_name")
+            or proposal.get("current_name")
+            or ""
+        ).strip()
+    )
+    detail = str(proposal.get("proposal_origin_detail") or "").strip().lower()
+    explicit_bonus = 1 if detail in {"narrative_function_rename", "narrative_variable_role"} else 0
+    return (confidence, explicit_bonus, evidence_count, name_length)
+
+
+def _collapse_recovered_proposal_conflicts(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    singles: List[Dict[str, Any]] = []
+    for proposal in proposals:
+        conflict_signature = str(_proposal_conflict_signature(proposal) or "").strip()
+        if not conflict_signature:
+            singles.append(proposal)
+            continue
+        grouped.setdefault(conflict_signature, []).append(proposal)
+    collapsed = list(singles)
+    for group in grouped.values():
+        if len(group) == 1:
+            collapsed.extend(group)
+            continue
+        collapsed.append(max(group, key=_recovered_proposal_selection_key))
+    return collapsed
 
 
 def _recover_function_rename_from_line(line: str, context_lines: List[str]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
@@ -1353,12 +1493,28 @@ def _recover_function_rename_from_line(line: str, context_lines: List[str]) -> T
         line,
     )
     match = explicit or inferred
-    if not match:
+    role_match = _RECOVERY_ROLE_PHRASE_RE.search(line)
+    if not match and role_match:
+        has_function_target_hint = bool(
+            _FUNCTION_AUTO_NAME_RE.search(line)
+            or re.search(r"(?i)\b(function|routine|subroutine|handler|loop)\b", line)
+        )
+        if not has_function_target_hint or _DATA_AUTO_NAME_RE.search(line):
+            return None, None, False
+    if not match and not role_match:
         return None, None, False
     function_name, function_address = _extract_function_context_from_lines([line, *context_lines])
-    current_name = " ".join(str(match.groupdict().get("current") or "").split()) or function_name
-    function_address = " ".join(str(match.groupdict().get("address") or "").split()) or function_address or _infer_address_from_symbol_name(current_name)
-    proposed_name = " ".join(str(match.group("new") or "").split())
+    current_name = " ".join(str((match.groupdict().get("current") if match else "") or "").split()) or function_name
+    function_address = " ".join(str((match.groupdict().get("address") if match else "") or "").split()) or function_address or _infer_address_from_symbol_name(current_name)
+    proposed_name = " ".join(str((match.group("new") if match else "") or "").split())
+    origin_detail = "narrative_function_rename"
+    confidence = 0.68
+    confidence_label = "medium"
+    if not proposed_name and role_match:
+        proposed_name = _derive_identifier_from_phrase(str(role_match.group("label") or ""))
+        origin_detail = "narrative_function_role"
+        confidence = 0.35
+        confidence_label = "low"
     if not proposed_name:
         return None, {
             "kind": "rename_function",
@@ -1386,7 +1542,9 @@ def _recover_function_rename_from_line(line: str, context_lines: List[str]) -> T
             function_address=function_address,
             function_name=current_name or function_name,
             summary=f"Recover function rename to {proposed_name}",
-            origin_detail="narrative_function_rename",
+            origin_detail=origin_detail,
+            confidence=confidence,
+            confidence_label=confidence_label,
         ),
         None,
         True,
@@ -1406,9 +1564,10 @@ def _recover_data_rename_from_line(line: str, context_lines: List[str]) -> Tuple
             r"(?i)\b(?:stores?|holds?|contains?|tracks?|represents?)\s+(?P<label>[A-Za-z][A-Za-z0-9 _/\-]{2,80})",
             line,
         )
-    if not semantic_match:
+    role_match = _RECOVERY_ROLE_PHRASE_RE.search(line)
+    if not semantic_match and not role_match:
         return None, None, False
-    label = _clean_recovery_phrase(str(semantic_match.group("label") or ""))
+    label = _clean_recovery_phrase(str((semantic_match or role_match).group("label") or ""))
     proposed_name = _derive_identifier_from_phrase(label)
     if not proposed_name:
         return None, {
@@ -1437,7 +1596,9 @@ def _recover_data_rename_from_line(line: str, context_lines: List[str]) -> Tuple
             proposed_name=proposed_name,
             address=address,
             summary=f"Recover data rename to {proposed_name}",
-            origin_detail="narrative_data_role",
+            origin_detail="narrative_data_role" if semantic_match else "narrative_data_role_inferred",
+            confidence=0.58 if semantic_match else 0.35,
+            confidence_label="medium" if semantic_match else "low",
         ),
         None,
         True,
@@ -1451,7 +1612,7 @@ def _recover_variable_rename_from_line(line: str, context_lines: List[str]) -> T
         line,
     )
     semantic = re.search(
-        r"(?i)\b(?P<var>(?:[ibpuacfd]?Var\d+|local_[0-9A-Fa-f]+|param_\d+|uStack_[0-9A-Fa-f]+))\b[^.;\n]{0,80}?(?:appears to be|looks like|is likely|tracks|holds|stores|represents)\s+(?P<label>[A-Za-z][A-Za-z0-9 _/\-]{2,80})",
+        r"(?i)\b(?P<var>(?:[ibpuacfd]?Var\d+|local_[0-9A-Fa-f]+|param_\d+|uStack_[0-9A-Fa-f]+))\b[^.;\n]{0,80}?(?:appears to be|looks like|is likely|tracks|holds|stores|represents|acts as|serves as)\s+(?P<label>[A-Za-z][A-Za-z0-9 _/\-]{2,80})",
         line,
     )
     match = explicit or semantic
@@ -1482,6 +1643,8 @@ def _recover_variable_rename_from_line(line: str, context_lines: List[str]) -> T
             variable_name=variable_name,
             summary=f"Recover variable rename to {proposed_name}",
             origin_detail="narrative_variable_role",
+            confidence=0.55 if explicit is None else 0.68,
+            confidence_label="medium",
         ),
         None,
         True,
@@ -1526,11 +1689,11 @@ def _recover_struct_from_line(line: str, context_lines: List[str]) -> Tuple[Opti
             continue
         seen_offsets.add(offset_value)
         unique_offsets.append((offset_value, label))
-    if len(unique_offsets) < 2:
+    if len(unique_offsets) < 1:
         return None, {
             "kind": "create_struct_definition",
             "classification": "too_speculative",
-            "reason": "Struct suggestion lacked enough concrete field offsets to build a conservative definition.",
+            "reason": "Struct suggestion lacked a concrete field offset to build even a partial definition.",
             "excerpt": _normalize_recovery_line(line),
         }, True
     struct_fields: List[Dict[str, Any]] = []
@@ -1566,6 +1729,8 @@ def _recover_struct_from_line(line: str, context_lines: List[str]) -> Tuple[Opti
             summary=f"Recover struct definition {type_name}",
             detail=f"Recovered {len(struct_fields)} field(s) from nearby offset observations.",
             origin_detail="narrative_struct_recovery",
+            confidence=0.6 if len(struct_fields) >= 2 else 0.35,
+            confidence_label="medium" if len(struct_fields) >= 2 else "low",
         ),
         None,
         True,
@@ -1628,6 +1793,8 @@ def _recover_enum_from_line(line: str, context_lines: List[str]) -> Tuple[Option
             summary=f"Recover enum definition {type_name}",
             detail=f"Recovered {len(enum_members)} enum member value(s) from nearby switch/value observations.",
             origin_detail="narrative_enum_recovery",
+            confidence=0.58,
+            confidence_label="medium",
         ),
         None,
         True,
@@ -1685,6 +1852,7 @@ def recover_implied_ghidra_change_proposals(text: str) -> Dict[str, Any]:
             )
 
     if recovered:
+        recovered = _collapse_recovered_proposal_conflicts(recovered)
         recovery_status = "recovered"
     elif rejected:
         recovery_status = "rejected_as_speculative"
@@ -2540,7 +2708,7 @@ def _evaluate_required_worker_proposals(
     ]
 
     if not candidate_proposals:
-        if omission_rationale and result["found_proposal_block"]:
+        if omission_rationale:
             result["satisfied"] = True
             result["gate_status"] = "omitted_with_rationale"
         elif result["recovery_rejected_count"]:
@@ -5107,11 +5275,28 @@ def _host_worker_proposal_examples_text() -> str:
         "  }\n"
         "]\n"
         f"{GHIDRA_CHANGE_PROPOSALS_END}\n"
+        "Proposal-ready narrative fallback examples when you do not want to write JSON:\n"
+        "- rename function FUN_004012F0 at 0x4012F0 to dispatch_command_id because it switches on 0x10/0x11/0x12 and tail-calls distinct handlers.\n"
+        "- global DAT_004060A0 appears to store encoded config flags because xrefs feed the decode loop and later bitmask checks.\n"
+        "- struct for session context with offsets 0x0 buffer_ptr, 0x4 buffer_len, and 0x8 flags based on repeated accesses from the decode/send path.\n"
+        "- enum-like command IDs 0x10, 0x11, and 0x12 because the same bounded switch values drive the dispatcher and table lookup.\n"
         "Omission example when no conservative proposal is safe yet:\n"
         f"{_PROPOSAL_OMISSION_RATIONALE_LABEL} Repeated offsets suggest a shared structure, but field roles are still ambiguous and no rename or type is safe yet.\n"
         f"{GHIDRA_CHANGE_PROPOSALS_START}\n"
         "[]\n"
         f"{GHIDRA_CHANGE_PROPOSALS_END}"
+    )
+
+
+def _host_worker_proposal_context_fields_text() -> str:
+    return (
+        "Proposal-ready context fields to include whenever possible:\n"
+        "- action family: rename_function, rename_data, rename_variable, create_struct_definition, create_enum_definition, etc.\n"
+        "- target anchor: function/global/local name and/or exact address\n"
+        "- current name or type if known\n"
+        "- proposed name, type name, enum label set, or recovered role\n"
+        "- 1-3 concrete evidence points or a short `because ...` rationale\n"
+        "- confidence or uncertainty when the suggestion is tentative"
     )
 
 
@@ -5125,14 +5310,15 @@ def _build_host_worker_proposal_requirement_text(work_item: Dict[str, Any]) -> s
         "- `proposal_expected: true`\n"
         f"- allowed_proposal_types: {allowed_types_line}\n"
         "- Keep proposal scope narrow: aim for 1-2 conservative proposals total, not a broad rename sweep.\n"
-        "- This work item is not complete unless you append exactly one machine-readable change block between "
+        "- Preferred output: append exactly one machine-readable change block between "
         f"`{GHIDRA_CHANGE_PROPOSALS_START}` and `{GHIDRA_CHANGE_PROPOSALS_END}`.\n"
-        "- Satisfy that requirement in one of two ways:\n"
-        "  1. emit at least one valid proposal that matches the allowed proposal types for this work item, or\n"
-        f"  2. write `{_PROPOSAL_OMISSION_RATIONALE_LABEL} <why no safe proposal can be made yet>` and then emit an empty JSON array.\n"
-        "- Do not emit unsupported proposal types for this work item, and do not omit the block.\n"
+        "- JSON is preferred, not mandatory. If you do not use the machine-readable block, include explicit proposal-ready narrative lines that name the target, intended action, proposed name/type, and supporting evidence so the proposal writer can recover the change safely.\n"
+        "- If no conservative proposal is safe yet, provide a clear omission rationale. The labeled form "
+        f"`{_PROPOSAL_OMISSION_RATIONALE_LABEL} <why no safe proposal can be made yet>` is preferred, and an empty JSON array is helpful but no longer required.\n"
+        "- Do not emit unsupported proposal types for this work item.\n"
         "Proposal targets for this assignment:\n"
         f"{target_lines}\n\n"
+        f"{_host_worker_proposal_context_fields_text()}\n\n"
         f"{_host_worker_proposal_examples_text()}"
     )
 
@@ -5149,16 +5335,17 @@ def _build_host_worker_proposal_correction_prompt(
     return (
         "Correction required for the same work item.\n"
         "- Do not redo the investigation from scratch.\n"
-        "- Keep the evidence-backed findings brief if they are unchanged, then fix the proposal appendix only.\n"
+        "- Keep the evidence-backed findings brief if they are unchanged, then add or clarify the proposal-ready content only.\n"
         f"- Allowed proposal types: {allowed_types_line}\n"
         f"- Proposal targets:\n{target_lines}\n"
-        f"- The previous response failed the proposal gate because {_format_proposal_gate_failure_reason(gate_result)}.\n"
+        f"- The previous response did not give the proposal writer enough proposal-ready context because {_format_proposal_gate_failure_reason(gate_result)}.\n"
         "- Reply with a corrected full final answer for this same work item.\n"
-        "- Append exactly one machine-readable proposal block between "
+        "- Preferred fix: append exactly one machine-readable proposal block between "
         f"`{GHIDRA_CHANGE_PROPOSALS_START}` and `{GHIDRA_CHANGE_PROPOSALS_END}`.\n"
-        "- Either include 1-2 valid conservative proposals of the allowed types, or emit an empty array plus "
-        f"`{_PROPOSAL_OMISSION_RATIONALE_LABEL} <reason>`.\n"
-        "- Do not omit the block, do not emit unsupported proposal types, and do not return commentary about the correction instead of the corrected final answer."
+        "- Acceptable fallback: add 1-3 explicit proposal-ready narrative lines that state the action family, target anchor, proposed name/type, and supporting evidence.\n"
+        f"- If no safe proposal is justified, say so clearly. The labeled form `{_PROPOSAL_OMISSION_RATIONALE_LABEL} <reason>` is preferred.\n"
+        f"{_host_worker_proposal_context_fields_text()}\n"
+        "- Do not emit unsupported proposal types, and do not return commentary about the correction instead of the corrected final answer."
     )
 
 
@@ -5559,10 +5746,11 @@ async def _run_host_worker_assignment(
                 )
             duration_sec = time.perf_counter() - worker_t0
             if bool(proposal_gate.get("required")) and not bool(proposal_gate.get("satisfied")):
-                error_text = (
-                    "Proposal requirement not satisfied: "
+                warning_text = (
+                    "Proposal follow-up needed: "
                     + _format_proposal_gate_failure_reason(proposal_gate)
                 )
+                warning_category = _proposal_gate_warning_category(proposal_gate)
                 _append_tool_log_entries(
                     state,
                     stage_name,
@@ -5575,20 +5763,13 @@ async def _run_host_worker_assignment(
                             "archetype_name": archetype_name,
                             "model": str(resolved_model or ""),
                             "attempt": attempt,
-                            "status": "failed",
+                            "status": "ok",
                             "duration_sec": round(duration_sec, 6),
                             "finished_at": datetime.now().isoformat(timespec="seconds"),
-                            "error": error_text,
+                            "warning": warning_text,
                             "retryable": False,
-                            "error_category": (
-                                "proposal_output_missing"
-                                if str(proposal_gate.get("failure_reason") or "").strip()
-                                in {
-                                    "missing_machine_readable_proposal_block",
-                                    "empty_proposal_block_without_omission_rationale",
-                                }
-                                else "proposal_output_invalid"
-                            ),
+                            "proposal_gate_warning": True,
+                            "warning_category": warning_category,
                             "correction_attempts_used": correction_attempts_used,
                         }
                     ],
@@ -5605,18 +5786,13 @@ async def _run_host_worker_assignment(
                     "usage": usage_snapshot,
                     "duration_sec": duration_sec,
                     "model_duration_sec": model_duration_sec,
-                    "status": "failed",
-                    "error": error_text,
+                    "status": "ok",
+                    "error": "",
+                    "warning": warning_text,
                     "retryable": False,
-                    "error_category": (
-                        "proposal_output_missing"
-                        if str(proposal_gate.get("failure_reason") or "").strip()
-                        in {
-                            "missing_machine_readable_proposal_block",
-                            "empty_proposal_block_without_omission_rationale",
-                        }
-                        else "proposal_output_invalid"
-                    ),
+                    "error_category": "",
+                    "proposal_gate_warning": True,
+                    "warning_category": warning_category,
                     "proposal_gate": proposal_gate,
                     "proposal_correction_attempts": correction_attempts_used,
                     "executor_meta": dict(executor_meta or {}),
@@ -5663,6 +5839,8 @@ async def _run_host_worker_assignment(
                 "status": "ok",
                 "retryable": False,
                 "error_category": "",
+                "proposal_gate_warning": False,
+                "warning_category": "",
                 "proposal_gate": proposal_gate,
                 "proposal_correction_attempts": correction_attempts_used,
                 "executor_meta": dict(executor_meta or {}),
@@ -5771,9 +5949,14 @@ def _merge_host_worker_results(results: List[Dict[str, Any]], concurrency_limit:
             ]
         )
         proposal_gate = item.get("proposal_gate") if isinstance(item.get("proposal_gate"), dict) else {}
-        if proposal_gate.get("required"):
+        if proposal_gate.get("required") and (bool(proposal_gate.get("satisfied")) or status != "ok"):
+            proposal_gate_label = "satisfied"
+            if bool(item.get("proposal_gate_warning")) and not bool(proposal_gate.get("satisfied")):
+                proposal_gate_label = "warning"
+            elif not bool(proposal_gate.get("satisfied")):
+                proposal_gate_label = "failed"
             sections.append(
-                f"- proposal_gate: {'satisfied' if proposal_gate.get('satisfied') else 'failed'} "
+                f"- proposal_gate: {proposal_gate_label} "
                 f"({str(proposal_gate.get('gate_status') or proposal_gate.get('failure_reason') or 'unknown')})"
             )
             sections.append(
@@ -5791,6 +5974,12 @@ def _merge_host_worker_results(results: List[Dict[str, Any]], concurrency_limit:
         correction_attempts = int(item.get("proposal_correction_attempts") or 0)
         if correction_attempts:
             sections.append(f"- proposal_correction_attempts: {correction_attempts}")
+        if bool(item.get("proposal_gate_warning")) and status != "ok":
+            sections.append(
+                f"- proposal_gate_warning: {str(item.get('warning_category') or 'proposal_context_incomplete')}"
+            )
+            if str(item.get("warning") or "").strip():
+                sections.append(f"- proposal_gate_warning_detail: {str(item.get('warning') or '').strip()}")
         if status == "ok":
             sections.append(str(item.get("output_text") or "").strip())
         else:
@@ -6128,13 +6317,18 @@ def _run_host_parallel_worker_stage(
 
     ordered_results = [results_by_index[idx] for idx in sorted(results_by_index)]
     failed_results = [item for item in ordered_results if item.get("status") != "ok"]
+    proposal_warning_results = [item for item in ordered_results if bool(item.get("proposal_gate_warning"))]
     failure_category_counts: Dict[str, int] = {}
+    proposal_warning_category_counts: Dict[str, int] = {}
     retryable_failed_assignments = 0
     for item in failed_results:
         category = str(item.get("error_category") or "").strip() or "unknown"
         failure_category_counts[category] = failure_category_counts.get(category, 0) + 1
         if bool(item.get("retryable")):
             retryable_failed_assignments += 1
+    for item in proposal_warning_results:
+        category = str(item.get("warning_category") or "").strip() or "proposal_context_incomplete"
+        proposal_warning_category_counts[category] = proposal_warning_category_counts.get(category, 0) + 1
     # Persist a compact summary even when some assignments fail so the harness
     # can classify the run accurately after the pipeline returns.
     shared = state.setdefault("shared_state", _new_shared_state())
@@ -6150,6 +6344,8 @@ def _run_host_parallel_worker_stage(
         "retryable_failed_assignments": retryable_failed_assignments,
         "nonretryable_failed_assignments": max(0, len(failed_results) - retryable_failed_assignments),
         "failure_categories": failure_category_counts,
+        "proposal_warning_count": len(proposal_warning_results),
+        "proposal_warning_categories": proposal_warning_category_counts,
         "stage_retry_rounds_used": int((((shared.get("host_worker_stage_retry_summary") or {}) if isinstance(shared.get("host_worker_stage_retry_summary"), dict) else {}) or {}).get("retry_rounds_used") or 0),
         "stage_retry_recovered_assignments": int((((shared.get("host_worker_stage_retry_summary") or {}) if isinstance(shared.get("host_worker_stage_retry_summary"), dict) else {}) or {}).get("recovered_assignments") or 0),
         "failed_work_items": [
@@ -6162,6 +6358,16 @@ def _run_host_parallel_worker_stage(
                 "retryable": bool(item.get("retryable")),
             }
             for item in failed_results
+        ],
+        "proposal_warning_work_items": [
+            {
+                "work_item_id": str(item.get("work_item_id") or ""),
+                "slot_name": str(item.get("slot_name") or ""),
+                "archetype_name": str(item.get("archetype_name") or ""),
+                "warning": str(item.get("warning") or ""),
+                "warning_category": str(item.get("warning_category") or ""),
+            }
+            for item in proposal_warning_results
         ],
     }
     proposal_source_records = [
@@ -6511,6 +6717,8 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         worker_stage_summary = {}
         all_worker_assignments_failed = False
         worker_failure_categories: Dict[str, int] = {}
+        worker_proposal_warning_count = 0
+        worker_proposal_warning_categories: Dict[str, int] = {}
         if stage_meta["supports_parallel_assignments"] and HOST_PARALLEL_WORKER_EXECUTION:
             worker_stage_summary = dict(((state.get("shared_state") or {}).get("host_worker_assignment_summary") or {}))
             if str(worker_stage_summary.get("stage_name") or "") == stage.name:
@@ -6519,6 +6727,11 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
                 worker_failure_categories = {
                     str(key): int(value)
                     for key, value in ((worker_stage_summary.get("failure_categories") or {}) if isinstance(worker_stage_summary.get("failure_categories"), dict) else {}).items()
+                }
+                worker_proposal_warning_count = int(worker_stage_summary.get("proposal_warning_count") or 0)
+                worker_proposal_warning_categories = {
+                    str(key): int(value)
+                    for key, value in ((worker_stage_summary.get("proposal_warning_categories") or {}) if isinstance(worker_stage_summary.get("proposal_warning_categories"), dict) else {}).items()
                 }
         if worker_failure_count > 0:
             stage_entry["status"] = "failed" if all_worker_assignments_failed else "completed_with_failures"
@@ -6536,48 +6749,21 @@ def run_deepagent_pipeline(runtime: MultiAgentRuntime, user_text: str, state: Di
         state["shared_state"]["task_outputs"].append(stage_entry)
         state["shared_state"]["turn_task_runs"] = int(state["shared_state"].get("turn_task_runs", 0)) + 1
         state["shared_state"]["total_task_runs"] = int(state["shared_state"].get("total_task_runs", 0)) + 1
-        if worker_failure_count > 0:
-            category_summary = ", ".join(
-                f"{name}={count}"
-                for name, count in sorted(worker_failure_categories.items(), key=lambda item: (-item[1], item[0]))
-            )
-            _set_pipeline_stage_status(
-                state,
-                stage.name,
-                stage_kind=stage.stage_kind,
-                subagents=list(stage.subagent_names),
-                status="failed" if all_worker_assignments_failed else "completed_with_failures",
-                error=(
-                    f"{worker_failure_count} host worker assignment(s) failed"
-                    + (f" [{category_summary}]" if category_summary else "")
-                    + (" (all assignments failed)" if all_worker_assignments_failed else "")
-                ),
-            )
-        else:
-            _set_pipeline_stage_status(
-                state,
-                stage.name,
-                stage_kind=stage.stage_kind,
-                subagents=list(stage.subagent_names),
-                status="completed",
-            )
+        _apply_host_worker_stage_user_visible_outcome(
+            state,
+            stage_name=stage.name,
+            stage_kind=stage.stage_kind,
+            subagents=list(stage.subagent_names),
+            stage_entry=stage_entry,
+            worker_stage_summary=worker_stage_summary,
+            worker_failure_count=worker_failure_count,
+            all_worker_assignments_failed=all_worker_assignments_failed,
+            worker_failure_categories=worker_failure_categories,
+            worker_proposal_warning_count=worker_proposal_warning_count,
+            worker_proposal_warning_categories=worker_proposal_warning_categories,
+            stage_duration_sec=time.perf_counter() - stage_t0,
+        )
         compact_shared_state(state)
-        if worker_failure_count > 0:
-            category_summary = ", ".join(
-                f"{name}={count}"
-                for name, count in sorted(worker_failure_categories.items(), key=lambda item: (-item[1], item[0]))
-            )
-            append_status(
-                state,
-                (
-                    f"Stage finished with assignment failures: {stage.name} "
-                    f"in {time.perf_counter() - stage_t0:.1f}s ({worker_failure_count} failed assignment(s)"
-                    + (f"; categories: {category_summary}" if category_summary else "")
-                    + ")"
-                ),
-            )
-        else:
-            append_status(state, f"Stage finished: {stage.name} in {time.perf_counter() - stage_t0:.1f}s")
         _check_cancel_requested(state, location=f"after stage {stage.name}")
 
         if stage_meta["runs_validation_gate"]:
