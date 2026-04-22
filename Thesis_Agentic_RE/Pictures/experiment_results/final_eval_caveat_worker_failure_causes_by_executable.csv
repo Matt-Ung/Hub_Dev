@@ -1,6 +1,0 @@
-sample,failed_assignments,context_length_share,invalid_request_payload,usage_limit_exceeded,tool_retry_exhausted,context_length_exceeded
-sample1.exe,3,0.0,1,1,1,
-sample2.exe,15,0.933333,1,,,14
-sample3.exe,13,0.923077,,,1,12
-sample4.exe,2,0.0,2,,,
-sample5.exe,25,0.92,2,,,23
