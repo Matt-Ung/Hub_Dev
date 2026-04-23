@@ -119,6 +119,9 @@ MCPServers/capa-sigs
 mcp-security-hub
 vagrantProjects
 third_party/
+Tool-Orchestrated-Agentic-Reverse-Engineering-and-Malware-Analysis
+AGENTS.md
+MCPServers/sdhashMCP.py
 
 # Agent-produced helpers, reports, and vendored artifacts.
 agent_artifacts/
